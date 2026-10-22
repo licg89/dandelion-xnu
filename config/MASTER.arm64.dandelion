@@ -1,0 +1,45 @@
+# Dandelion (Redmi 9A / MT6762G) Kernel Configuration
+# Based on mouseos MASTER.arm64.a04br3, adapted for MT6762G
+
+# Architecture
+ARCH_CONFIGS = ARM64
+MACHINE_CONFIGS = DANDELION
+
+# CPU
+CPU_TYPE = CORTEX_A53
+NCPUS = 8
+SMP = 1
+PSCI = 1
+
+# Memory
+PAGE_SIZE = 16384
+T1SZ = 25
+PHYS_BASE = 0x40000000
+MEM_SIZE = 0x100000000
+
+# Interrupt Controller
+GIC_VERSION = 3
+GIC_BASE = 0x0C000000
+
+# Timer
+TIMER_FREQ = 13000000
+
+# Early Console
+EARLY_CONSOLE = 1
+UART_BASE = 0x11002000
+UART_BAUD = 921600
+
+# Disable Apple-specific features
+APPLE_PAC = 0
+APPLE_PAN = 0
+APPLE_LSE = 0
+APPLE_PERFMON = 0
+KPC = 0
+
+# Enable open-source ARM assembly
+OPEN_ARM_ASM = 1
+
+# Debug
+DEBUG = 1
+DEVELOPMENT = 1
+VERBOSE = 1

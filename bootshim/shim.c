@@ -1,0 +1,246 @@
+/* Dandelion boot shim v2 - self-contained with embedded test kernel
+ * No external payload needed. Tests full handoff flow.
+ */
+#include <stdint.h>
+#include <stddef.h>
+#include "fb.h"
+#include "fdt.h"
+#include "handoff.h"
+#include "log.h"
+#include "pstore.h"
+
+#define READ_SYSREG(reg) ({ uint64_t _v; __asm__ volatile("mrs %0, " #reg : "=r"(_v)); _v; })
+
+/* Redirect fb_puts to also write to pstore */
+#define LOG(s, fg) do { fb_puts(s, fg); ps_puts(s); } while(0)
+#define LOG_HEX(label, val, fg) do { fb_puthex(label, val, fg); ps_puthex(label, val); } while(0)
+#define LOG_DEC(label, val, fg) do { fb_putdec(label, val, fg); ps_putdec(label, val); } while(0)
+
+__attribute__((noreturn)) extern void enter_el1(uint64_t dtb);
+
+/* Embedded test kernel: simple wfe loop at 0x60000000 */
+__asm__(
+	".section .test_kernel, \"ax\"\n"
+	".globl test_kernel_start\n"
+	"test_kernel_start:\n"
+	"1: wfe\n"
+	"   b 1b\n"
+	".globl test_kernel_end\n"
+	"test_kernel_end:\n"
+);
+extern char test_kernel_start[], test_kernel_end[];
+
+static struct fdt_info fdt_info;
+
+__attribute__((noreturn)) static void stop(void)
+{
+    _ps_flush();  /* Write logs to pstore */
+
+    /* Auto-reboot after 10 seconds */
+    fb_puts("\nAuto-rebooting in 10s...\n", CLR_YELLOW);
+    ps_puts("\nAuto-rebooting...\n");
+    _ps_flush();
+
+    /* Wait 10 seconds */
+    for (volatile int i = 0; i < 200000000; i++);
+
+    /* Try PSCI SYSTEM_RESET */
+    __asm__ volatile(
+        "ldr w0, =0x84000009\n"  /* PSCI SYSTEM_RESET (32-bit) */
+        "smc #0\n"
+    );
+
+    /* If PSCI failed, try watchdog */
+    fb_puts("PSCI failed, trying watchdog...\n", CLR_RED);
+    *(volatile uint32_t *)0x10007014 = 0x1209;
+    *(volatile uint32_t *)0x10007014 = 0x1209;
+
+    for (;;) __asm__ volatile("wfe");
+}
+
+__attribute__((noreturn)) void exception_report(uint64_t slot)
+{
+	/* Try to output exception info to framebuffer */
+	fb_init();
+	fb_clear(CLR_BLACK);
+	fb_puts("EXCEPTION!\n", CLR_RED);
+	fb_putdec("Vector=", slot, CLR_RED);
+	fb_puthex("CurrentEL=", READ_SYSREG(CurrentEL), CLR_RED);
+	uint64_t el = READ_SYSREG(CurrentEL);
+	if (el == 8) {
+		fb_puthex("ESR_EL2=", READ_SYSREG(ESR_EL2), CLR_RED);
+		fb_puthex("ELR_EL2=", READ_SYSREG(ELR_EL2), CLR_RED);
+		fb_puthex("FAR_EL2=", READ_SYSREG(FAR_EL2), CLR_RED);
+	} else {
+		fb_puthex("ESR_EL1=", READ_SYSREG(ESR_EL1), CLR_RED);
+		fb_puthex("ELR_EL1=", READ_SYSREG(ELR_EL1), CLR_RED);
+		fb_puthex("FAR_EL1=", READ_SYSREG(FAR_EL1), CLR_RED);
+	}
+	fb_puts("\nAuto-rebooting to fastboot...\n", CLR_RED);
+	stop();
+}
+
+static void show_cpu_info(void)
+{
+	fb_puts("--- CPU ---\n", CLR_YELLOW);
+	fb_puthex("CurrentEL  ", READ_SYSREG(CurrentEL), CLR_CYAN);
+	fb_puthex("MIDR_EL1   ", READ_SYSREG(MIDR_EL1), CLR_CYAN);
+	fb_puthex("MPIDR_EL1  ", READ_SYSREG(MPIDR_EL1), CLR_CYAN);
+	fb_puthex("SCTLR_EL1  ", READ_SYSREG(SCTLR_EL1), CLR_CYAN);
+	fb_puthex("CNTFRQ_EL0 ", READ_SYSREG(CNTFRQ_EL0), CLR_CYAN);
+}
+
+static void show_fdt_info(uint64_t dtb)
+{
+	fb_puts("\n--- FDT ---\n", CLR_YELLOW);
+	fb_puthex("DTB_ADDR   ", dtb, CLR_CYAN);
+	if (dtb < 0x40000000 || dtb > 0xbfffffff) {
+		fb_puts("DTB: out of range!\n", CLR_RED);
+		return;
+	}
+	uint32_t magic = *(volatile uint32_t *)(uintptr_t)dtb;
+	uint32_t magic_be = ((magic>>24)&0xff)|((magic>>8)&0xff00)|
+			    ((magic<<8)&0xff0000)|((magic<<24)&0xff000000);
+	fb_puthex("DTB_MAGIC  ", magic_be, magic_be==0xd00dfeed ? CLR_GREEN : CLR_RED);
+	if (magic_be != 0xd00dfeed) return;
+	uint32_t total = *(volatile uint32_t *)((uintptr_t)dtb + 4);
+	total = ((total>>24)&0xff)|((total>>8)&0xff00)|
+		((total<<8)&0xff0000)|((total<<24)&0xff000000);
+	fb_putdec("DTB_SIZE   ", total, CLR_CYAN);
+	int rc = fdt_inspect((const void *)(uintptr_t)dtb, total, &fdt_info);
+	fb_putdec("FDT_PARSE  ", rc==0?1:0, rc==0 ? CLR_GREEN : CLR_RED);
+	fb_putdec("MEM_REGIONS", fdt_info.memory_count, CLR_CYAN);
+	fb_putdec("RESERVED   ", fdt_info.reserved_count, CLR_CYAN);
+	for (unsigned i = 0; i < fdt_info.memory_count; i++) {
+		fb_puts("  MEM: ", CLR_CYAN);
+		fb_puthex("", fdt_info.memory[i].base, CLR_WHITE);
+	}
+}
+
+__attribute__((noreturn)) void shim_el1(uint64_t dtb)
+{
+	fb_puts("\n=== EL1 DIAGNOSTIC ===\n", CLR_YELLOW);
+	fb_puthex("CurrentEL  ", READ_SYSREG(CurrentEL), CLR_CYAN);
+	fb_puts("EL1 transition OK!\n", CLR_GREEN);
+
+	/* Embedded test kernel handoff */
+	fb_puts("\n--- HANDOFF ---\n", CLR_YELLOW);
+
+	uint64_t kern_base = 0x60000000ULL;
+	uint64_t kern_size = (uint64_t)(test_kernel_end - test_kernel_start);
+	/* Round up to page */
+	kern_size = (kern_size + 0x3FFF) & ~0x3FFFULL;
+
+	fb_puthex("Kernel at  ", kern_base, CLR_CYAN);
+	fb_putdec("Kernel sz  ", kern_size, CLR_CYAN);
+	fb_putdec("Code bytes ", (uint64_t)(test_kernel_end - test_kernel_start), CLR_CYAN);
+
+	/* Copy test kernel to target */
+	volatile uint8_t *dst = (volatile uint8_t *)kern_base;
+	const uint8_t *src = (const uint8_t *)test_kernel_start;
+	for (uint64_t i = 0; i < (uint64_t)(test_kernel_end - test_kernel_start); i++)
+		dst[i] = src[i];
+	fb_puts("Kernel copied OK\n", CLR_GREEN);
+
+	/* Generate ADT */
+	fb_puts("Generating ADT...\n", CLR_WHITE);
+	static unsigned char adt_buf[XNU_PAGE] __attribute__((aligned(8)));
+	uint32_t timebase = (uint32_t)READ_SYSREG(CNTFRQ_EL0);
+	size_t adt_sz = dandelion_make_adt(adt_buf, sizeof(adt_buf),
+					   kern_base, 0x18000000,
+					   kern_base + kern_size,
+					   timebase, NULL, 0);
+	fb_putdec("ADT size   ", adt_sz, adt_sz ? CLR_GREEN : CLR_RED);
+
+	if (!adt_sz) {
+		fb_puts("ADT FAILED - stopping\n", CLR_RED);
+		stop();
+	}
+
+	/* Build boot_args */
+	fb_puts("Building boot_args...\n", CLR_WHITE);
+	uint64_t adt_pa = kern_base + kern_size;
+	uint64_t args_pa = adt_pa + XNU_PAGE;
+	uint64_t top = args_pa + XNU_PAGE;
+
+	/* Copy ADT */
+	for (size_t i = 0; i < adt_sz; i++)
+		((volatile uint8_t *)adt_pa)[i] = adt_buf[i];
+
+	struct xnu_boot_args ba;
+	for (size_t i = 0; i < sizeof(ba); i++)
+		((volatile uint8_t *)(uintptr_t)&ba)[i] = 0;
+	ba.revision = ba.version = 2;
+	ba.virt_base = 0xffffff8007004000ULL;
+	ba.phys_base = kern_base;
+	ba.mem_size = ba.mem_size_actual = 0x18000000;
+	ba.top_of_kernel_data = top;
+	ba.device_tree = ba.virt_base + (adt_pa - kern_base);
+	ba.device_tree_length = (uint32_t)adt_sz;
+	static const char cmdline[] = "-v serial=3 debug=0x14e keepsyms=1 cpus=1";
+	for (unsigned i = 0; i < XNU_CMDLINE-1 && cmdline[i]; i++)
+		ba.command_line[i] = cmdline[i];
+
+	for (size_t i = 0; i < sizeof(ba); i++)
+		((volatile uint8_t *)args_pa)[i] = ((volatile uint8_t *)(uintptr_t)&ba)[i];
+
+	fb_puthex("boot_args  ", args_pa, CLR_CYAN);
+	fb_puthex("entry      ", kern_base, CLR_CYAN);
+	fb_puts("\n", CLR_WHITE);
+	fb_puts("Flushing caches...\n", CLR_WHITE);
+
+	/* Flush caches and jump */
+	__asm__ volatile("dsb sy; ic iallu; dsb sy; isb" ::: "memory");
+
+	fb_puts("JUMPING TO KERNEL...\n", CLR_GREEN);
+	fb_puts("(screen may freeze - that means success!)\n", CLR_YELLOW);
+
+	/* Jump to test kernel */
+	((void (*)(uint64_t))kern_base)(args_pa);
+
+	/* Should not return */
+	fb_puts("KERNEL RETURNED!\n", CLR_RED);
+	stop();
+}
+
+__attribute__((noreturn)) void shim_main(uint64_t x0, uint64_t x1,
+					 uint64_t x2, uint64_t x3, uint64_t old_sp)
+{
+	(void)x1; (void)x2; (void)x3; (void)old_sp;
+	fb_init();
+	fb_clear(CLR_BLACK);
+
+	uint64_t el = READ_SYSREG(CurrentEL);
+
+	fb_puts("=== DANDELION BOOTSHIM v2 ===\n", CLR_YELLOW);
+	fb_puts("Embedded kernel test\n", CLR_WHITE);
+	fb_puts("FB: 0x7ec50000 stride=2944 736x1600\n\n", CLR_WHITE);
+
+	fb_puts("--- ENTRY ---\n", CLR_YELLOW);
+	fb_puthex("CurrentEL  ", el, CLR_CYAN);
+	fb_puthex("entry_x0   ", x0, CLR_CYAN);
+
+	show_cpu_info();
+	show_fdt_info(x0);
+
+	/* EL2 -> EL1 */
+	if (el == 8) {
+		fb_puts("\n--- EL2->EL1 ---\n", CLR_YELLOW);
+		uint64_t sctlr2 = READ_SYSREG(SCTLR_EL2);
+		fb_puthex("SCTLR_EL2  ", sctlr2, CLR_CYAN);
+		if (sctlr2 & ((1u<<0)|(1u<<2)|(1u<<12))) {
+			fb_puts("MMU/Cache ON!\n", CLR_RED);
+			stop();
+		}
+		fb_puts("Transitioning...\n", CLR_GREEN);
+		enter_el1(x0);
+		fb_puts("enter_el1 returned?!\n", CLR_RED);
+		stop();
+	}
+	if (el == 4) {
+		fb_puts("\nAlready at EL1\n", CLR_GREEN);
+		shim_el1(x0);
+	}
+	fb_puts("\nUnknown EL!\n", CLR_RED);
+	stop();
+}

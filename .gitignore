@@ -1,0 +1,30 @@
+# Build outputs
+*.o
+*.elf
+*.bin
+*.img
+*.gz
+*.padded
+Image
+out/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+nul
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary
+*.log
+*.tmp
+
+# Secrets (if any)
+*.key
+*.pem
