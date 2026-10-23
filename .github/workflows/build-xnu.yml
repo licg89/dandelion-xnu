@@ -72,11 +72,12 @@ jobs:
           fi
           git -C .xnu-src log --oneline -1
 
-      - name: Apply Dandelion overlay
+      - name: Apply build patches
+        run: tools/ci/apply-patches.sh .xnu-src
+
+      - name: Copy Dandelion board files
         if: env.MACHINE == 'dandelion'
-        run: |
-          git -C .xnu-src checkout -- . || true
-          tools/ci/apply-overlay.sh .xnu-src
+        run: tools/ci/apply-board.sh .xnu-src
 
       - name: Build kernel
         run: tools/ci/build-xnu.sh

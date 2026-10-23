@@ -31,6 +31,13 @@ xcodebuild -version
 
 mkdir -p "$ROOT/obj" "$ROOT/sym" "$ROOT/dst"
 
+# XNU's bsd/sys/make_symbol_aliasing.sh needs availability.pl, which the
+# iPhoneOS SDK does not ship.  patches/xnu/ci-availability-pl.patch makes it
+# honour this variable; the script is a version-list stand-in (see the file).
+AVAILABILITY_PL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/availability.pl"
+chmod +x "$AVAILABILITY_PL"
+export XNU_AVAILABILITY_PL="$AVAILABILITY_PL"
+
 make -C "$SRC" build \
 	SDKROOT=iphoneos \
 	ARCH_CONFIGS=ARM64 \
