@@ -26,6 +26,8 @@ LIBDISPATCH_TAG=${LIBDISPATCH_TAG:-libdispatch-1324.60.3}
 JOBS=${JOBS:-$(sysctl -n hw.ncpu)}
 
 MACHINE_UPPER=$(printf '%s' "$MACHINE" | tr '[:lower:]' '[:upper:]')
+# macOS ships bash 3.2, which has no ${var,,} expansion.
+KERNEL_CONFIG_LOWER=$(printf '%s' "$KERNEL_CONFIG" | tr '[:upper:]' '[:lower:]')
 OUT="$ROOT/obj/${KERNEL_CONFIG}_ARM64_${MACHINE_UPPER}"
 SDK=${KERNEL_SDKROOT:-$ROOT/sdk}
 
@@ -165,10 +167,10 @@ echo "== produced =="
 ls -l "$OUT" || true
 
 # Copy the kernel under a stable name for the packaging steps.
-if [ -f "$OUT/mach.${KERNEL_CONFIG,,}.${MACHINE}" ]; then
-	cp "$OUT/mach.${KERNEL_CONFIG,,}.${MACHINE}" "$ROOT/mach_kernel"
-elif [ -f "$OUT/mach.${KERNEL_CONFIG,,}.${MACHINE}.noctf" ]; then
-	cp "$OUT/mach.${KERNEL_CONFIG,,}.${MACHINE}.noctf" "$ROOT/mach_kernel"
+if [ -f "$OUT/mach.${KERNEL_CONFIG_LOWER}.${MACHINE}" ]; then
+	cp "$OUT/mach.${KERNEL_CONFIG_LOWER}.${MACHINE}" "$ROOT/mach_kernel"
+elif [ -f "$OUT/mach.${KERNEL_CONFIG_LOWER}.${MACHINE}.noctf" ]; then
+	cp "$OUT/mach.${KERNEL_CONFIG_LOWER}.${MACHINE}.noctf" "$ROOT/mach_kernel"
 else
 	echo "build-xnu.sh: kernel image not found in $OUT" >&2
 	exit 1
