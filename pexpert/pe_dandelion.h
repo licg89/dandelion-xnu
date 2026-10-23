@@ -5,6 +5,27 @@
 #ifndef __PE_DANDELION_H__
 #define __PE_DANDELION_H__
 
+/*
+ * XNU platform feature selection.
+ * Mirrors pexpert/pexpert/arm64/A04BR3.h from
+ * mouseos/xnu_kernel_benesse_a04br3, adapted for MT6762G.
+ */
+#define DANDELION                 1
+#define NO_MONITOR                1
+#define NO_ECORE                  1
+#define ARM_ARCH_TIMER            1
+#define __ARM_ARCH__              8
+#define __ARM_VMSA__              8
+#define __ARM_VFP__               4
+#define __ARM_COHERENT_CACHE__    1
+#define __ARM_DEBUG__             7
+#define __ARM_16K_PG__            1
+#define __ARM64_PMAP_SUBPAGE_L1__ 1
+/* 39-bit VA space; the macOS 2-TiB layout cannot fit. */
+#if defined(ARM_LARGE_MEMORY)
+#error DANDELION requires the normal ARM64 virtual address layout
+#endif
+
 /* CPU Configuration */
 #define DANDELION_CPU_TYPE      ARM_CPU_TYPE_CORTEX_A53
 #define DANDELION_CPU_SUBTYPE   ARM_CPU_SUBTYPE_V8
@@ -28,13 +49,22 @@
 /* Cache Line Size */
 #define DANDELION_CACHE_LINE    64
 
-/* Interrupt Controller */
-#define DANDELION_GIC_BASE      0x0C000000ULL
+/* Interrupt Controller (GICv3)
+ * Distributor and redistributor layout from the mainline mt6765.dtsi used by
+ * mt6762g-xiaomi-dandelion.dts:
+ *   reg = <0x0c000000 0x40000>,   GICD
+ *         <0x0c100000 0x200000>,  GICR
+ *         <0x0c400000 ...>        GICC/GICH/GICV (unused: we use ICC_*_EL1)
+ */
+#define DANDELION_GIC_BASE      0x0C000000ULL   /* distributor */
+#define DANDELION_GICR_BASE     0x0C100000ULL   /* redistributor, CPU 0 */
+#define DANDELION_GICR_STRIDE   0x00020000ULL   /* GICv3: RD + SGI frames */
+#define DANDELION_GICR_STRIDE_V4 0x00040000ULL  /* GICv4: + VLPI + reserved */
 #define DANDELION_GIC_TYPE      GIC_V3
 
 /* Timer */
 #define DANDELION_TIMER_FREQ    13000000  /* 13 MHz */
-#define DANDELION_TIMER_IRQ     27  /* Virtual timer PPI */
+#define DANDELION_TIMER_IRQ     27  /* virtual timer INTID (GIC PPI 11) */
 
 /* UART (Early Console) */
 #define DANDELION_UART_BASE     0x11002000ULL

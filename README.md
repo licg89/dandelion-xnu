@@ -9,8 +9,8 @@
 | Boot Shim | ✅ 完成 | EL2 入口、FDT 解析、ADT 生成、boot_args 构建、EL1 跳转 |
 | Framebuffer 控制台 | ✅ 完成 | stride=2944, base=0x7ec50000, 736x1600 RGBA8888 |
 | 测试内核加载 | ✅ 完成 | 嵌入 shim 的测试内核成功在 0x60000000 运行 |
-| XNU 内核适配 | 🚧 进行中 | 平台定义、配置、GICv3 适配 |
-| UART 调试 | ❌ 未实现 | 无物理 UART 访问，使用 framebuffer 替代 |
+| XNU 内核适配 | 🚧 进行中 | 平台定义、配置、平台专家（GICv3/定时器/UART/看门狗）已完成并通过交叉编译；尚缺 XNU 源码树集成与完整内核构建 |
+| UART 调试 | 🚧 部分实现 | MT6577 UART 驱动已实现（`0x11002000` @921600 8N1）；物理串口未引出，实际仍以 framebuffer 输出为主 |
 | pstore 日志 | ❌ 未实现 | ramoops 格式不兼容 |
 | USB CDC-ACM | ❌ 未实现 | 实时串口输出方案 |
 
@@ -33,7 +33,8 @@
 | DRAM 基址 | `0x40000000` | 4GB 连续内存 |
 | Framebuffer | `0x7EC50000` | 16MB, stride=2944 |
 | UART0 | `0x11002000` | mediatek,mt6577-uart, 921600 baud |
-| GICv3 | `0x0C000000` | 中断控制器 |
+| GICv3 Distributor | `0x0C000000` | 中断控制器 |
+| GICv3 Redistributor | `0x0C100000` | 每 CPU 的 PPI/SGI 帧 |
 | MTK Timer | `0x10017000` | 系统定时器 |
 | TRNG | `0x1020F000` | 硬件随机数（shim 阶段不可用） |
 | Topckgen | `0x10000000` | 时钟门控 |
@@ -61,39 +62,59 @@ eMMC Boot Region → Preloader → LK (Little Kernel)
 
 ```
 dandelion-xnu/
-── bootshim/           # Boot shim 源码（v1 目录的完整内容）
-│   ├── v1/
-│   │   ├── start.S     # AArch64 入口 + 异常向量 + EL2→EL1
-│   │   ├── shim.c      # 主诊断逻辑
-│   │   ├── fdt.c/h     # FDT 解析器
-│   │   ├── fb.c/h      # Framebuffer 控制台
-│   │   ├── adt.c       # Apple Device Tree 生成器
-│   │   ├── handoff.c/h # 内核加载 + boot_args 构建
-│   │   ├── rng.c       # MT6762G TRNG（未验证）
-│   │   ├── log.h       # 持久日志（pstore）
-│   │   ├── pstore.h    # pstore 格式写入
-│   │   ├── font.h      # 8x16 字体
-│   │   ├── shim.ld     # 链接脚本
-│   │   ├── build.sh    # 构建脚本
-│   │   ├── mkpayload.py # 测试 payload 生成器
-│   │   └── out/        # 构建输出
-│   ── docs/
-│       └── BOOTIMG_FORMAT.md  # boot.img 格式分析
-├── xnu/                # XNU 内核适配
-│   ├── pexpert/
-│   │   └── pe_dandelion.h    # 平台定义
-│   ├── config/
-│   │   └── MASTER.arm64.dandelion  # 内核配置
-│   └── iokit/Kernel/arm/
-│       └── DandelionPlatformExpert.cpp  # 平台专家（待实现）
+├── bootshim/           # Boot shim（扁平目录）
+│   ├── start.S         # AArch64 入口 + 异常向量 + EL2→EL1
+│   ├── shim.c          # 主诊断逻辑
+│   ├── fdt.c/h         # FDT 解析器
+│   ├── fb.c/h          # Framebuffer 控制台
+│   ├── adt.c           # Apple Device Tree 生成器
+│   ├── handoff.c/h     # 内核加载 + boot_args 构建（Apple ABI）
+│   ├── rng.c           # MT6762G TRNG（未验证）
+│   ├── trng_probe.c    # TRNG 探测
+│   ├── usb_cdc.c       # USB CDC-ACM 实验代码
+│   ├── log.h           # 持久日志（pstore）
+│   ├── pstore.h        # pstore 格式写入
+│   ├── font.h          # 8x16 字体
+│   ├── shim.ld         # 链接脚本
+│   ├── build.sh        # 构建脚本
+│   ├── build_trng.sh   # TRNG 探测构建脚本
+│   ├── mkpayload.py    # 测试 payload 生成器
+│   ├── mkbootimg_mtk.py # MTK boot.img 打包
+│   └── read_log.*      # pstore 日志读取工具
+├── pexpert/
+│   └── pe_dandelion.h  # 平台定义 + XNU 特性开关（对应参考项目 A04BR3.h）
+├── config/
+│   └── MASTER.arm64.dandelion  # 内核配置（MACHINE_CONFIGS=DANDELION）
+├── iokit/Kernel/arm/
+│   └── DandelionPlatformExpert.cpp  # 平台专家：串口/GICv3/定时器/看门狗/视频
+├── tools/
+│   └── check-platform-expert.sh     # aarch64 交叉编译检查
 ├── docs/
-│   ├── HARDWARE_ANALYSIS.md   # 硬件分析详细报告
-│   ├── BOOT_FLOW.md          # 启动流程详解
-│   ├── FRAMEBUFFER.md        # Framebuffer 参数确认过程
-│   └── TODO.md               # 待办事项
-├── README.md             # 本文件
+│   └── HARDWARE_ANALYSIS.md         # 硬件分析详细报告
+├── README.md
 └── .gitignore
 ```
+
+## XNU 平台专家
+
+`iokit/Kernel/arm/DandelionPlatformExpert.cpp` 实现了参考项目 A04BR3 仍标注为
+待完成的 "platform interrupt/timer/serial wiring"，对应 Redmi 9A 的硬件：
+
+| 模块 | 实现 |
+|------|------|
+| 早期控制台 | MT6577 UART @ `0x11002000`，沿用 LK 配置的 921600 8N1 |
+| 中断控制器 | GICv3：distributor `0x0C000000`，redistributor `0x0C100000`（帧大小按 GICR_TYPER 判定） |
+| 定时器 | ARM generic timer，13 MHz，虚拟定时器 INTID 27（GIC PPI 11） |
+| 看门狗 | MTK TOPRGU @ `0x10007000`，提供 pet / disable / reset |
+| 视频 | 用 LK framebuffer 参数填充 `boot_args.Video` |
+
+入口为 `dandelion_platform_expert_init(boot_args *)`。默认直接使用物理地址，
+可在 MMU 关闭的 shim 交接路径调用；接入 XNU 源码树后，可在 `PE_init_platform()`
+中用 `dandelion_platform_set_mmio_map()` 传入 `ml_io_map()` 得到的虚拟地址。
+
+注意：参考项目 A04BR3 使用 GICv2/AIC，而 Dandelion 是 GICv3，这是本移植相对
+参考实现的主要差异。中断在平台专家返回时仍保持屏蔽（`DAIF.I=1`），由 XNU 安装
+异常向量后再打开。
 
 ## 快速开始
 
@@ -105,15 +126,26 @@ dandelion-xnu/
 - ADB + Fastboot
 - Xiaomi Redmi 9A (bootloader 已解锁)
 
+平台专家也可以用 clang 自带的 aarch64 后端做无 WSL 的编译检查（见下文）。
+
 ### 构建 Boot Shim
 ```bash
-cd bootshim/v1
+cd bootshim
 bash build.sh
+```
+
+### 编译检查平台专家
+```bash
+# 无需 WSL：clang 带 aarch64 后端即可
+./tools/check-platform-expert.sh
+
+# 或使用 Linux 交叉编译器
+CC=aarch64-linux-gnu-g++ ./tools/check-platform-expert.sh
 ```
 
 ### 创建 boot.img
 ```bash
-cd bootshim/v1/out
+cd bootshim/out
 gzip -n -9 -c Image > Image.gz
 # 填充到 512 字节边界
 python3 -c "import os; size=os.path.getsize('Image.gz'); padded=(size+511)&~511; d=open('Image.gz','rb').read(); open('Image.gz.padded','wb').write(d + b'\\x00'*(padded-size))"

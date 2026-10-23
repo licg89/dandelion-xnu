@@ -174,10 +174,10 @@ size_t dandelion_make_adt(void *buffer, size_t capacity,
 	w_text(&w, "name", "interrupt-controller");
 	w_text(&w, "compatible", "arm,gic-v3");
 	w_text(&w, "interrupt-controller", "master");
-	/* GICv3: redistributor + distributor */
+	/* GICv3: distributor + redistributor (mt6765.dtsi layout) */
 	uint64_t gic_reg[8] = {
-		0x00000000, 0x0c000000, 0x00000000, 0x00020000,  /* GICD */
-		0x00000000, 0x0c080000, 0x00000000, 0x00080000,  /* GICR */
+		0x00000000, 0x0c000000, 0x00000000, 0x00040000,  /* GICD */
+		0x00000000, 0x0c100000, 0x00000000, 0x00200000,  /* GICR */
 	};
 	w_prop(&w, "reg", gic_reg, sizeof(gic_reg));
 	w_word(&w, "virtual-timer-intid", 27);

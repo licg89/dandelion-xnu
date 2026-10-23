@@ -68,7 +68,7 @@ XNU 管理窗口：0x60000000 - 0x78000000 (384MB)
 | USB0 | 0x11200000 | mediatek,mt6765-musb | - |
 | MSDC0 (eMMC) | 0x11230000 | mediatek,mt6765-mmc | 18 |
 | GICv3 Distributor | 0x0C000000 | arm,gic-v3 | - |
-| GICv3 Redistributor | 0x0C080000 | arm,gic-v3 | - |
+| GICv3 Redistributor | 0x0C100000 | arm,gic-v3 | - |
 | MTK Timer | 0x10017000 | mediatek,mt6765-timer | 194 |
 | TRNG | 0x1020F000 | mediatek,trng | - |
 | Topckgen | 0x10000000 | - | - |

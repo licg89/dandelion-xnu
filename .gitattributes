@@ -1,0 +1,11 @@
+# Keep shell scripts LF: they are run by sh/bash (Git Bash, WSL, Linux) and a
+# CRLF shebang breaks the interpreter.
+*.sh text eol=lf
+
+# Sources and linker scripts are consumed by cross toolchains on all hosts.
+*.c    text eol=lf
+*.h    text eol=lf
+*.cpp  text eol=lf
+*.S    text eol=lf
+*.ld   text eol=lf
+*.py   text eol=lf
