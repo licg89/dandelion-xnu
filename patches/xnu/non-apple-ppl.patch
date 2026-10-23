@@ -1,8 +1,8 @@
 diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
-index fc2096f..2b56b06 100644
+index fc2096f..fc5f57a 100644
 --- a/osfmk/arm/pmap/pmap.c
 +++ b/osfmk/arm/pmap/pmap.c
-@@ -84,13 +84,33 @@
+@@ -84,13 +84,46 @@
  
  #include <arm64/proc_reg.h>
  #include <pexpert/arm64/boot.h>
@@ -33,10 +33,23 @@ index fc2096f..2b56b06 100644
 +}
 +#endif /* !XNU_MONITOR */
 +
++#if SCHED_HYGIENE_DEBUG && (DEBUG || DEVELOPMENT)
++/*
++ * pmap.h declares this check out of line for scheduling hygiene builds, but
++ * defines it next to the closed-source monitor.  Without a monitor the plain
++ * urgent-AST test is exactly equivalent.
++ */
++bool
++pmap_pending_preemption(void)
++{
++	return _pmap_pending_preemption_real();
++}
++#endif /* SCHED_HYGIENE_DEBUG && (DEBUG || DEVELOPMENT) */
++
  #include <pexpert/device_tree.h>
  
  #include <san/kasan.h>
-@@ -864,6 +884,8 @@ arm_force_fast_fault_with_flush_range(
+@@ -864,6 +897,8 @@ arm_force_fast_fault_with_flush_range(
  	int options,
  	pmap_tlb_flush_range_t *flush_range);
  
@@ -45,7 +58,7 @@ index fc2096f..2b56b06 100644
  /**
   * Definition of the states driving the batch cache attributes update
   * state machine.
-@@ -2183,6 +2205,7 @@ pmap_bootstrap(
+@@ -2183,6 +2218,7 @@ pmap_bootstrap(
  	/**
  	 * Bootstrap any necessary UAT data structures and values needed from the device tree.
  	 */
@@ -53,7 +66,7 @@ index fc2096f..2b56b06 100644
  	uat_bootstrap();
  
  
-@@ -2190,6 +2213,7 @@ pmap_bootstrap(
+@@ -2190,6 +2226,7 @@ pmap_bootstrap(
  	 * Bootstrap any necessary SART data structures and values needed from the device tree.
  	 */
  	sart_bootstrap();
@@ -61,7 +74,7 @@ index fc2096f..2b56b06 100644
  
  	/**
  	 * Don't make any assumptions about the alignment of avail_start before this
-@@ -4672,12 +4696,12 @@ pmap_page_protect_options_with_flush_range(
+@@ -4672,12 +4709,12 @@ pmap_page_protect_options_with_flush_range(
  #if XNU_MONITOR
  			if (__improbable(pvh_flags & PVH_FLAG_LOCKDOWN_MASK)) {
  				panic("pmap_page_protect: ppnum 0x%x locked down, cannot be owned by iommu %p, pve_p=%p",
@@ -76,7 +89,7 @@ index fc2096f..2b56b06 100644
  			}
  			goto protect_skip_pve_pass1;
  		}
-@@ -11623,8 +11647,11 @@ pmap_cs_lockdown_pages(vm_address_t kva, vm_size_t size, bool ppl_writable)
+@@ -11623,8 +11660,11 @@ pmap_cs_lockdown_pages(vm_address_t kva, vm_size_t size, bool ppl_writable)
  #if XNU_MONITOR
  	pmap_ppl_lockdown_pages(kva, size, PVH_FLAG_LOCKDOWN_CS, ppl_writable);
  #else
@@ -90,7 +103,7 @@ index fc2096f..2b56b06 100644
  }
  
  MARK_AS_PMAP_TEXT static inline void
-@@ -11633,8 +11660,11 @@ pmap_cs_unlockdown_pages(vm_address_t kva, vm_size_t size, bool ppl_writable)
+@@ -11633,8 +11673,11 @@ pmap_cs_unlockdown_pages(vm_address_t kva, vm_size_t size, bool ppl_writable)
  #if XNU_MONITOR
  	pmap_ppl_unlockdown_pages(kva, size, PVH_FLAG_LOCKDOWN_CS, ppl_writable);
  #else
