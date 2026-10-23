@@ -1,0 +1,188 @@
+diff --git a/osfmk/arm64/kpc.c b/osfmk/arm64/kpc.c
+new file mode 100644
+index 0000000..d227f61
+--- /dev/null
++++ b/osfmk/arm64/kpc.c
+@@ -0,0 +1,182 @@
++/*
++ * Copyright (c) 2024 The dandelion-xnu authors. All rights reserved.
++ *
++ * Arm64 KPC (performance counter) backend for hardware that does not expose
++ * Apple's AMCC block.
++ *
++ * The generic KPC code in osfmk/kern/kpc_common.c and kpc_thread.c, and the
++ * kperf sampler on top of it, are compiled into every kernel and are tightly
++ * coupled to the scheduler (kpc_idle(), the running timer, the thread AST).
++ * Apple's arm64 implementation of the architecture layer lives in the
++ * closed-source AMCC driver, so this file provides a stub backend: it reports
++ * no supported counter classes, which makes every generic path a no-op, while
++ * keeping the rest of the kernel's build-time assumptions intact.
++ */
++
++#include <kern/kpc.h>
++#include <kern/assert.h>
++#include <mach/kern_return.h>
++#include <stdbool.h>
++
++/* Consumed by the kpc_pc_capture sysctl in bsd/kern/kern_kpc.c. */
++int kpc_pc_capture = 0;
++
++void
++kpc_arch_init(void)
++{
++	/*
++	 * No PMU driver: hide KPC from user space and from kperf.  The generic
++	 * layer checks kpc_supported before exposing any of the sysctls.
++	 */
++	kpc_supported = false;
++}
++
++uint32_t
++kpc_get_classes(void)
++{
++	return 0;
++}
++
++int
++kpc_get_pmu_version(void)
++{
++	return KPC_PMU_ERROR;
++}
++
++/* No counters of any class. */
++
++uint32_t
++kpc_fixed_count(void)
++{
++	return 0;
++}
++
++uint32_t
++kpc_configurable_count(void)
++{
++	return 0;
++}
++
++uint32_t
++kpc_fixed_config_count(void)
++{
++	return 0;
++}
++
++uint32_t
++kpc_configurable_config_count(__unused uint64_t pmc_mask)
++{
++	return 0;
++}
++
++uint32_t
++kpc_rawpmu_config_count(void)
++{
++	return 0;
++}
++
++uint64_t
++kpc_fixed_max(void)
++{
++	return 0;
++}
++
++uint64_t
++kpc_configurable_max(void)
++{
++	return 0;
++}
++
++boolean_t
++kpc_is_running_fixed(void)
++{
++	return FALSE;
++}
++
++boolean_t
++kpc_is_running_configurable(__unused uint64_t pmc_mask)
++{
++	return FALSE;
++}
++
++int
++kpc_get_fixed_config(__unused kpc_config_t *configv)
++{
++	return KERN_SUCCESS;
++}
++
++int
++kpc_get_configurable_config(__unused kpc_config_t *configv,
++    __unused uint64_t pmc_mask)
++{
++	return KERN_SUCCESS;
++}
++
++int
++kpc_get_rawpmu_config(__unused kpc_config_t *configv)
++{
++	return KERN_SUCCESS;
++}
++
++int
++kpc_get_fixed_counters(__unused uint64_t *counterv)
++{
++	return KERN_SUCCESS;
++}
++
++int
++kpc_get_configurable_counters(__unused uint64_t *counterv,
++    __unused uint64_t pmc_mask)
++{
++	return KERN_SUCCESS;
++}
++
++int
++kpc_get_all_cpus_counters(__unused uint32_t classes,
++    __unused int *curcpu, __unused uint64_t *buf)
++{
++	return KERN_SUCCESS;
++}
++
++/* Configuration changes are accepted and ignored. */
++
++int
++kpc_set_config_arch(__unused struct kpc_config_remote *mp_config)
++{
++	return KERN_SUCCESS;
++}
++
++int
++kpc_set_period_arch(__unused struct kpc_config_remote *mp_config)
++{
++	return KERN_SUCCESS;
++}
++
++int
++kpc_set_running_arch(__unused struct kpc_running_remote *mp_config)
++{
++	return KERN_SUCCESS;
++}
++
++int
++kpc_set_sw_inc(__unused uint32_t mask)
++{
++	return KERN_SUCCESS;
++}
++
++/* Scheduler and PMU interrupt hooks. */
++
++void
++kpc_idle(void)
++{
++}
++
++void
++kpc_idle_exit(void)
++{
++}
++
++void
++kpc_pmi_handler(__unused unsigned int ctr)
++{
++}

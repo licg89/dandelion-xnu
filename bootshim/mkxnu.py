@@ -4,12 +4,17 @@
 The shim maps the window [phys_base, phys_base + mem_size) at
 [virt_base, virt_base + mem_size).  XNU's bootstrap page tables are built from
 2 MiB block entries, so the window base and the address the kernel is linked at
-must be congruent modulo 2 MiB.  The default virt_base is therefore the 2 MiB
-aligned base of the kernel virtual address space, and the kernel text ends up at
+must be congruent modulo 2 MiB.  The default virt_base is therefore
+LOW_GLOBAL_BASE_ADDRESS, the 2 MiB aligned base of the kernel virtual address
+space, and the kernel text ends up at
 
     phys_base + (VM_KERNEL_LINK_ADDRESS - virt_base)
 
-i.e. 0x67004000 for the default phys_base of 0x60000000.
+i.e. 0x4F004000 for the default phys_base of 0x48000000.
+
+The default physical window is the free stretch of DRAM between the boot
+loader's reserved blocks and the 0x60000000 address the shim copies the payload
+to; tools/dtbmem.py dumps the device's memory and reserved-memory layout.
 
 Usage:
     mkxnu.py build/mach_kernel -o bootshim/out/xnu-payload.bin
@@ -30,9 +35,9 @@ LC_SEGMENT_64 = 0x19
 LC_SYMTAB = 0x02
 
 VM_KERNEL_LINK_ADDRESS = 0xFFFF_FFF0_0700_4000
-DEFAULT_VIRT_BASE = 0xFFFF_FFF0_0000_0000   # 2 MiB aligned VA window base
-DEFAULT_PHYS_BASE = 0x6000_0000             # 32 MiB aligned DRAM window base
-DEFAULT_MEM_SIZE = 0x1800_0000              # 384 MiB
+DEFAULT_VIRT_BASE = 0xFFFF_FFF0_0000_0000   # LOW_GLOBAL_BASE_ADDRESS, 2 MiB aligned
+DEFAULT_PHYS_BASE = 0x4800_0000             # 32 MiB aligned, free on dandelion
+DEFAULT_MEM_SIZE = 0x1800_0000              # 384 MiB: 0x4800_0000-0x6000_0000
 
 SEGMENT_ALIGN = 0x1000
 KERNEL_END_ALIGN = 0x4000                   # XNU_PAGE in the shim

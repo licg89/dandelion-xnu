@@ -13,19 +13,6 @@ index 07147cb..96edbb1 100644
  options   NOS_ARM_ASM			# <nos_arm_asm>
  options   NOS_ARM_PMAP			# <nos_arm_pmap>
  
-diff --git a/config/MASTER.arm64.bcm2837 b/config/MASTER.arm64.bcm2837
-index 1ed75ee..86de834 100644
---- a/config/MASTER.arm64.bcm2837
-+++ b/config/MASTER.arm64.bcm2837
-@@ -48,7 +48,7 @@
- #  LIBKERN_RELEASE =[ LIBKERN_BASE ]
- #  LIBKERN_DEV =    [ LIBKERN_BASE iotracking ]
- #  LIBKERN_DEBUG =  [ LIBKERN_BASE iotracking ]
--#  PERF_DBG_BASE =  [ mach_kdp config_serial_kdp kperf kpc ]
-+#  PERF_DBG_BASE =  [ mach_kdp config_serial_kdp ]
- #  PERF_DBG_RELEASE=[ PERF_DBG_BASE ist_kdebug ]
- #  PERF_DBG_DEV =   [ PERF_DBG_BASE config_dtrace zleaks kdp_interactive_debugging alternate_debugger sched_hygiene_debug config_iotrace]
- #  PERF_DBG_DEBUG = [ PERF_DBG_BASE config_dtrace zleaks kdp_interactive_debugging alternate_debugger sched_hygiene_debug config_iotrace]
 diff --git a/osfmk/conf/files.arm64 b/osfmk/conf/files.arm64
 index c40d57b..ccccb50 100644
 --- a/osfmk/conf/files.arm64
