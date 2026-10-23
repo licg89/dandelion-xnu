@@ -1,0 +1,92 @@
+name: build-xnu
+
+# XNU only builds on macOS, so the kernel is cross-compiled here and the
+# resulting mach_kernel is downloaded, packaged with bootshim/patch_boot.py and
+# flashed from a Windows/Linux workstation.
+
+on:
+  workflow_dispatch:
+    inputs:
+      machine:
+        description: "XNU machine configuration"
+        type: choice
+        options: [bcm2837, dandelion]
+        default: bcm2837
+      kernel:
+        description: "Kernel configuration"
+        type: choice
+        options: [DEVELOPMENT, RELEASE]
+        default: DEVELOPMENT
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-xnu.yml"
+      - "tools/ci/**"
+      - "config/**"
+      - "pexpert/**"
+      - "iokit/**"
+      - "patches/**"
+
+concurrency:
+  group: build-xnu-${{ github.ref }}-${{ inputs.machine || 'bcm2837' }}-${{ inputs.kernel || 'DEVELOPMENT' }}
+  cancel-in-progress: true
+
+env:
+  XNU_TAG: xnu-8796.141.3
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 240
+
+    env:
+      MACHINE: ${{ inputs.machine || 'bcm2837' }}
+      KERNEL_CONFIG: ${{ inputs.kernel || 'DEVELOPMENT' }}
+      XNU_SRC: ${{ github.workspace }}/.xnu-src
+      BUILD_ROOT: ${{ github.workspace }}/build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          clang --version | head -1
+          echo "machine=$MACHINE kernel=$KERNEL_CONFIG"
+
+      # A shallow clone of the release tag is ~200 MB and never changes, so it
+      # is worth keeping between runs.
+      - name: Cache XNU source
+        uses: actions/cache@v4
+        with:
+          path: .xnu-src
+          key: xnu-src-${{ env.XNU_TAG }}-v1
+
+      - name: Fetch XNU ${{ env.XNU_TAG }}
+        run: |
+          if [ ! -f .xnu-src/Makefile ]; then
+            rm -rf .xnu-src
+            git clone --depth 1 --branch "$XNU_TAG" \
+              https://github.com/apple-oss-distributions/xnu.git .xnu-src
+          fi
+          git -C .xnu-src log --oneline -1
+
+      - name: Apply Dandelion overlay
+        if: env.MACHINE == 'dandelion'
+        run: |
+          git -C .xnu-src checkout -- . || true
+          tools/ci/apply-overlay.sh .xnu-src
+
+      - name: Build kernel
+        run: tools/ci/build-xnu.sh
+
+      - name: Upload mach_kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: mach_kernel-${{ env.KERNEL_CONFIG }}-${{ env.MACHINE }}
+          path: |
+            build/mach_kernel
+            build/obj/${{ env.KERNEL_CONFIG }}_ARM64_*/*.unstripped*
+          if-no-files-found: error
+          retention-days: 14

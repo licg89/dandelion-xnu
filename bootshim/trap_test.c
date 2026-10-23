@@ -8,8 +8,10 @@
  *      timer interrupts acknowledged through ICC_IAR1_EL1;
  *   2. a working exception model -- BRK and an unmapped load come back
  *      through the synchronous vector with the expected ESR_EL1;
- *   3. MMU on with 16 KiB granules and a 39-bit identity map, the same
- *      translation regime XNU's arm64 pmap uses (stage 1, 16K page, 39-bit VA).
+ *   3. MMU on with a 39-bit identity map.  The 16 KiB granule is checked
+ *      first for the record, but this part is a Cortex-A53 and has no 16 KiB
+ *      granule (ID_AA64MMFR0_EL1.TGran16 == 0), so the 4 KiB map is the one
+ *      XNU has to use.  See docs/MMU_GRANULE.md.
  *
  * Everything is reported on the framebuffer; the board has no visible UART.
  */
