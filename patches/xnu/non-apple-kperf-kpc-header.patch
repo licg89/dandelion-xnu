@@ -1,0 +1,16 @@
+diff --git a/osfmk/kperf/kperf_kpc.h b/osfmk/kperf/kperf_kpc.h
+index a65fe14..687848f 100644
+--- a/osfmk/kperf/kperf_kpc.h
++++ b/osfmk/kperf/kperf_kpc.h
+@@ -29,9 +29,9 @@
+ #ifndef __KPERF_KPC_H__
+ #define __KPERF_KPC_H__
+ 
+-#if KPC
++/* KPC_MAX_COUNTERS is needed by the sample structures below even when the
++ * KPC option itself is disabled, so always pull in the header. */
+ #include <kern/kpc.h> /* KPC_MAX_COUNTERS */
+-#endif
+ 
+ void kperf_kpc_thread_ast(thread_t thread);
+ 
