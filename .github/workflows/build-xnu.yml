@@ -52,7 +52,7 @@ jobs:
         run: |
           sw_vers
           xcodebuild -version
-          clang --version | head -1
+          clang --version
           echo "machine=$MACHINE kernel=$KERNEL_CONFIG"
 
       # A shallow clone of the release tag is ~200 MB and never changes, so it

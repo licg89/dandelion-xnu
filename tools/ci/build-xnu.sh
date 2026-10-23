@@ -24,8 +24,10 @@ if [ ! -f "$SRC/Makefile" ]; then
 fi
 
 echo "== XNU ${XNU_TAG:-unknown} / $MACHINE / $KERNEL_CONFIG =="
-clang --version | head -1
-xcodebuild -version | head -1
+# Note: no `| head -1` here; closing the pipe makes xcodebuild abort with
+# SIGPIPE and fails the step.
+clang --version
+xcodebuild -version
 
 mkdir -p "$ROOT/obj" "$ROOT/sym" "$ROOT/dst"
 
