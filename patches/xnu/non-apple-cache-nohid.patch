@@ -1,0 +1,16 @@
+diff --git a/osfmk/arm64/caches_asm.s b/osfmk/arm64/caches_asm.s
+index f2c2a00..fb3bb5c 100644
+--- a/osfmk/arm64/caches_asm.s
++++ b/osfmk/arm64/caches_asm.s
+@@ -276,6 +276,11 @@ L_cpudr_loop:
+  */
+ 	.text
+ 	.align 2
++#if !defined(APPLE_ARM64_ARCH_FAMILY)
++	/* No HID "dc mva" ops to toggle on non-Apple cores. */
++	.globl EXT(CleanPoC_DcacheRegion_Force_nopreempt_nohid)
++LEXT(CleanPoC_DcacheRegion_Force_nopreempt_nohid)
++#endif /* !defined(APPLE_ARM64_ARCH_FAMILY) */
+ LEXT(CleanPoC_DcacheRegion_internal)
+ 	#define CLINE_FLUSH_STRIDE MMU_CLINE
+ 

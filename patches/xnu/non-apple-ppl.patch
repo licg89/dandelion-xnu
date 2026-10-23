@@ -1,0 +1,31 @@
+diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
+index fc2096f..4385124 100644
+--- a/osfmk/arm/pmap/pmap.c
++++ b/osfmk/arm/pmap/pmap.c
+@@ -84,8 +84,10 @@
+ 
+ #include <arm64/proc_reg.h>
+ #include <pexpert/arm64/boot.h>
++#if XNU_MONITOR
+ #include <arm64/ppl/sart.h>
+ #include <arm64/ppl/uat.h>
++#endif /* XNU_MONITOR */
+ 
+ #if defined(KERNEL_INTEGRITY_KTRR) || defined(KERNEL_INTEGRITY_CTRR)
+ #include <arm64/amcc_rorgn.h>
+@@ -2183,6 +2185,7 @@ pmap_bootstrap(
+ 	/**
+ 	 * Bootstrap any necessary UAT data structures and values needed from the device tree.
+ 	 */
++#if XNU_MONITOR
+ 	uat_bootstrap();
+ 
+ 
+@@ -2190,6 +2193,7 @@ pmap_bootstrap(
+ 	 * Bootstrap any necessary SART data structures and values needed from the device tree.
+ 	 */
+ 	sart_bootstrap();
++#endif /* XNU_MONITOR */
+ 
+ 	/**
+ 	 * Don't make any assumptions about the alignment of avail_start before this
