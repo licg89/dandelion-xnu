@@ -172,6 +172,18 @@ CC=aarch64-linux-gnu-g++ ./tools/check-platform-expert.sh
 ```
 
 ### 创建 boot.img
+
+用原始 boot 镜像作模板（推荐，MTK 格式；`Image.platform-test` 为平台测试版）：
+
+```bash
+cd bootshim
+python mkbootimg_mtk.py /path/to/boot_dump.img \
+  out/Image.platform-test /path/to/dandelion.dtb - \
+  out/dandelion-platform-test.img
+```
+
+或手工打包：
+
 ```bash
 cd bootshim/out
 gzip -n -9 -c Image > Image.gz
