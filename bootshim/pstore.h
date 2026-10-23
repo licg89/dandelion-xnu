@@ -9,14 +9,28 @@
 #include <stddef.h>
 
 /* pstore/ramoops area from device tree: 0x47c90000, size 0xe0000 */
+#ifndef PSTORE_BASE
 #define PSTORE_BASE   0x47C90000UL
+#endif
+#ifndef PSTORE_SIZE
 #define PSTORE_SIZE   0x000E0000
+#endif
 
 /* Ramoops record header (simplified) */
 struct pstore_record {
     uint64_t size;
     uint64_t type;   /* 1 = console, 2 = dmesg, etc */
 };
+
+/*
+ * The platform test payload runs before XNU and must not touch the ramoops
+ * area, so it is built with -DPSTORE_ENABLED=0.
+ */
+#ifndef PSTORE_ENABLED
+#define PSTORE_ENABLED 1
+#endif
+
+#if PSTORE_ENABLED
 
 static char _ps_buf[8192];
 static int _ps_pos = 0;
@@ -86,4 +100,24 @@ static inline void ps_putdec(const char *label, uint64_t val)
     ps_char('\n');
 }
 
-#endif
+#else /* !PSTORE_ENABLED */
+
+/*
+ * No ramoops area is available (or it must not be touched).  Keep the same
+ * interface so fb.c and the shim can be linked unchanged.
+ */
+static inline void _ps_flush(void) { }
+static inline void ps_char(char c) { (void)c; }
+static inline void ps_puts(const char *s) { (void)s; }
+static inline void ps_puthex(const char *label, uint64_t val)
+{
+    (void)label; (void)val;
+}
+static inline void ps_putdec(const char *label, uint64_t val)
+{
+    (void)label; (void)val;
+}
+
+#endif /* PSTORE_ENABLED */
+
+#endif /* DANDELION_PSTORE_H */

@@ -29,6 +29,8 @@ def main():
     shim_bin = sys.argv[2]   # raw shim binary
     dtb_file = sys.argv[3]   # DTB file
     payload_file = sys.argv[4] if len(sys.argv) > 4 else None  # optional payload
+    if payload_file == '-':
+        payload_file = None
     out_file = sys.argv[5] if len(sys.argv) > 5 else 'out.img'
 
     # Read original boot.img

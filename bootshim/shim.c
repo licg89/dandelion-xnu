@@ -8,6 +8,7 @@
 #include "handoff.h"
 #include "log.h"
 #include "pstore.h"
+#include "pe_dandelion.h"
 
 #define READ_SYSREG(reg) ({ uint64_t _v; __asm__ volatile("mrs %0, " #reg : "=r"(_v)); _v; })
 
@@ -18,7 +19,13 @@
 
 __attribute__((noreturn)) extern void enter_el1(uint64_t dtb);
 
-/* Embedded test kernel: simple wfe loop at 0x60000000 */
+/*
+ * Default build: a two-instruction stand-in kernel in .test_kernel.
+ *
+ * With -DPLATFORM_TEST_BLOB the build script supplies the same symbols from
+ * a generated assembly file that .incbin's the real platform test payload.
+ */
+#ifndef PLATFORM_TEST_BLOB
 __asm__(
 	".section .test_kernel, \"ax\"\n"
 	".globl test_kernel_start\n"
@@ -28,6 +35,7 @@ __asm__(
 	".globl test_kernel_end\n"
 	"test_kernel_end:\n"
 );
+#endif
 extern char test_kernel_start[], test_kernel_end[];
 
 static struct fdt_info fdt_info;
@@ -114,6 +122,79 @@ static void show_fdt_info(uint64_t dtb)
 	for (unsigned i = 0; i < fdt_info.memory_count; i++) {
 		fb_puts("  MEM: ", CLR_CYAN);
 		fb_puthex("", fdt_info.memory[i].base, CLR_WHITE);
+	}
+}
+
+/*
+ * Report the interrupt controller / timer / UART / watchdog / CPU layout as
+ * described by the device's own DTB.  The reference port (MT8167) uses
+ * different addresses, so this is the ground truth for Dandelion.
+ */
+static void show_platform_probe(uint64_t dtb)
+{
+	static struct fdt_platform p;
+
+	fb_puts("\n--- PLATFORM (device DTB) ---\n", CLR_YELLOW);
+
+	if (fdt_probe_platform((const void *)(uintptr_t)dtb, fdt_info.bytes, &p)) {
+		fb_puts("probe: DTB parse failed\n", CLR_RED);
+		return;
+	}
+
+	if (p.gic.found) {
+		int ok = p.gic.regions >= 2 &&
+			 p.gic.base[0] == DANDELION_GIC_BASE &&
+			 p.gic.base[1] == DANDELION_GICR_BASE;
+		fb_puts("GIC  ", CLR_CYAN);
+		fb_puts(p.gic.compatible, CLR_WHITE);
+		fb_puts(ok ? " = DANDELION.h\n" : " != DANDELION.h\n",
+			ok ? CLR_GREEN : CLR_RED);
+		for (unsigned i = 0; i < p.gic.regions; i++) {
+			fb_puthex("  base    ", p.gic.base[i], CLR_CYAN);
+			fb_puthex("  size    ", p.gic.size[i], CLR_CYAN);
+		}
+	} else {
+		fb_puts("GIC: not described in DTB\n", CLR_RED);
+	}
+
+	if (p.timer.found) {
+		fb_putdec("timer Hz ", p.timer.frequency,
+			  p.timer.frequency == DANDELION_TIMER_FREQ ?
+			  CLR_GREEN : CLR_YELLOW);
+		for (unsigned i = 0; i < p.timer.irq_count; i++)
+			fb_putdec("  intid   ", p.timer.irq[i],
+				  p.timer.irq[i] == DANDELION_TIMER_IRQ ?
+				  CLR_GREEN : CLR_CYAN);
+	} else {
+		fb_puts("timer: not described in DTB\n", CLR_RED);
+	}
+
+	if (p.uart.found) {
+		fb_puthex("uart base", p.uart.base,
+			  p.uart.base == DANDELION_UART_BASE ?
+			  CLR_GREEN : CLR_RED);
+		fb_puthex("  size   ", p.uart.size, CLR_CYAN);
+	} else {
+		fb_puts("uart: not described in DTB\n", CLR_RED);
+	}
+
+	if (p.wdt.found) {
+		fb_puthex("wdt base ", p.wdt.base,
+			  p.wdt.base == DANDELION_WDT_BASE ?
+			  CLR_GREEN : CLR_RED);
+		fb_puthex("  size   ", p.wdt.size, CLR_CYAN);
+	} else {
+		fb_puts("wdt: not described in DTB\n", CLR_RED);
+	}
+
+	fb_putdec("cpus     ", p.cpus.count,
+		  p.cpus.count == DANDELION_NCPUS ? CLR_GREEN : CLR_YELLOW);
+	for (unsigned i = 0; i < p.cpus.count; i++)
+		fb_puthex("  mpidr  ", p.cpus.mpidr[i], CLR_CYAN);
+	if (p.cpus.enable_method[0]) {
+		fb_puts("enable   ", CLR_CYAN);
+		fb_puts(p.cpus.enable_method, CLR_WHITE);
+		fb_newline();
 	}
 }
 
@@ -213,7 +294,11 @@ __attribute__((noreturn)) void shim_main(uint64_t x0, uint64_t x1,
 	uint64_t el = READ_SYSREG(CurrentEL);
 
 	fb_puts("=== DANDELION BOOTSHIM v2 ===\n", CLR_YELLOW);
+#ifdef PLATFORM_TEST_BLOB
+	fb_puts("Embedded platform test payload\n", CLR_WHITE);
+#else
 	fb_puts("Embedded kernel test\n", CLR_WHITE);
+#endif
 	fb_puts("FB: 0x7ec50000 stride=2944 736x1600\n\n", CLR_WHITE);
 
 	fb_puts("--- ENTRY ---\n", CLR_YELLOW);
@@ -222,6 +307,8 @@ __attribute__((noreturn)) void shim_main(uint64_t x0, uint64_t x1,
 
 	show_cpu_info();
 	show_fdt_info(x0);
+	if (fdt_info.bytes)
+		show_platform_probe(x0);
 
 	/* EL2 -> EL1 */
 	if (el == 8) {

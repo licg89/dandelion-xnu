@@ -9,6 +9,8 @@
 | Boot Shim | ✅ 完成 | EL2 入口、FDT 解析、ADT 生成、boot_args 构建、EL1 跳转 |
 | Framebuffer 控制台 | ✅ 完成 | stride=2944, base=0x7ec50000, 736x1600 RGBA8888 |
 | 测试内核加载 | ✅ 完成 | 嵌入 shim 的测试内核成功在 0x60000000 运行 |
+| 设备 DTB 平台探测 | ✅ 完成 | shim 从设备自己的 DTB 读取 GICv3/定时器/UART/看门狗/CPU，并与 `DANDELION.h` 比对 |
+| 真机平台测试负载 | ✅ 完成（待刷入） | 在 EL1 逐项调用平台专家并画到 framebuffer，见 [docs/PLATFORM_TEST.md](docs/PLATFORM_TEST.md) |
 | XNU 内核适配 | 🚧 进行中 | 平台定义、配置、平台专家（GICv3/定时器/UART/看门狗）已完成并通过交叉编译；尚缺 XNU 源码树集成与完整内核构建 |
 | UART 调试 | 🚧 部分实现 | MT6577 UART 驱动已实现（`0x11002000` @921600 8N1）；物理串口未引出，实际仍以 framebuffer 输出为主 |
 | pstore 日志 | ❌ 未实现 | ramoops 格式不兼容 |
@@ -64,8 +66,8 @@ eMMC Boot Region → Preloader → LK (Little Kernel)
 dandelion-xnu/
 ├── bootshim/           # Boot shim（扁平目录）
 │   ├── start.S         # AArch64 入口 + 异常向量 + EL2→EL1
-│   ├── shim.c          # 主诊断逻辑
-│   ├── fdt.c/h         # FDT 解析器
+│   ├── shim.c          # 主诊断逻辑 + 设备 DTB 平台探测
+│   ├── fdt.c/h         # FDT 解析器 + fdt_probe_platform()
 │   ├── fb.c/h          # Framebuffer 控制台
 │   ├── adt.c           # Apple Device Tree 生成器
 │   ├── handoff.c/h     # 内核加载 + boot_args 构建（Apple ABI）
@@ -73,10 +75,13 @@ dandelion-xnu/
 │   ├── trng_probe.c    # TRNG 探测
 │   ├── usb_cdc.c       # USB CDC-ACM 实验代码
 │   ├── log.h           # 持久日志（pstore）
-│   ├── pstore.h        # pstore 格式写入
+│   ├── pstore.h        # pstore 格式写入（PSTORE_ENABLED 可关闭）
 │   ├── font.h          # 8x16 字体
+│   ├── payload_start.S # 平台测试负载入口
+│   ├── platform_test.c # 平台测试负载（UART/视频/WDT/定时器/GICv3）
+│   ├── payload.ld      # 负载链接脚本（0x60000000）
 │   ├── shim.ld         # 链接脚本
-│   ├── build.sh        # 构建脚本
+│   ├── build.sh        # 构建脚本（shim / platform-test）
 │   ├── build_trng.sh   # TRNG 探测构建脚本
 │   ├── mkpayload.py    # 测试 payload 生成器
 │   ├── mkbootimg_mtk.py # MTK boot.img 打包
@@ -90,9 +95,12 @@ dandelion-xnu/
 ├── iokit/Kernel/arm/
 │   └── DandelionPlatformExpert.cpp  # 平台专家：串口/GICv3/定时器/看门狗/视频
 ├── tools/
-│   └── check-platform-expert.sh     # aarch64 交叉编译检查
+│   ├── check-platform-expert.sh     # aarch64 交叉编译检查
+│   ├── make_test_dtb.py             # 合成 MT6765 DTB（主机回归测试用）
+│   └── test_fdt_probe.c             # fdt_probe_platform() 主机侧测试
 ├── docs/
 │   ├── HARDWARE_ANALYSIS.md         # 硬件分析详细报告
+│   ├── PLATFORM_TEST.md             # 真机平台测试负载使用说明
 │   └── XNU_INTEGRATION.md           # XNU 源码树集成步骤（MakeInc/board_config/hook）
 ├── README.md
 └── .gitignore
@@ -119,6 +127,17 @@ dandelion-xnu/
 参考实现的主要差异。中断在平台专家返回时仍保持屏蔽（`DAIF.I=1`），由 XNU 安装
 异常向量后再打开。
 
+### 以设备自己的 DTB 为准
+
+参考项目的地址不能直接照搬。shim 启动时会把设备 DTB 中的
+`arm,gic-v3`、`arm,armv8-timer`、`mediatek,mt6577-uart`、
+`mediatek,mt6589-wdt` 和 CPU 节点解析出来画到屏幕上，绿色表示与
+`pexpert/pexpert/arm64/DANDELION.h` 一致；红色则以屏幕上打印的值为准。
+
+要进一步验证寄存器真的可访问，构建并刷入平台测试负载（会实际初始化 GICv3、
+读取定时器、关闭看门狗并把结果画到 framebuffer），见
+[docs/PLATFORM_TEST.md](docs/PLATFORM_TEST.md)。
+
 接入完整 XNU 源码树的步骤（`MakeInc.def`、`board_config.h`、`ml_io_map()` 调用
 位置）见 [docs/XNU_INTEGRATION.md](docs/XNU_INTEGRATION.md)。
 
@@ -126,19 +145,22 @@ dandelion-xnu/
 
 ### 前置条件
 - Windows 10/11 + Git Bash
-- WSL2 with Ubuntu 22.04+
-- AArch64 交叉编译工具链 (`gcc-aarch64-linux-gnu`)
-- Android 构建工具 (`mkbootimg`, `dtc`)
+- 以下任一工具链：
+  - **推荐**：LLVM/clang（带 aarch64 后端 + `ld.lld` + `llvm-objcopy`），无需 WSL
+  - 或 WSL2 + `gcc-aarch64-linux-gnu`
+- Python 3（打包 boot.img）
 - ADB + Fastboot
 - Xiaomi Redmi 9A (bootloader 已解锁)
-
-平台专家也可以用 clang 自带的 aarch64 后端做无 WSL 的编译检查（见下文）。
 
 ### 构建 Boot Shim
 ```bash
 cd bootshim
-bash build.sh
+bash build.sh                 # 默认：wfe 测试内核
+bash build.sh platform-test   # 真机平台测试负载（见 docs/PLATFORM_TEST.md）
 ```
+
+`build.sh` 会自动选择编译器：有 `clang` 就用 clang，否则用
+`aarch64-linux-gnu-gcc`。也可用 `CC=...` 显式指定。
 
 ### 编译检查平台专家
 ```bash
