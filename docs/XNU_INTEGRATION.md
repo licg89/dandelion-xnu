@@ -124,7 +124,7 @@ dandelion_platform_expert_init((struct xnu_boot_args *)args);
 | 中断控制器 | GICv2 + MediaTek AIC | GICv3（`0x0C000000` / `0x0C100000`） |
 | CPU 接口 | GICC MMIO | `ICC_*_EL1` 系统寄存器 |
 | 定时器 | ARM generic timer | 同上，13 MHz，虚拟定时器 INTID 27 |
-| 页大小 | 16KB | 16KB |
+| page size | 16KB (A35) | **4KB** (A53 has no 16K granule; see docs/MMU_GRANULE.md) |
 | VA | 39-bit | 39-bit |
 
 ## 7. 尚未完成

@@ -26,7 +26,10 @@
 #define __ARM_VFP__               4
 #define __ARM_COHERENT_CACHE__    1
 #define __ARM_DEBUG__             7
-#define __ARM_16K_PG__            1
+/* The Cortex-A53 in MT6762G reports ID_AA64MMFR0_EL1.TGran16 == 0: only the
+ * 4 KiB and 64 KiB granules exist (TRM: "a translation granule of 4KB or
+ * 64KB").  __ARM_16K_PG__ must stay undefined and XNU has to be built with
+ * 4 KiB pages, the way UniXNU does for BCM2837 (also a Cortex-A53). */
 #define __ARM64_PMAP_SUBPAGE_L1__ 1
 
 /* This table shape exposes 39 VA bits.  The macOS 2-TiB layout cannot fit. */
@@ -64,7 +67,7 @@
 #define DANDELION_VA_BITS       39
 
 /* Page Size */
-#define DANDELION_PAGE_SIZE     0x4000  /* 16KB pages */
+#define DANDELION_PAGE_SIZE     0x1000  /* 4KB pages: A53 has no 16K granule */
 
 /* Cache Line Size */
 #define DANDELION_CACHE_LINE    64

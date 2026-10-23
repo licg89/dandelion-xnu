@@ -17,7 +17,9 @@ SMP = 1
 PSCI = 1
 
 # Memory
-PAGE_SIZE = 16384
+# Cortex-A53 has no 16K granule (ID_AA64MMFR0_EL1.TGran16 == 0), so this is a
+# 4 KiB page kernel.  See docs/MMU_GRANULE.md.
+PAGE_SIZE = 4096
 T1SZ = 25
 PHYS_BASE = 0x40000000
 MEM_SIZE = 0x100000000

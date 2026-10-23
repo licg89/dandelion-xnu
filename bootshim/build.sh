@@ -15,9 +15,9 @@ cd "$(dirname "$0")"
 MODE=${1:-shim}
 
 case "$MODE" in
-shim|platform-test) ;;
+shim|platform-test|trap-test) ;;
 *)
-	echo "usage: $0 [shim|platform-test]" >&2
+	echo "usage: $0 [shim|platform-test|trap-test]" >&2
 	exit 2
 	;;
 esac
@@ -57,12 +57,25 @@ mkdir -p out
 
 build_payload()
 {
-	echo "=== Building platform test payload ==="
+	main_src=$1
+	entry=$2
+	shift 2
+	extra_objs=""
+
+	echo "=== Building payload ($main_src, entry $entry) ==="
 
 	# The payload must not touch ramoops: build without pstore.
 	$CC $TARGET $CFLAGS -DPSTORE_ENABLED=0 -c fb.c -o out/payload_fb.o
-	$CC $TARGET $CFLAGS -I../pexpert -c platform_test.c -o out/platform_test.o
-	$CC $TARGET $CFLAGS -c payload_start.S -o out/payload_start.o
+	$CC $TARGET $CFLAGS -I../pexpert -DPAYLOAD_ENTRY=$entry \
+		-c payload_start.S -o out/payload_start.o
+	$CC $TARGET $CFLAGS -I../pexpert -c "$main_src" -o out/payload_main.o
+
+	for src in "$@"; do
+		obj="out/payload_$(basename "${src%.*}").o"
+		$CC $TARGET $CFLAGS -I../pexpert -c "$src" -o "$obj"
+		extra_objs="$extra_objs $obj"
+	done
+
 	$CXX $TARGET $CXXFLAGS -I. -I../pexpert \
 		-c ../iokit/Kernel/arm/DandelionPlatformExpert.cpp \
 		-o out/platform_expert.o
@@ -70,33 +83,40 @@ build_payload()
 	echo "  Linking payload..."
 	$CC $TARGET $CFLAGS $LINKER -static -T payload.ld \
 		-Wl,--build-id=none -Wl,-e,_start \
-		out/payload_start.o out/platform_test.o out/platform_expert.o \
-		out/payload_fb.o \
-		-o out/platform_test.elf
+		out/payload_start.o out/payload_main.o out/platform_expert.o \
+		out/payload_fb.o $extra_objs \
+		-o out/payload.elf
 
-	$OBJCOPY -O binary out/platform_test.elf out/platform_test.bin
+	$OBJCOPY -O binary out/payload.elf out/payload.bin
 
 	{
 		echo '	.section .test_kernel, "ax"'
 		echo '	.globl test_kernel_start'
 		echo 'test_kernel_start:'
-		echo '	.incbin "out/platform_test.bin"'
+		echo '	.incbin "out/payload.bin"'
 		echo '	.globl test_kernel_end'
 		echo 'test_kernel_end:'
-	} > out/platform_test_blob.S
-	$CC $TARGET $CFLAGS -c out/platform_test_blob.S \
-		-o out/platform_test_blob.o
+	} > out/payload_blob.S
+	$CC $TARGET $CFLAGS -c out/payload_blob.S \
+		-o out/payload_blob.o
 
-	echo "  payload: $(wc -c < out/platform_test.bin) bytes"
+	echo "  payload: $(wc -c < out/payload.bin) bytes"
 }
 
 EXTRA_CFLAGS=""
 EXTRA_OBJS=""
-if [ "$MODE" = "platform-test" ]; then
-	build_payload
+case "$MODE" in
+platform-test)
+	build_payload platform_test.c platform_test_main
 	EXTRA_CFLAGS="-DPLATFORM_TEST_BLOB"
-	EXTRA_OBJS="out/platform_test_blob.o"
-fi
+	EXTRA_OBJS="out/payload_blob.o"
+	;;
+trap-test)
+	build_payload trap_test.c trap_test_main trap.S
+	EXTRA_CFLAGS="-DPLATFORM_TEST_BLOB"
+	EXTRA_OBJS="out/payload_blob.o"
+	;;
+esac
 
 echo "=== Building dandelion bootshim ($MODE) with $CC ==="
 

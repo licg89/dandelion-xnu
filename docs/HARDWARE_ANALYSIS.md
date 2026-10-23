@@ -25,7 +25,12 @@ MPIDR_EL1   = 0x80000000 (CPU 0, Cluster 0)
   Aff1 = 0 (Cluster ID)
 SCTLR_EL1   = 0x30D00800 (MMU off, Cache off)
 ID_AA64PFR0 = 0x1002222 (EL0/EL1 AArch64 only)
-ID_AA64MMFR0 = 0x1122 (PARange=40bit, 4K/16K/64K pages)
+ID_AA64MMFR0 = 0x1122
+  PARange  = 0x2 (40-bit physical address)
+  ASIDBits = 0x2 (16-bit ASID)
+  TGran4   = 0x0 (4KB granule supported)
+  TGran16  = 0x0 (16KB granule NOT supported)
+  TGran64  = 0x0 (64KB granule supported)
 ```
 
 ### CPU 拓扑

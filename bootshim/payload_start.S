@@ -7,6 +7,10 @@
  * Only the file image (text/rodata/data) is copied, so .bss has to be
  * cleared here before entering C.
  */
+#ifndef PAYLOAD_ENTRY
+#define PAYLOAD_ENTRY platform_test_main
+#endif
+
 	.section .text.entry, "ax"
 	.globl _start
 _start:
@@ -21,6 +25,6 @@ _start:
 	str	xzr, [x1], #8
 	b	1b
 
-2:	bl	platform_test_main
+2:	bl	PAYLOAD_ENTRY
 3:	wfe
 	b	3b
