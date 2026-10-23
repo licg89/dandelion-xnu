@@ -1,8 +1,8 @@
 diff --git a/osfmk/arm/pmap/pmap.c b/osfmk/arm/pmap/pmap.c
-index fc2096f..4385124 100644
+index fc2096f..2b56b06 100644
 --- a/osfmk/arm/pmap/pmap.c
 +++ b/osfmk/arm/pmap/pmap.c
-@@ -84,8 +84,10 @@
+@@ -84,13 +84,33 @@
  
  #include <arm64/proc_reg.h>
  #include <pexpert/arm64/boot.h>
@@ -13,7 +13,39 @@ index fc2096f..4385124 100644
  
  #if defined(KERNEL_INTEGRITY_KTRR) || defined(KERNEL_INTEGRITY_CTRR)
  #include <arm64/amcc_rorgn.h>
-@@ -2183,6 +2185,7 @@ pmap_bootstrap(
+ #endif // defined(KERNEL_INTEGRITY_KTRR) || defined(KERNEL_INTEGRITY_CTRR)
+ 
++#if !XNU_MONITOR
++/*
++ * The reserved-page helpers for CoreCrypto live in the closed-source PPL
++ * monitor.  Without a monitor there is no reserved pool to hand out, so the
++ * reservations are no-ops.
++ */
++static inline kern_return_t
++pmap_reserve_ppl_page(void)
++{
++	return KERN_SUCCESS;
++}
++
++static inline void
++pmap_release_reserved_ppl_page(void)
++{
++}
++#endif /* !XNU_MONITOR */
++
+ #include <pexpert/device_tree.h>
+ 
+ #include <san/kasan.h>
+@@ -864,6 +884,8 @@ arm_force_fast_fault_with_flush_range(
+ 	int options,
+ 	pmap_tlb_flush_range_t *flush_range);
+ 
++MARK_AS_PMAP_TEXT static void pmap_phys_write_disable(vm_address_t va);
++
+ /**
+  * Definition of the states driving the batch cache attributes update
+  * state machine.
+@@ -2183,6 +2205,7 @@ pmap_bootstrap(
  	/**
  	 * Bootstrap any necessary UAT data structures and values needed from the device tree.
  	 */
@@ -21,7 +53,7 @@ index fc2096f..4385124 100644
  	uat_bootstrap();
  
  
-@@ -2190,6 +2193,7 @@ pmap_bootstrap(
+@@ -2190,6 +2213,7 @@ pmap_bootstrap(
  	 * Bootstrap any necessary SART data structures and values needed from the device tree.
  	 */
  	sart_bootstrap();
@@ -29,3 +61,46 @@ index fc2096f..4385124 100644
  
  	/**
  	 * Don't make any assumptions about the alignment of avail_start before this
+@@ -4672,12 +4696,12 @@ pmap_page_protect_options_with_flush_range(
+ #if XNU_MONITOR
+ 			if (__improbable(pvh_flags & PVH_FLAG_LOCKDOWN_MASK)) {
+ 				panic("pmap_page_protect: ppnum 0x%x locked down, cannot be owned by iommu %p, pve_p=%p",
+-				    ppnum, ptep_get_iommu(pte_p), pve_p);
++				    ppnum, pte_p, pve_p);
+ 			}
+ #endif
+ 			if (remove && (options & PMAP_OPTIONS_COMPRESSOR)) {
+ 				panic("pmap_page_protect: attempt to compress ppnum 0x%x owned by iommu %p, pve_p=%p",
+-				    ppnum, ptep_get_iommu(pte_p), pve_p);
++				    ppnum, pte_p, pve_p);
+ 			}
+ 			goto protect_skip_pve_pass1;
+ 		}
+@@ -11623,8 +11647,11 @@ pmap_cs_lockdown_pages(vm_address_t kva, vm_size_t size, bool ppl_writable)
+ #if XNU_MONITOR
+ 	pmap_ppl_lockdown_pages(kva, size, PVH_FLAG_LOCKDOWN_CS, ppl_writable);
+ #else
+-	pmap_ppl_lockdown_pages(kva, size, 0, ppl_writable);
+-#endif
++	/* Without a PPL monitor there is no one to enforce the lockdown. */
++	(void)kva;
++	(void)size;
++	(void)ppl_writable;
++#endif /* XNU_MONITOR */
+ }
+ 
+ MARK_AS_PMAP_TEXT static inline void
+@@ -11633,8 +11660,11 @@ pmap_cs_unlockdown_pages(vm_address_t kva, vm_size_t size, bool ppl_writable)
+ #if XNU_MONITOR
+ 	pmap_ppl_unlockdown_pages(kva, size, PVH_FLAG_LOCKDOWN_CS, ppl_writable);
+ #else
+-	pmap_ppl_unlockdown_pages(kva, size, 0, ppl_writable);
+-#endif
++	/* Without a PPL monitor there is no one to enforce the lockdown. */
++	(void)kva;
++	(void)size;
++	(void)ppl_writable;
++#endif /* XNU_MONITOR */
+ }
+ 
+ /**
