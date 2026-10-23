@@ -49,12 +49,21 @@ AVAILABILITY_PL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/availability.pl"
 chmod +x "$AVAILABILITY_PL"
 export XNU_AVAILABILITY_PL="$AVAILABILITY_PL"
 
-# --- kernel SDK root: libdispatch os/ headers -------------------------------
-if [ ! -f "$SDK/.libdispatch-$LIBDISPATCH_TAG" ]; then
-	echo "== fetching $LIBDISPATCH_TAG headers =="
+# --- kernel SDK root: libdispatch --------------------------------------------------
+# libdispatch provides both the private os/ headers and libfirehose_kernel.a
+# (the kernel half of os_log), so keep one checkout until both are installed.
+NEED_LIBDISPATCH=0
+if [ ! -f "$SDK/.libdispatch-$LIBDISPATCH_TAG" ] || \
+   [ ! -f "$SDK/usr/local/lib/kernel/libfirehose_kernel.a" ]; then
+	NEED_LIBDISPATCH=1
+	echo "== fetching $LIBDISPATCH_TAG =="
 	rm -rf "$ROOT/libdispatch"
 	git clone --depth 1 --branch "$LIBDISPATCH_TAG" \
 		https://github.com/apple-oss-distributions/libdispatch.git "$ROOT/libdispatch"
+fi
+
+if [ ! -f "$SDK/.libdispatch-$LIBDISPATCH_TAG" ]; then
+	echo "== installing libdispatch os/ headers =="
 	# os/internal/ and friends are included as <os/internal/...>, so take the
 	# whole tree and then simplify the top-level headers for kernel use.
 	cp -R "$ROOT"/libdispatch/os/. "$SDK/usr/local/include/os/"
@@ -71,7 +80,6 @@ if [ ! -f "$SDK/.libdispatch-$LIBDISPATCH_TAG" ]; then
 			fi
 		done
 	fi
-	rm -rf "$ROOT/libdispatch"
 	touch "$SDK/.libdispatch-$LIBDISPATCH_TAG"
 fi
 
@@ -91,6 +99,48 @@ if [ ! -f "$SDK/.xnu-$MACHINE-$KERNEL_CONFIG" ]; then
 		SYMROOT="$ROOT/sym" \
 		DSTROOT="$SDK"
 	touch "$SDK/.xnu-$MACHINE-$KERNEL_CONFIG"
+fi
+
+# --- kernel SDK root: libfirehose_kernel ------------------------------------
+# XNU links -lfirehose_kernel.  The archive is a libdispatch target that must be
+# compiled against the kernel headers installed above, so point its xcconfig at
+# the fakeroot instead of the (incomplete) SDK.
+if [ ! -f "$SDK/usr/local/lib/kernel/libfirehose_kernel.a" ]; then
+	echo "== building libfirehose_kernel =="
+	python3 - "$ROOT/libdispatch" "$SDK" "$SRC" <<'PY'
+import sys
+from pathlib import Path
+
+proj, sdk, src = sys.argv[1], sys.argv[2], sys.argv[3]
+path = Path(proj) / 'xcodeconfig' / 'libfirehose_kernel.xcconfig'
+text = path.read_text()
+text = text.replace('$(SDKROOT)/System/Library/Frameworks/Kernel.framework',
+                    sdk + '/System/Library/Frameworks/Kernel.framework')
+text = text.replace('$(SDKROOT)/usr/local/include', sdk + '/usr/local/include')
+lines = text.splitlines()
+for i, line in enumerate(lines):
+    if line.startswith('HEADER_SEARCH_PATHS =') and '$(SDKROOT)/usr/include' not in line:
+        lines[i] += (' $(SDKROOT)/usr/include ' + sdk + '/usr/local/include '
+                     + src + '/EXTERNAL_HEADERS')
+path.write_text('\n'.join(lines) + '\n')
+PY
+	mkdir -p "$SDK/usr/local/lib/kernel"
+	xcodebuild install \
+		-project "$ROOT/libdispatch/libdispatch.xcodeproj" \
+		-target libfirehose_kernel -configuration Release -sdk iphoneos \
+		-jobs "$JOBS" ARCHS=arm64 VALID_ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+		IPHONEOS_DEPLOYMENT_TARGET=17.0 CODE_SIGNING_ALLOWED=NO \
+		GCC_TREAT_WARNINGS_AS_ERRORS=NO \
+		OBJROOT="$ROOT/firehose/obj" SYMROOT="$ROOT/firehose/sym" \
+		DSTROOT="$SDK" FAKEROOT_DIR="$SDK"
+	if [ -f "$SDK/usr/local/lib/kernel/liblibfirehose_kernel.a" ]; then
+		cp "$SDK/usr/local/lib/kernel/liblibfirehose_kernel.a" \
+			"$SDK/usr/local/lib/kernel/libfirehose_kernel.a"
+	fi
+fi
+
+if [ "$NEED_LIBDISPATCH" = 1 ]; then
+	rm -rf "$ROOT/libdispatch"
 fi
 
 # --- kernel -----------------------------------------------------------------

@@ -94,8 +94,9 @@ size_t dandelion_make_adt(void *buffer, size_t capacity,
 	w_word(&w, "#address-cells", 2);
 	w_word(&w, "#size-cells", 2);
 
-	/* /chosen node: 4 properties, 2 children */
-	w_node(&w, 4, 2);
+	/* /chosen node: name, boot-manifest-hash, dram-base, dram-size
+	 * (+ random-seed when the shim has one), and one child (memory-map). */
+	w_node(&w, seed_bytes ? 5 : 4, 1);
 	w_text(&w, "name", "chosen");
 
 	/* Boot manifest hash (development namespace, not Apple secure boot) */
