@@ -1,5 +1,10 @@
 # Dandelion (Redmi 9A / MT6762G) Kernel Configuration
 # Based on mouseos MASTER.arm64.a04br3, adapted for MT6762G
+#
+# NOTE: this file is a placeholder.  XNU's SETUP/config only understands
+# Apple's MASTER syntax (machine / makeoptions / options / files); the keys
+# below document the target rather than forming a buildable configuration.
+# See docs/XNU_INTEGRATION.md section 4 for how to derive the real file.
 
 # Architecture
 ARCH_CONFIGS = ARM64

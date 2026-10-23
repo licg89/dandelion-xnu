@@ -82,7 +82,9 @@ dandelion-xnu/
 │   ├── mkbootimg_mtk.py # MTK boot.img 打包
 │   └── read_log.*      # pstore 日志读取工具
 ├── pexpert/
-│   └── pe_dandelion.h  # 平台定义 + XNU 特性开关（对应参考项目 A04BR3.h）
+│   ├── pe_dandelion.h  # 转发头（独立编译检查用）
+│   └── pexpert/arm64/
+│       └── DANDELION.h # 平台定义 + XNU 特性开关（对应参考项目 A04BR3.h）
 ├── config/
 │   └── MASTER.arm64.dandelion  # 内核配置（MACHINE_CONFIGS=DANDELION）
 ├── iokit/Kernel/arm/
@@ -90,7 +92,8 @@ dandelion-xnu/
 ├── tools/
 │   └── check-platform-expert.sh     # aarch64 交叉编译检查
 ├── docs/
-│   └── HARDWARE_ANALYSIS.md         # 硬件分析详细报告
+│   ├── HARDWARE_ANALYSIS.md         # 硬件分析详细报告
+│   └── XNU_INTEGRATION.md           # XNU 源码树集成步骤（MakeInc/board_config/hook）
 ├── README.md
 └── .gitignore
 ```
@@ -115,6 +118,9 @@ dandelion-xnu/
 注意：参考项目 A04BR3 使用 GICv2/AIC，而 Dandelion 是 GICv3，这是本移植相对
 参考实现的主要差异。中断在平台专家返回时仍保持屏蔽（`DAIF.I=1`），由 XNU 安装
 异常向量后再打开。
+
+接入完整 XNU 源码树的步骤（`MakeInc.def`、`board_config.h`、`ml_io_map()` 调用
+位置）见 [docs/XNU_INTEGRATION.md](docs/XNU_INTEGRATION.md)。
 
 ## 快速开始
 
