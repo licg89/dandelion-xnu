@@ -7,7 +7,7 @@
 #include <stddef.h>
 
 #define FDT_MAX_MEMORY    8
-#define FDT_MAX_RESERVED  16
+#define FDT_MAX_RESERVED  32
 
 #define FDT_MAX_GIC_REGIONS 3
 #define FDT_MAX_TIMER_IRQS  8

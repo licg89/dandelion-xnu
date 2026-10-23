@@ -25,8 +25,8 @@ static uint64_t cells(const unsigned char *p, unsigned count)
 static int append(struct fdt_range *ranges, unsigned *count, unsigned max,
 		  uint64_t base, uint64_t size)
 {
-	if (!size) return 0;
-	if (*count == max || base + size < base) return -1;
+	/* Ranges past the table limit or wrapping around are ignored. */
+	if (!size || *count == max || base + size < base) return 0;
 	ranges[*count].base = base;
 	ranges[*count].size = size;
 	(*count)++;
@@ -124,17 +124,15 @@ int fdt_inspect(const void *data, size_t available, struct fdt_info *info)
 				f->child_size_cells = be32(b + p);
 			} else if ((f->memory || f->reserved_child) && equal(key, n, "reg")) {
 				unsigned ac = f->address_cells, sc = f->size_cells;
-				if (!ac || !sc || length % (4 * (ac + sc))) return -1;
-				for (size_t at = 0; at < length; at += 4 * (ac + sc)) {
+				unsigned step = 4 * (ac + sc);
+				if (!ac || !step || length % step) continue;
+				for (size_t at = 0; at < length; at += step) {
 					uint64_t base = cells(b + p + at, ac);
 					uint64_t size = cells(b + p + at + 4 * ac, sc);
-					if (f->memory) {
-						if (append(info->memory, &info->memory_count, FDT_MAX_MEMORY, base, size))
-							return -1;
-					} else {
-						if (append(info->reserved, &info->reserved_count, FDT_MAX_RESERVED, base, size))
-							return -1;
-					}
+					if (f->memory)
+						append(info->memory, &info->memory_count, FDT_MAX_MEMORY, base, size);
+					else
+						append(info->reserved, &info->reserved_count, FDT_MAX_RESERVED, base, size);
 				}
 			} else if (f->chosen && equal(key, n, "linux,initrd-start")) {
 				if (length != 4 && length != 8) return -1;
