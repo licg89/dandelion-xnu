@@ -33,6 +33,12 @@ SEGMENT_SIZE = 32          # sizeof(struct xnu_segment)
 MH_MAGIC_64 = 0xFEEDFACF
 LC_SEGMENT_64 = 0x19
 LC_SYMTAB = 0x02
+LC_UNIXTHREAD = 0x05
+ARM_THREAD_STATE64_FLAVOR = 6
+
+# Name of the cold-boot entry point.  start.s declares it as EXT(_start), and
+# EXT() prepends the C underscore, so the symbol in the kernel is __start.
+ENTRY_SYMBOLS = (b"__start", b"_start")
 
 VM_KERNEL_LINK_ADDRESS = 0xFFFF_FFF0_0700_4000
 DEFAULT_VIRT_BASE = 0xFFFF_FFF0_0000_0000   # LOW_GLOBAL_BASE_ADDRESS, 2 MiB aligned
@@ -79,6 +85,7 @@ def parse_macho(data):
 
     segments = []
     symtab = None
+    unixthread_pc = None
     offset = 32
     for _ in range(ncmds):
         if offset + 8 > len(data):
@@ -95,16 +102,22 @@ def parse_macho(data):
                                         filesize))
         elif cmd == LC_SYMTAB:
             symtab = struct.unpack_from("<IIII", data, offset + 8)
+        elif cmd == LC_UNIXTHREAD:
+            flavor, count = struct.unpack_from("<II", data, offset + 8)
+            if flavor == ARM_THREAD_STATE64_FLAVOR and count >= 33:
+                # x0-x28, fp, lr, sp, pc, cpsr
+                unixthread_pc = struct.unpack_from(
+                    "<Q", data, offset + 16 + 32 * 8)[0]
         offset += cmdsize
 
     if not segments:
         raise Error("no segments")
-    if symtab is None:
-        raise Error("no symbol table; pass --entry")
-    return segments, symtab
+    return segments, symtab, unixthread_pc
 
 
 def find_symbol(data, symtab, wanted):
+    if symtab is None:
+        return None
     symoff, nsyms, stroff, strsize = symtab
     if stroff + strsize > len(data):
         raise Error("symbol table outside the file")
@@ -114,7 +127,7 @@ def find_symbol(data, symtab, wanted):
             break
         strx, n_type, _sect, _desc, n_value = struct.unpack_from(
             "<IBBHQ", data, entry)
-        if not strx or strx >= strsize:
+        if not strx or strx >= strsize or not n_value:
             continue
         start = stroff + strx
         end = data.find(b"\0", start)
@@ -122,14 +135,24 @@ def find_symbol(data, symtab, wanted):
             continue
         if data[start:end] == wanted:
             return n_value
-    raise Error("symbol %r not found" % wanted.decode())
+    return None
+
+
+def find_entry(image, symtab, unixthread_pc):
+    for name in ENTRY_SYMBOLS:
+        value = find_symbol(image, symtab, name)
+        if value is not None:
+            return value
+    if unixthread_pc:
+        return unixthread_pc
+    raise Error("kernel entry point not found; pass --entry")
 
 
 def build_payload(args):
     with open(args.kernel, "rb") as handle:
         image = handle.read()
 
-    segments, symtab = parse_macho(image)
+    segments, symtab, unixthread_pc = parse_macho(image)
     segments.sort(key=lambda s: s.vmaddr)
 
     lowest = segments[0].vmaddr
@@ -140,7 +163,7 @@ def build_payload(args):
     if args.entry:
         entry_va = int(args.entry, 0)
     else:
-        entry_va = find_symbol(image, symtab, b"_start")
+        entry_va = find_entry(image, symtab, unixthread_pc)
 
     virt_base = int(args.virt_base, 0)
     phys_base = int(args.phys_base, 0)
