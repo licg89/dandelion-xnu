@@ -25,7 +25,7 @@ __attribute__((noreturn)) extern void enter_el1(uint64_t dtb);
  * With -DPLATFORM_TEST_BLOB the build script supplies the same symbols from
  * a generated assembly file that .incbin's the real platform test payload.
  */
-#ifndef PLATFORM_TEST_BLOB
+#if !defined(PLATFORM_TEST_BLOB) && !defined(XNU_HANDOFF)
 __asm__(
 	".section .test_kernel, \"ax\"\n"
 	".globl test_kernel_start\n"
@@ -36,7 +36,9 @@ __asm__(
 	"test_kernel_end:\n"
 );
 #endif
+#ifndef XNU_HANDOFF
 extern char test_kernel_start[], test_kernel_end[];
+#endif
 
 static struct fdt_info fdt_info;
 
@@ -207,6 +209,22 @@ __attribute__((noreturn)) void shim_el1(uint64_t dtb)
 	/* Embedded test kernel handoff */
 	fb_puts("\n--- HANDOFF ---\n", CLR_YELLOW);
 
+#ifdef XNU_HANDOFF
+	/*
+	 * The real kernel: handoff_boot() takes the payload from the device
+	 * tree's initrd (the ramdisk section of the boot image), validates the
+	 * memory plan against the DTB, copies every segment into place, builds
+	 * the ADT and boot_args and jumps to XNU.  It only returns on failure.
+	 */
+	{
+		const char *why = handoff_boot(&fdt_info, dtb, 0, 0);
+
+		fb_puts("\nXNU handoff failed: ", CLR_RED);
+		fb_puts(why ? why : "unknown", CLR_RED);
+		fb_newline();
+		stop();
+	}
+#else
 	uint64_t kern_base = 0x60000000ULL;
 	uint64_t kern_size = (uint64_t)(test_kernel_end - test_kernel_start);
 	/* Round up to page */
@@ -282,6 +300,7 @@ __attribute__((noreturn)) void shim_el1(uint64_t dtb)
 	/* Should not return */
 	fb_puts("KERNEL RETURNED!\n", CLR_RED);
 	stop();
+#endif
 }
 
 __attribute__((noreturn)) void shim_main(uint64_t x0, uint64_t x1,
@@ -296,6 +315,8 @@ __attribute__((noreturn)) void shim_main(uint64_t x0, uint64_t x1,
 	fb_puts("=== DANDELION BOOTSHIM v2 ===\n", CLR_YELLOW);
 #ifdef PLATFORM_TEST_BLOB
 	fb_puts("Embedded platform test payload\n", CLR_WHITE);
+#elif defined(XNU_HANDOFF)
+	fb_puts("XNU handoff build\n", CLR_WHITE);
 #else
 	fb_puts("Embedded kernel test\n", CLR_WHITE);
 #endif

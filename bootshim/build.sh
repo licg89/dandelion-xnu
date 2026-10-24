@@ -15,9 +15,9 @@ cd "$(dirname "$0")"
 MODE=${1:-shim}
 
 case "$MODE" in
-shim|platform-test|trap-test) ;;
+shim|platform-test|trap-test|xnu) ;;
 *)
-	echo "usage: $0 [shim|platform-test|trap-test]" >&2
+	echo "usage: $0 [shim|platform-test|trap-test|xnu]" >&2
 	exit 2
 	;;
 esac
@@ -115,6 +115,11 @@ trap-test)
 	build_payload trap_test.c trap_test_main trap.S
 	EXTRA_CFLAGS="-DPLATFORM_TEST_BLOB"
 	EXTRA_OBJS="out/payload_blob.o"
+	;;
+xnu)
+	# Real kernel: the payload travels in the boot image's ramdisk section
+	# and handoff.c loads it from the device tree's initrd properties.
+	EXTRA_CFLAGS="-DXNU_HANDOFF"
 	;;
 esac
 

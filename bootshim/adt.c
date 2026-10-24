@@ -7,6 +7,7 @@
  */
 #include <stdint.h>
 #include <stddef.h>
+#include "pe_dandelion.h"
 
 struct writer { unsigned char *data; size_t used, capacity; int error; };
 
@@ -117,7 +118,7 @@ size_t dandelion_make_adt(void *buffer, size_t capacity,
 	w_prop(&w, "dram-size", &mem_size, 8);
 
 	/* /chosen/memory-map: kernel range */
-	w_node(&w, 1, 0);
+	w_node(&w, 2, 0);
 	w_text(&w, "name", "memory-map");
 	w_prop(&w, "Kernel-Dandelion", mem_range, sizeof(mem_range));
 
@@ -139,13 +140,18 @@ size_t dandelion_make_adt(void *buffer, size_t capacity,
 		name[3] += (i & 7);
 		uint32_t cluster = i >> 2;
 
-		w_node(&w, 8, 0);
+		w_node(&w, 11, 0);
 		w_text(&w, "name", name);
 		w_text(&w, "device_type", "cpu");
 		w_prop(&w, "compatible", compat_cpu, sizeof(compat_cpu));
 		w_word(&w, "reg", cpu_mpidr[i]);
 		w_text(&w, "state", i ? "stopped" : "running");
 		w_word(&w, "timebase-frequency", timebase);
+		/* pe_identify_machine() derives gPEClockFrequencyInfo from these; a
+		 * missing bus frequency makes its rate denominators zero. */
+		w_word(&w, "clock-frequency", 2000000000u);
+		w_word(&w, "bus-frequency", 400000000u);
+		w_word(&w, "peripheral-frequency", 100000000u);
 		w_word(&w, "cpu-id", i & 3);
 		w_word(&w, "cluster-id", cluster);
 	}
@@ -156,8 +162,12 @@ size_t dandelion_make_adt(void *buffer, size_t capacity,
 	w_text(&w, "device_type", "soc");
 	w_text(&w, "compatible", "mediatek,mt6762g");
 
-	/* IO range: 0x0 - 0x20000000 */
-	uint64_t io_ranges[3] = { 0, 0x10000000, 0x10000000 };
+	/*
+	 * pe_arm_get_soc_base_phys() takes the second cell of "ranges" as the SoC
+	 * base, and every "reg" below is relative to it.  Use the GIC distributor
+	 * base so the interrupt controller sits at offset 0.
+	 */
+	uint64_t io_ranges[3] = { 0, DANDELION_GIC_BASE, 0x14000000 };
 	w_prop(&w, "ranges", io_ranges, sizeof(io_ranges));
 	w_word(&w, "#address-cells", 2);
 	w_word(&w, "#size-cells", 2);
@@ -167,26 +177,37 @@ size_t dandelion_make_adt(void *buffer, size_t capacity,
 	w_text(&w, "name", "uart0");
 	w_text(&w, "device_type", "serial");
 	w_text(&w, "compatible", "mediatek,mt6577-uart");
-	uint64_t uart_reg[2] = { 0x01102000, 0x1000 };
+	uint64_t uart_reg[2] = { DANDELION_UART_BASE - DANDELION_GIC_BASE, 0x1000 };
 	w_prop(&w, "reg", uart_reg, sizeof(uart_reg));
 
-	/* /arm-io/interrupt-controller (GICv3) */
-	w_node(&w, 5, 0);
-	w_text(&w, "name", "interrupt-controller");
+	/*
+	 * /arm-io/gic (GICv3).  pe_init_fiq() reads four 64-bit cells: GICD base
+	 * and size, then GICR base and size.  pe_arm_map_interrupt_controller()
+	 * reads the same property as two cells, so the layout works for both.
+	 */
+	w_node(&w, 6, 0);
+	w_text(&w, "name", "gic");
+	w_text(&w, "device_type", "interrupt-controller");
 	w_text(&w, "compatible", "arm,gic-v3");
 	w_text(&w, "interrupt-controller", "master");
-	/* GICv3: distributor + redistributor (mt6765.dtsi layout) */
-	uint64_t gic_reg[8] = {
-		0x00000000, 0x0c000000, 0x00000000, 0x00040000,  /* GICD */
-		0x00000000, 0x0c100000, 0x00000000, 0x00200000,  /* GICR */
+	uint64_t gic_reg[4] = {
+		0,                            /* GICD @ soc base */
+		DANDELION_GIC_SIZE,
+		DANDELION_GICR_BASE - DANDELION_GIC_BASE,
+		DANDELION_GICR_SIZE,
 	};
 	w_prop(&w, "reg", gic_reg, sizeof(gic_reg));
 	w_word(&w, "virtual-timer-intid", 27);
 
-	/* /arm-io/timer (ARM generic timer) */
-	w_node(&w, 3, 0);
+	/* /arm-io/timer (ARM generic timer, system registers only) */
+	w_node(&w, 5, 0);
 	w_text(&w, "name", "timer");
+	w_text(&w, "device_type", "timer");
 	w_text(&w, "compatible", "arm,armv8-timer");
+	/* pe_arm_map_interrupt_controller() insists on a "reg" property even
+	 * though the arm64 timer is driven through system registers. */
+	uint64_t timer_reg[2] = { 0, 0x1000 };
+	w_prop(&w, "reg", timer_reg, sizeof(timer_reg));
 	w_word(&w, "timebase-frequency", timebase);
 
 	/* /defaults node */

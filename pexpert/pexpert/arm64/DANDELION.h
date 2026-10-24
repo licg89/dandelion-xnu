@@ -51,9 +51,18 @@
  *         <0x0c100000 0x200000>,  GICR
  */
 #define DANDELION_GIC_BASE        0x0C000000ULL
+#define DANDELION_GIC_SIZE        0x00040000ULL
 #define DANDELION_GICR_BASE       0x0C100000ULL
+#define DANDELION_GICR_SIZE       0x00200000ULL
 #define DANDELION_GICR_STRIDE     0x00020000ULL
 #define DANDELION_GICR_STRIDE_V4  0x00040000ULL
+
+/*
+ * GICv3 with system-register CPU interface.  This switches pexpert/arm/pe_fiq.c
+ * from a stub to the real GICv3 bring-up (redistributor wake, PPI 27 for the
+ * virtual timer, ICC_*_EL1 programming).
+ */
+#define HAS_GIC_V3                1
 
 /* ARM generic timer: clock-frequency = <13000000>, GIC PPI 11. */
 #define DANDELION_TIMER_FREQ      13000000
