@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Copy the Dandelion board files into a pristine XNU tree.
+# Copy this port's board files into a pristine XNU tree.
+#
+# The step runs for every machine configuration because the DANDELION.h board
+# header is part of pexpert's exported header list (see the dandelion-machine
+# patch); the other files are inert unless MACHINE=dandelion.
 #
 # The repository only carries the files that differ from Apple's release:
 #   config/MASTER.arm64.dandelion        machine configuration

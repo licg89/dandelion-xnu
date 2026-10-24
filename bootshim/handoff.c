@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "handoff.h"
+#include "fb.h"
 
 #define XNU_PAGE 0x4000UL
 
@@ -252,6 +253,22 @@ const char *handoff_boot(const struct fdt_info *fdt, uint64_t fdt_pa, uint64_t p
 	ba.device_tree_length = (uint32_t)adt_size;
 	for (unsigned i = 0; i < XNU_CMDLINE; i++)
 		ba.command_line[i] = p->command_line[i];
+
+	/*
+	 * Hand the panel to XNU so it can bring up its own console: this board
+	 * has no usable serial port, so the framebuffer is the only output.
+	 *
+	 * Bit 0 of v_baseAddr tells XNU the address is physical and needs to be
+	 * mapped (see initialize_screen() in osfmk/console/video_console.c).
+	 * v_depth packs depth (bits 0-7), rotation (8-15), scale-1 (16-23) and
+	 * the boot rotation (24-31).
+	 */
+	ba.video.base = FB_BASE | 1;
+	ba.video.display = 1;
+	ba.video.rowbytes = FB_STRIDE;
+	ba.video.width = FB_W;
+	ba.video.height = FB_H;
+	ba.video.depth = 32;
 
 	copy_bytes(plan.args_pa, &ba, sizeof(ba));
 

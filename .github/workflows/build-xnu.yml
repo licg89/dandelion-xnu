@@ -75,8 +75,7 @@ jobs:
       - name: Apply build patches
         run: tools/ci/apply-patches.sh .xnu-src
 
-      - name: Copy Dandelion board files
-        if: env.MACHINE == 'dandelion'
+      - name: Copy board files
         run: tools/ci/apply-board.sh .xnu-src
 
       - name: Build kernel

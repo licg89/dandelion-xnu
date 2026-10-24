@@ -16,9 +16,9 @@
 #define DANDELION
 #define DANDELION_BRINGUP
 
-#define NO_MONITOR
-#define NO_ECORE
-#define ARM_ARCH_TIMER
+#define NO_MONITOR                1
+#define NO_ECORE                  1
+#define ARM_ARCH_TIMER            1
 
 #define __ARM_ARCH__              8
 #define __ARM_VMSA__              8
