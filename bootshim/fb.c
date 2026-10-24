@@ -16,6 +16,22 @@ void *memcpy(void *dst, const void *src, size_t n)
 
 static int cursor_x, cursor_y;
 
+#ifdef QEMU_VIRT
+/*
+ * QEMU's virt machine has no display and no MSM framebuffer; the only
+ * observable channel is the PL011 at 0x09000000.  Mirror the console there so
+ * the shim can be exercised without the phone.
+ */
+#define PL011_DR (*(volatile uint32_t *)0x09000000UL)
+
+static void uart_putc(char ch)
+{
+	if (ch == '\n')
+		PL011_DR = '\r';
+	PL011_DR = (unsigned char)ch;
+}
+#endif
+
 void fb_init(void)
 {
 	cursor_x = 0;
@@ -24,6 +40,10 @@ void fb_init(void)
 
 void fb_clear(uint32_t color)
 {
+#ifdef QEMU_VIRT
+	(void)color;
+	return;
+#else
 	for (int y = 0; y < FB_H; y++) {
 		volatile uint32_t *row = (volatile uint32_t *)(FB_BASE + (uint64_t)y * FB_STRIDE);
 		for (int x = 0; x < FB_W; x++)
@@ -31,6 +51,7 @@ void fb_clear(uint32_t color)
 	}
 	cursor_x = 0;
 	cursor_y = 0;
+#endif
 }
 
 void fb_newline(void)
@@ -41,6 +62,11 @@ void fb_newline(void)
 
 void fb_putc(char ch, uint32_t fg)
 {
+#ifdef QEMU_VIRT
+	(void)fg;
+	uart_putc(ch);
+	return;
+#else
 	if (ch == '\n') { fb_newline(); return; }
 	if (ch < 0x20 || ch > 0x7e) ch = '?';
 	if (cursor_x + 8 > VIS_W || cursor_y + 16 > FB_H) return;
@@ -55,6 +81,7 @@ void fb_putc(char ch, uint32_t fg)
 		}
 	}
 	cursor_x += 8;
+#endif
 }
 
 void fb_puts(const char *s, uint32_t fg)

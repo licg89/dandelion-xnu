@@ -117,11 +117,19 @@ int fdt_inspect(const void *data, size_t available, struct fdt_info *info)
 			struct frame *f = &frames[depth - 1];
 
 			if (equal(key, n, "#address-cells")) {
-				if (length != 4 || be32(b + p) > 2) return -1;
-				f->child_address_cells = be32(b + p);
+				if (length != 4) return -1;
+				uint32_t v = be32(b + p);
+				/*
+				 * Nodes with more than two address cells (PCIe
+				 * host bridges) exist on some trees.  Nothing we
+				 * care about lives below them, so clamp instead
+				 * of rejecting the whole tree.
+				 */
+				f->child_address_cells = v <= 2 ? v : 2;
 			} else if (equal(key, n, "#size-cells")) {
-				if (length != 4 || be32(b + p) > 2) return -1;
-				f->child_size_cells = be32(b + p);
+				if (length != 4) return -1;
+				uint32_t v = be32(b + p);
+				f->child_size_cells = v <= 2 ? v : 2;
 			} else if ((f->memory || f->reserved_child) && equal(key, n, "reg")) {
 				unsigned ac = f->address_cells, sc = f->size_cells;
 				unsigned step = 4 * (ac + sc);

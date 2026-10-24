@@ -15,9 +15,9 @@ cd "$(dirname "$0")"
 MODE=${1:-shim}
 
 case "$MODE" in
-shim|platform-test|trap-test|xnu) ;;
+shim|platform-test|trap-test|xnu|xnu-qemu) ;;
 *)
-	echo "usage: $0 [shim|platform-test|trap-test|xnu]" >&2
+	echo "usage: $0 [shim|platform-test|trap-test|xnu|xnu-qemu]" >&2
 	exit 2
 	;;
 esac
@@ -120,6 +120,12 @@ xnu)
 	# Real kernel: the payload travels in the boot image's ramdisk section
 	# and handoff.c loads it from the device tree's initrd properties.
 	EXTRA_CFLAGS="-DXNU_HANDOFF"
+	;;
+xnu-qemu)
+	# Same handoff, but for QEMU's virt machine: console on the PL011 and an
+	# ADT that describes QEMU's GICv3.  Lets the boot path be exercised
+	# without the phone.
+	EXTRA_CFLAGS="-DXNU_HANDOFF -DQEMU_VIRT"
 	;;
 esac
 

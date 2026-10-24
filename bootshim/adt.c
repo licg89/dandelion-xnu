@@ -9,6 +9,30 @@
 #include <stddef.h>
 #include "pe_dandelion.h"
 
+/*
+ * Where the ADT says the platform's devices live.  On the phone these are the
+ * MediaTek addresses from DANDELION.h; under QEMU's virt machine the same
+ * nodes have to describe QEMU's GICv3 and PL011 instead, otherwise the kernel
+ * maps the wrong registers and hangs before it can say anything.
+ */
+#ifdef QEMU_VIRT
+#define ADT_SOC_COMPAT   "qemu,virt"
+#define ADT_UART_COMPAT  "arm,pl011"
+#define ADT_UART_BASE    0x09000000ULL
+#define ADT_GIC_BASE     0x08000000ULL
+#define ADT_GIC_SIZE     0x00010000ULL
+#define ADT_GICR_BASE    0x080A0000ULL
+#define ADT_GICR_SIZE    0x000F6000ULL
+#else
+#define ADT_SOC_COMPAT   "mediatek,mt6762g"
+#define ADT_UART_COMPAT  "mediatek,mt6577-uart"
+#define ADT_UART_BASE    DANDELION_UART_BASE
+#define ADT_GIC_BASE     DANDELION_GIC_BASE
+#define ADT_GIC_SIZE     DANDELION_GIC_SIZE
+#define ADT_GICR_BASE    DANDELION_GICR_BASE
+#define ADT_GICR_SIZE    DANDELION_GICR_SIZE
+#endif
+
 struct writer { unsigned char *data; size_t used, capacity; int error; };
 
 static void w_byte(struct writer *w, unsigned char v)
@@ -160,14 +184,14 @@ size_t dandelion_make_adt(void *buffer, size_t capacity,
 	w_node(&w, 6, 3);
 	w_text(&w, "name", "arm-io");
 	w_text(&w, "device_type", "soc");
-	w_text(&w, "compatible", "mediatek,mt6762g");
+	w_text(&w, "compatible", ADT_SOC_COMPAT);
 
 	/*
 	 * pe_arm_get_soc_base_phys() takes the second cell of "ranges" as the SoC
 	 * base, and every "reg" below is relative to it.  Use the GIC distributor
 	 * base so the interrupt controller sits at offset 0.
 	 */
-	uint64_t io_ranges[3] = { 0, DANDELION_GIC_BASE, 0x14000000 };
+	uint64_t io_ranges[3] = { 0, ADT_GIC_BASE, 0x14000000 };
 	w_prop(&w, "ranges", io_ranges, sizeof(io_ranges));
 	w_word(&w, "#address-cells", 2);
 	w_word(&w, "#size-cells", 2);
@@ -176,8 +200,8 @@ size_t dandelion_make_adt(void *buffer, size_t capacity,
 	w_node(&w, 4, 0);
 	w_text(&w, "name", "uart0");
 	w_text(&w, "device_type", "serial");
-	w_text(&w, "compatible", "mediatek,mt6577-uart");
-	uint64_t uart_reg[2] = { DANDELION_UART_BASE - DANDELION_GIC_BASE, 0x1000 };
+	w_text(&w, "compatible", ADT_UART_COMPAT);
+	uint64_t uart_reg[2] = { ADT_UART_BASE - ADT_GIC_BASE, 0x1000 };
 	w_prop(&w, "reg", uart_reg, sizeof(uart_reg));
 
 	/*
@@ -192,9 +216,9 @@ size_t dandelion_make_adt(void *buffer, size_t capacity,
 	w_text(&w, "interrupt-controller", "master");
 	uint64_t gic_reg[4] = {
 		0,                            /* GICD @ soc base */
-		DANDELION_GIC_SIZE,
-		DANDELION_GICR_BASE - DANDELION_GIC_BASE,
-		DANDELION_GICR_SIZE,
+		ADT_GIC_SIZE,
+		ADT_GICR_BASE - ADT_GIC_BASE,
+		ADT_GICR_SIZE,
 	};
 	w_prop(&w, "reg", gic_reg, sizeof(gic_reg));
 	w_word(&w, "virtual-timer-intid", 27);

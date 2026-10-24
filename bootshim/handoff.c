@@ -181,6 +181,26 @@ static void copy_bytes(uint64_t dest, const void *source, uint64_t size)
 	for (uint64_t i = 0; i < size; i++) d[i] = s[i];
 }
 
+/*
+ * Entropy fallback for boards whose TRNG is unavailable (and for QEMU).
+ * The kernel refuses to start without a bootloader seed, so stir the cycle
+ * counter into a xorshift and hand that over instead of panicking.
+ */
+static void seed_from_cycles(unsigned char *seed, size_t size, uint32_t timebase)
+{
+	uint64_t t;
+	__asm__ volatile("mrs %0, cntvct_el0" : "=r"(t));
+	uint64_t x = 0x9e3779b97f4a7c15ULL ^ ((uint64_t)timebase << 32) ^ t;
+
+	for (size_t i = 0; i < size; i++) {
+		x ^= x << 13;
+		x ^= x >> 7;
+		x ^= x << 17;
+		seed[i] = (unsigned char)(x >> 33);
+	}
+}
+
+
 static void zero_bytes(uint64_t dest, uint64_t size)
 {
 	volatile unsigned char *d = (void *)(uintptr_t)dest;
@@ -229,12 +249,21 @@ const char *handoff_boot(const struct fdt_info *fdt, uint64_t fdt_pa, uint64_t p
 	if (el != 4 || (sctlr & 0x1005) || timebase > 0xffffffff)
 		return "CPU_STATE_REJECTED";
 
-	/* Generate ADT (without TRNG seed for now) */
+	/* Generate ADT (with a bootloader entropy seed; the kernel panics
+	 * without one, see osfmk/prng/prng_random.c) */
+	unsigned char seed[64];
+#ifdef QEMU_VIRT
+	seed_from_cycles(seed, sizeof(seed), (uint32_t)timebase);
+#else
+	if (mt6762_random_seed(seed, (uint32_t)timebase))
+		seed_from_cycles(seed, sizeof(seed), (uint32_t)timebase);
+#endif
+
 	static unsigned char adt_buffer[XNU_PAGE] __attribute__((aligned(8)));
 	size_t adt_size = dandelion_make_adt(adt_buffer, sizeof(adt_buffer),
 					     p->phys_base, p->mem_size,
 					     plan.top, (uint32_t)timebase,
-					     NULL, 0);
+					     seed, sizeof(seed));
 	if (!adt_size) return "ADT_FAILED";
 
 	/* Load kernel segments */

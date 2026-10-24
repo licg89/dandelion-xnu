@@ -1,0 +1,21 @@
+diff --git a/osfmk/arm/pmap/pmap.h b/osfmk/arm/pmap/pmap.h
+index df672c6..71ff833 100644
+--- a/osfmk/arm/pmap/pmap.h
++++ b/osfmk/arm/pmap/pmap.h
+@@ -244,7 +244,15 @@ typedef struct pmap_cpu_data pmap_cpu_data_t;
+ /* For large memory systems with no KTRR/CTRR such as virtual machines */
+ #define KERNEL_PMAP_HEAP_RANGE_START (VM_MIN_KERNEL_AND_KEXT_ADDRESS+ARM_TT_L1_SIZE)
+ #else
+-#define KERNEL_PMAP_HEAP_RANGE_START LOW_GLOBAL_BASE_ADDRESS
++/*
++ * Without KTRR/CTRR the kernel heap is not confined to LOW_GLOBALS, so the
++ * packing windows have to be anchored at the bottom of the kernel map like
++ * they are on KTRR systems.  The c_slot packing scheme reaches 32G from this
++ * base and the vm_page scheme reaches 128G from VM_MIN_KERNEL_AND_KEXT_ADDRESS;
++ * anchoring this base at LOW_GLOBAL_BASE_ADDRESS instead makes the two windows
++ * disjoint, so no zone submap can satisfy both verifications.
++ */
++#define KERNEL_PMAP_HEAP_RANGE_START VM_MIN_KERNEL_AND_KEXT_ADDRESS
+ #endif
+ #endif /* defined(KERNEL_INTEGRITY_KTRR) || defined(KERNEL_INTEGRITY_CTRR) */
+ 
