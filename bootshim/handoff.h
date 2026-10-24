@@ -53,4 +53,11 @@ int mt6762_random_seed(unsigned char seed[64], uint32_t timebase);
 /* Kernel handoff */
 const char *handoff_boot(const struct fdt_info *fdt, uint64_t fdt_pa, uint64_t payload_addr, uint64_t payload_size);
 
+/* Validate a payload against the device tree and compute the load plan.
+ * Returns 0 on success, -1 after printing the reason on the framebuffer. */
+int handoff_validate(const void *payload, size_t length, uint64_t payload_pa,
+		     const struct fdt_info *fdt, uint64_t fdt_pa,
+		     uint64_t shim_start, uint64_t shim_end,
+		     struct handoff_plan *plan);
+
 #endif

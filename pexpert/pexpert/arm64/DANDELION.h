@@ -64,6 +64,32 @@
  */
 #define HAS_GIC_V3                1
 
+/*
+ * GICv3 register definitions, see the GICv3 architecture specification
+ * (Arm IHI 0069).  Apple keeps these in the board headers of the platforms
+ * that use a GICv3 (VMAPPLE.h); pe_fiq.c expects them from ours.
+ */
+#define GIC_SPURIOUS_IRQ                        1023
+
+#define GICR_PE_SIZE                            0x20000 /* redistributor region size */
+
+#define GICD_CTLR                               0x0
+#define GICD_CTLR_ENABLEGRP0                    0x1
+
+#define GICR_TYPER                              0x08
+#define GICR_WAKER                              0x14
+#define GICR_IGROUPR0                           0x10080
+#define GICR_ISENABLER0                         0x10100
+
+#define GICR_TYPER_AFFINITY_VALUE_SHIFT         32
+#define GICR_TYPER_LAST                         0x10
+
+#define GICR_WAKER_PROCESSORSLEEP               0x2
+#define GICR_WAKER_CHILDRENASLEEP               0x4
+
+#define ICC_CTLR_EOIMODE                        0x1
+#define ICC_SRE_SRE                             0x1
+
 /* ARM generic timer: clock-frequency = <13000000>, GIC PPI 11. */
 #define DANDELION_TIMER_FREQ      13000000
 #define DANDELION_TIMER_IRQ       27

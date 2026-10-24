@@ -64,6 +64,8 @@ int handoff_validate(const void *payload, size_t length, uint64_t payload_pa,
 	extern void fb_puthex(const char *label, uint64_t val, uint32_t fg);
 	#define FAIL(reason) do { fb_puts("  FAIL: ", 0xFFFF0000); fb_puts(reason "\n", 0xFFFF0000); return -1; } while(0)
 
+	(void)fdt_pa;  /* the original device tree is not needed after the jump */
+
 	if (length < sizeof(struct xnu_payload)) FAIL("too small");
 	if (length > 0x8000000) FAIL("too large");
 	if (((uintptr_t)payload & 7)) FAIL("misaligned");
@@ -102,8 +104,14 @@ int handoff_validate(const void *payload, size_t length, uint64_t payload_pa,
 	if (p->virt_base + p->mem_size < p->virt_base) FAIL("virt overflow");
 	if (!covered(p->phys_base, p->mem_size, fdt)) FAIL("kernel not covered");
 	if (!covered(payload_pa, length, fdt)) FAIL("payload not covered");
-	if (overlap(p->phys_base, p->mem_size, payload_pa, length)) FAIL("kernel/payload overlap");
-	if (overlap(p->phys_base, p->mem_size, fdt_pa, fdt->bytes)) FAIL("kernel/fdt overlap");
+	/*
+	 * The payload may live inside the kernel's memory window: it is the
+	 * boot image's ramdisk, and XNU is free to reuse that RAM once the
+	 * segments below have been copied out of it.  Only a segment that
+	 * lands on top of the payload would corrupt the copy, so that is
+	 * checked per segment further down.  The original device tree is
+	 * likewise dead by the time XNU runs (it gets our ADT instead).
+	 */
 	if (overlap(p->phys_base, p->mem_size, shim_start, shim_end - shim_start)) FAIL("kernel/shim overlap");
 
 	for (unsigned i = 0; i < fdt->reserved_count; i++)
@@ -136,6 +144,8 @@ int handoff_validate(const void *payload, size_t length, uint64_t payload_pa,
 		if (s->file_offset < p->data_offset) FAIL("seg file < data_off");
 		if (s->file_offset > length) FAIL("seg file > len");
 		if (s->file_size > length - s->file_offset) FAIL("seg file overflow");
+		if (overlap(s->physical, s->memory_size, payload_pa, length))
+			FAIL("seg/payload overlap");
 
 		for (unsigned j = 0; j < i; j++)
 			if (overlap(s->physical, s->memory_size,
@@ -184,6 +194,8 @@ extern size_t dandelion_make_adt(void *buffer, size_t capacity,
 				  uint64_t kernel_end_pa, uint32_t timebase,
 				  const unsigned char *seed, size_t seed_bytes);
 
+#if defined(__aarch64__)
+/* The jump itself is aarch64 only; host builds only use handoff_validate(). */
 const char *handoff_boot(const struct fdt_info *fdt, uint64_t fdt_pa, uint64_t payload_addr, uint64_t payload_size)
 {
 	/* Find payload - either from explicit address or from initrd */
@@ -279,3 +291,4 @@ const char *handoff_boot(const struct fdt_info *fdt, uint64_t fdt_pa, uint64_t p
 
 	return "KERNEL_RETURNED";
 }
+#endif /* __aarch64__ */
