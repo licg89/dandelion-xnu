@@ -1,0 +1,143 @@
+diff --git a/libkern/crypto/corecrypto_rand.c b/libkern/crypto/corecrypto_rand.c
+index d46815b..6640672 100644
+--- a/libkern/crypto/corecrypto_rand.c
++++ b/libkern/crypto/corecrypto_rand.c
+@@ -30,6 +30,92 @@
+ #include <corecrypto/ccrng.h>
+ #include <libkern/crypto/rand.h>
+ 
++/* Declared in <kern/misc_protos.h>; not pulled in here to keep libkern's
++ * include footprint small. */
++extern uint64_t early_random(void);
++
++/*
++ * The corecrypto kext normally registers the random functions below.  When the
++ * kernel is booted without a kext collection (e.g. a bare mach_kernel handed
++ * over by a boot shim) nothing registers them, so fall back to a built-in
++ * generator.
++ *
++ * rand.h documents the kmem generator as not needing to be cryptographically
++ * strong and as not being allowed to take locks, which is exactly what this
++ * per-CPU xorshift128+ provides.  The stream is seeded from early_random(),
++ * which is already usable by the time the kmem zones are brought up.
++ */
++struct builtin_random_ctx {
++	uint64_t brc_state[2];
++};
++
++static uint64_t
++builtin_random_step(struct builtin_random_ctx *ctx)
++{
++	uint64_t s1 = ctx->brc_state[0];
++	const uint64_t s0 = ctx->brc_state[1];
++
++	ctx->brc_state[0] = s0;
++	s1 ^= s1 << 23;
++	ctx->brc_state[1] = s1 ^ s0 ^ (s1 >> 17) ^ (s0 >> 26);
++	return ctx->brc_state[1] + s0;
++}
++
++static void
++builtin_random_generate(
++	crypto_random_ctx_t ctx,
++	void *random,
++	size_t random_size)
++{
++	struct builtin_random_ctx *state = ctx;
++	uint8_t *out = random;
++
++	while (random_size) {
++		uint64_t value = builtin_random_step(state);
++		size_t chunk = random_size < sizeof(value) ? random_size : sizeof(value);
++
++		for (size_t i = 0; i < chunk; i++) {
++			out[i] = (uint8_t)(value >> (8 * i));
++		}
++		out += chunk;
++		random_size -= chunk;
++	}
++}
++
++static void
++builtin_random_uniform(
++	crypto_random_ctx_t ctx,
++	uint64_t bound,
++	uint64_t *random)
++{
++	struct builtin_random_ctx *state = ctx;
++	/* 2^64 mod bound: values below this would bias the modulo. */
++	uint64_t limit = (uint64_t)0 - bound;
++	uint64_t value;
++
++	do {
++		value = builtin_random_step(state);
++	} while (value < limit);
++
++	*random = value % bound;
++}
++
++static void
++builtin_random_init(
++	crypto_random_ctx_t ctx)
++{
++	struct builtin_random_ctx *state = ctx;
++	uint64_t seed = early_random();
++
++	/*
++	 * Fold the per-CPU context address in so that CPUs that seed at the
++	 * same time still get independent streams.
++	 */
++	seed ^= (uint64_t)(uintptr_t)state * 0x9e3779b97f4a7c15ULL;
++	state->brc_state[0] = seed | 1;
++	state->brc_state[1] = seed ^ 0x9e3779b97f4a7c15ULL;
++}
++
+ int
+ cc_rand_generate(void *out, size_t outlen)
+ {
+@@ -58,7 +144,11 @@ crypto_random_generate(
+ 	void *random,
+ 	size_t random_size)
+ {
+-	g_crypto_funcs->random_generate_fn(ctx, random, random_size);
++	if (g_crypto_funcs) {
++		g_crypto_funcs->random_generate_fn(ctx, random, random_size);
++	} else {
++		builtin_random_generate(ctx, random, random_size);
++	}
+ }
+ 
+ void
+@@ -67,18 +157,29 @@ crypto_random_uniform(
+ 	uint64_t bound,
+ 	uint64_t *random)
+ {
+-	g_crypto_funcs->random_uniform_fn(ctx, bound, random);
++	if (g_crypto_funcs) {
++		g_crypto_funcs->random_uniform_fn(ctx, bound, random);
++	} else {
++		builtin_random_uniform(ctx, bound, random);
++	}
+ }
+ 
+ size_t
+ crypto_random_kmem_ctx_size(void)
+ {
+-	return g_crypto_funcs->random_kmem_ctx_size_fn();
++	if (g_crypto_funcs) {
++		return g_crypto_funcs->random_kmem_ctx_size_fn();
++	}
++	return sizeof(struct builtin_random_ctx);
+ }
+ 
+ void
+ crypto_random_kmem_init(
+ 	crypto_random_ctx_t ctx)
+ {
+-	g_crypto_funcs->random_kmem_init_fn(ctx);
++	if (g_crypto_funcs) {
++		g_crypto_funcs->random_kmem_init_fn(ctx);
++	} else {
++		builtin_random_init(ctx);
++	}
+ }
