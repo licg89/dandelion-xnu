@@ -72,6 +72,13 @@ jobs:
           fi
           git -C .xnu-src log --oneline -1
 
+      - name: Reset XNU source
+        run: |
+          # The source tree is cached between runs, so drop any patch or board
+          # file left over from a previous build before applying this one.
+          git -C .xnu-src checkout -- .
+          git -C .xnu-src clean -fdq
+
       - name: Apply build patches
         run: tools/ci/apply-patches.sh .xnu-src
 
