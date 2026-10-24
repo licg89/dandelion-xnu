@@ -1,0 +1,22 @@
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index c40c6ea..a8bbee0 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1920,7 +1920,7 @@ sleh_fiq(arm_saved_state_t *state)
+ 
+ 	sleh_interrupt_handler_prologue(state, type);
+ 
+-#if APPLEVIRTUALPLATFORM
++#if APPLEVIRTUALPLATFORM || HAS_GIC_V3
+ 	uint64_t iar = __builtin_arm_rsr64("ICC_IAR0_EL1");
+ #endif
+ 
+@@ -1966,7 +1966,7 @@ sleh_fiq(arm_saved_state_t *state)
+ 		INTERRUPT_MASKED_DEBUG_END();
+ 	}
+ 
+-#if APPLEVIRTUALPLATFORM
++#if APPLEVIRTUALPLATFORM || HAS_GIC_V3
+ 	if (iar != GIC_SPURIOUS_IRQ) {
+ 		__builtin_arm_wsr64("ICC_EOIR0_EL1", iar);
+ 		__builtin_arm_isb(ISB_SY);
