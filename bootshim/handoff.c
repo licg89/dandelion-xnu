@@ -253,6 +253,20 @@ const char *handoff_boot(const struct fdt_info *fdt, uint64_t fdt_pa, uint64_t p
 	copy_bytes(plan.adt_pa, adt_buffer, adt_size);
 	zero_bytes((uintptr_t)adt_buffer, sizeof(adt_buffer));
 
+	/*
+	 * Everything the screen shows after this point comes from the kernel.
+	 * Leave a clear boundary so a hang before XNU's console exists is
+	 * distinguishable from a hang after it.
+	 */
+	fb_puts("\n--- XNU ---\n", 0xFFFFFF00);
+	fb_puthex("payload    ", pay_addr, 0xFFFFFF00);
+	fb_puthex("entry_pa   ", plan.entry_pa, 0xFFFFFF00);
+	fb_puthex("args_pa    ", plan.args_pa, 0xFFFFFF00);
+	fb_puthex("adt_pa     ", plan.adt_pa, 0xFFFFFF00);
+	fb_puthex("adt_size   ", adt_size, 0xFFFFFF00);
+	fb_puthex("top        ", plan.top, 0xFFFFFF00);
+	fb_puts("JUMPING\n", 0xFF00FF00);
+
 	/* Build boot_args */
 	struct xnu_boot_args ba;
 	zero_bytes((uintptr_t)&ba, sizeof(ba));
