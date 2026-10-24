@@ -1,0 +1,18 @@
+diff --git a/osfmk/kern/startup.c b/osfmk/kern/startup.c
+index bec97fb..c4de886 100644
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -734,7 +734,12 @@ kernel_bootstrap_thread(void)
+ 	csm_initialize_provisioning_profiles();
+ #endif
+ 
+-#ifndef BCM2837
++/*
++ * The trust cache runtime needs the Image4 and AMFI interfaces, which are
++ * registered by kexts.  Boards that boot a bare kernel without a kext
++ * collection (BCM2837, DANDELION) have neither, so skip it.
++ */
++#if !defined(BCM2837) && !defined(DANDELION)
+ 	kernel_bootstrap_log("trust_cache_init");
+ 
+ 	/* Initialize the runtime for the trust cache interface */
