@@ -1,8 +1,8 @@
 diff --git a/libkern/crypto/corecrypto_rand.c b/libkern/crypto/corecrypto_rand.c
-index d46815b..6640672 100644
+index d46815b..d619803 100644
 --- a/libkern/crypto/corecrypto_rand.c
 +++ b/libkern/crypto/corecrypto_rand.c
-@@ -30,6 +30,92 @@
+@@ -30,6 +30,103 @@
  #include <corecrypto/ccrng.h>
  #include <libkern/crypto/rand.h>
  
@@ -65,9 +65,20 @@ index d46815b..6640672 100644
 +	uint64_t *random)
 +{
 +	struct builtin_random_ctx *state = ctx;
-+	/* 2^64 mod bound: values below this would bias the modulo. */
-+	uint64_t limit = (uint64_t)0 - bound;
 +	uint64_t value;
++
++	if (bound <= 1) {
++		*random = 0;
++		return;
++	}
++
++	/*
++	 * Reject the values that would bias the modulo.  2^64 mod bound is
++	 * (0 - bound) % bound; a plain "value < 2^64 - bound" test would only
++	 * be correct for power-of-two bounds and would loop almost forever
++	 * for everything else.
++	 */
++	uint64_t const limit = ((uint64_t)0 - bound) % bound;
 +
 +	do {
 +		value = builtin_random_step(state);
@@ -95,7 +106,7 @@ index d46815b..6640672 100644
  int
  cc_rand_generate(void *out, size_t outlen)
  {
-@@ -58,7 +144,11 @@ crypto_random_generate(
+@@ -58,7 +155,11 @@ crypto_random_generate(
  	void *random,
  	size_t random_size)
  {
@@ -108,7 +119,7 @@ index d46815b..6640672 100644
  }
  
  void
-@@ -67,18 +157,29 @@ crypto_random_uniform(
+@@ -67,18 +168,29 @@ crypto_random_uniform(
  	uint64_t bound,
  	uint64_t *random)
  {
