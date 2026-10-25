@@ -12,7 +12,12 @@ DANDELION: platform expert: configure
 Waiting on <dict ID="0"><key>String ID="1">IOProviderClass</key><string ID="1">IOMedia</string>
 <key>Content Mask</key><string ID="2">apple_hfs</string></dict>
 Still waiting for root device
+DANDELION: no root filesystem can be mounted on this port (open-source XNU has no HFS+/APFS);
+kernel stays up
+Still waiting for root device
 ```
+
+最后两行每 60 秒重复一次（`ROOTDEVICETIMEOUT`），屏幕会一直保持在这个状态。
 
 也就是说：
 
