@@ -1,0 +1,23 @@
+diff --git a/osfmk/arm/machine_routines_common.c b/osfmk/arm/machine_routines_common.c
+index a6af1b9..68ef6b2 100644
+--- a/osfmk/arm/machine_routines_common.c
++++ b/osfmk/arm/machine_routines_common.c
+@@ -1284,6 +1284,18 @@ unsigned int
+ ml_wait_max_cpus(void)
+ {
+ 	assert(lockdown_done);
++
++#if defined(DANDELION)
++	/*
++	 * On Apple platforms a platform kext calls ml_set_max_cpus() once every
++	 * CPU has checked in.  This port ships no kexts at all, so nothing would
++	 * ever clear the flag and the bootstrap thread would sleep here forever,
++	 * before bsd_init().  A single CPU is started, so declare the count
++	 * settled; revisit this when SMP is enabled.
++	 */
++	ml_set_max_cpus(machine_info.max_cpus);
++#endif
++
+ 	lck_mtx_lock(&max_cpus_lock);
+ 	while (max_cpus_initialized != MAX_CPUS_SET) {
+ 		max_cpus_initialized = MAX_CPUS_WAIT;
