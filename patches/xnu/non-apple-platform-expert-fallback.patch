@@ -1,0 +1,29 @@
+diff --git a/iokit/Kernel/IOPlatformExpert.cpp b/iokit/Kernel/IOPlatformExpert.cpp
+index 7a32a23..1e44454 100644
+--- a/iokit/Kernel/IOPlatformExpert.cpp
++++ b/iokit/Kernel/IOPlatformExpert.cpp
+@@ -2315,8 +2315,24 @@ IOPanicPlatform::start(IOService * provider)
+ 		platform_name = provider->getName();
+ 	}
+ 
++#if defined(DANDELION)
++	/*
++	 * This port ships no platform kext, so nothing better than this
++	 * personality can ever match the root nub.  Panicking here stops the
++	 * boot at the IOKit boundary; running the generic IOPlatformExpert
++	 * implementation instead still installs the global platform expert
++	 * (IOService::setPlatform()) that bsd_init() and the rest of IOKit
++	 * dereference unconditionally, so the boot can make progress and we
++	 * get to see the next real failure.
++	 */
++	printf("DANDELION: no platform driver for \"%s\", "
++	    "using the generic platform expert\n", platform_name);
++
++	return IOPlatformExpert::start(provider);
++#else
+ 	panic("Unable to find driver for this platform: \"%s\".",
+ 	    platform_name);
+ 
+ 	return false;
++#endif /* DANDELION */
+ }
