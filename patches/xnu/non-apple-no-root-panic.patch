@@ -1,0 +1,25 @@
+diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
+index 5219fb0..1554bda 100644
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -904,6 +904,20 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
+ #if XNU_TARGET_OS_OSX && defined(__arm64__)
+ 			// The disk isn't found - have the user pick from System Recovery.
+ 			(void)IOSetRecoveryBoot(BSD_BOOTFAIL_MEDIA_MISSING, NULL, true);
++#elif defined(DANDELION)
++			/*
++			 * The open-source XNU tree ships neither HFS+/APFS nor a
++			 * memory-disk driver, so no root device can ever appear on
++			 * this port.  Do not panic: stay in the wait loop so the
++			 * kernel keeps running and the framebuffer console (the only
++			 * console this board has) stays readable.
++			 */
++			static boolean_t no_root_logged = FALSE;
++			if (!no_root_logged) {
++				no_root_logged = TRUE;
++				IOLog("DANDELION: no root filesystem can be mounted on this port "
++				    "(open-source XNU has no HFS+/APFS); kernel stays up\n");
++			}
+ #elif XNU_TARGET_OS_IOS
+ 			panic("Failed to mount root device");
+ #endif
