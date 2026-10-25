@@ -1,0 +1,42 @@
+diff --git a/bsd/pthread/pthread_shims.c b/bsd/pthread/pthread_shims.c
+index 84e350b..a2a95a6 100644
+--- a/bsd/pthread/pthread_shims.c
++++ b/bsd/pthread/pthread_shims.c
+@@ -315,7 +315,17 @@ void
+ pthread_init(void)
+ {
+ 	if (!pthread_functions) {
++#if defined(DANDELION)
++		/*
++		 * This port loads no kexts, so nothing ever registers the pthread
++		 * function table.  There is no pthread user either; treat the
++		 * shims as absent instead of refusing to boot.
++		 */
++		printf("DANDELION: pthread kext absent, pthread shims disabled\n");
++		return;
++#else
+ 		panic("pthread kernel extension not loaded (function table is NULL).");
++#endif
+ 	}
+ 	pthread_functions->pthread_init();
+ }
+@@ -323,13 +333,17 @@ pthread_init(void)
+ void
+ pth_proc_hashinit(proc_t p)
+ {
+-	pthread_functions->pth_proc_hashinit(p);
++	if (pthread_functions) {
++		pthread_functions->pth_proc_hashinit(p);
++	}
+ }
+ 
+ void
+ pth_proc_hashdelete(proc_t p)
+ {
+-	pthread_functions->pth_proc_hashdelete(p);
++	if (pthread_functions) {
++		pthread_functions->pth_proc_hashdelete(p);
++	}
+ }
+ 
+ /* syscall shims */
