@@ -1,0 +1,50 @@
+diff --git a/bsd/netinet/tcp_subr.c b/bsd/netinet/tcp_subr.c
+index 1f20ef0..a345808 100644
+--- a/bsd/netinet/tcp_subr.c
++++ b/bsd/netinet/tcp_subr.c
+@@ -174,7 +174,17 @@ SYSCTL_SKMEM_TCP_INT(OID_AUTO, fastopen_backlog,
+     "Backlog queue for half-open TFO connections");
+ 
+ SYSCTL_SKMEM_TCP_INT(OID_AUTO, fastopen, CTLFLAG_RW | CTLFLAG_LOCKED,
+-    int, tcp_fastopen, TCP_FASTOPEN_CLIENT | TCP_FASTOPEN_SERVER,
++    int, tcp_fastopen,
++#if defined(DANDELION)
++    /*
++     * The TFO cookie is sealed with AES, whose key schedule lives in
++     * corecrypto.  This port loads no kexts, so there is no AES at all;
++     * keep TFO off rather than faulting on the first cookie.
++     */
++    0,
++#else
++    TCP_FASTOPEN_CLIENT | TCP_FASTOPEN_SERVER,
++#endif
+     "Enable TCP Fastopen (RFC 7413)");
+ 
+ SYSCTL_SKMEM_TCP_INT(OID_AUTO, now_init, CTLFLAG_RD | CTLFLAG_LOCKED,
+@@ -386,7 +396,9 @@ tcp_sysctl_fastopenkey(__unused struct sysctl_oid *oidp, __unused void *arg1,
+ 		}
+ 	}
+ 
++#if !defined(DANDELION)
+ 	aes_encrypt_key128((u_char *)key, &tfo_ctx);
++#endif /* !DANDELION */
+ 
+ exit:
+ 	return error;
+@@ -486,7 +498,16 @@ tcp_tfo_init(void)
+ 	u_char key[TCP_FASTOPEN_KEYLEN];
+ 
+ 	read_frandom(key, sizeof(key));
++#if defined(DANDELION)
++	/*
++	 * aes_encrypt_key128() dispatches through the corecrypto function
++	 * table, which this port never registers (it loads no kexts).  TFO is
++	 * disabled on DANDELION, so the key schedule is never needed.
++	 */
++	(void)key;
++#else
+ 	aes_encrypt_key128(key, &tfo_ctx);
++#endif
+ }
+ 
+ /*
