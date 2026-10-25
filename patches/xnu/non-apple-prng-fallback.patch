@@ -1,0 +1,28 @@
+diff --git a/osfmk/prng/prng_random.c b/osfmk/prng/prng_random.c
+index c52f0ab..25937a6 100644
+--- a/osfmk/prng/prng_random.c
++++ b/osfmk/prng/prng_random.c
+@@ -296,6 +296,23 @@ random_cpu_init(int cpu)
+ void
+ read_random(void * buffer, u_int numbytes)
+ {
++	/*
++	 * The corecrypto kext installs and seeds the kernel PRNG through
++	 * register_and_init_prng().  When it is absent (this port has no
++	 * kexts) prng_funcs is still all zeroes, so calling through it jumps
++	 * to address zero.  The early DRBG seeded from the bootloader is then
++	 * the only source of entropy, and read_erandom() already knows how to
++	 * fall back to it.
++	 */
++	if (!prng_ready) {
++		if (erandom.drbg_info.size == 0) {
++			/* The early DRBG has not been brought up yet. */
++			(void)early_random();
++		}
++		read_erandom(buffer, numbytes);
++		return;
++	}
++
+ 	prng_funcs.refresh(prng_ctx);
+ 	read_random_generate(buffer, numbytes);
+ }
