@@ -22,7 +22,7 @@ if (-not (Test-Path (Join-Path $out "boot_backup.img"))) {
     throw "out\boot_backup.img is missing - refusing to build without a recovery image"
 }
 
-$env:PATH = "C:\Program Files\LLVM\bin;" + $env:PATH
+$env:PATH = "C:\Program Files\LLVM\bin;C:\Program Files\Git\usr\bin;" + $env:PATH
 
 Write-Host "== building device shim (xnu) =="
 & "C:\Program Files\Git\bin\bash.exe" -lc "cd /d/aios/dandelion-xnu/bootshim && CC=clang bash build.sh xnu"
@@ -42,9 +42,12 @@ try {
     Pop-Location
 }
 
-# Restore out/Image to the QEMU shim so qemu_check.py keeps working.
-if (Test-Path (Join-Path $out "Image.xnu-qemu")) {
-    Copy-Item (Join-Path $out "Image.xnu-qemu") (Join-Path $out "Image") -Force
+# Restore the shim's out/Image to the QEMU variant so qemu_check.py keeps working.
+$qemuImage = Join-Path $bootshim "out\Image.xnu-qemu"
+if (Test-Path $qemuImage) {
+    Copy-Item $qemuImage (Join-Path $bootshim "out\Image") -Force
+} else {
+    Write-Warning "bootshim\out\Image.xnu-qemu is missing; run 'build.sh xnu-qemu' before using QEMU again"
 }
 
 Get-Item (Join-Path $out "boot_xnu.img") | ForEach-Object { "boot_xnu.img: $($_.Length) bytes" }
