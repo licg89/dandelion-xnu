@@ -1,0 +1,14 @@
+diff --git a/pexpert/arm/pe_init.c b/pexpert/arm/pe_init.c
+index 04dda53..cc5f725 100644
+--- a/pexpert/arm/pe_init.c
++++ b/pexpert/arm/pe_init.c
+@@ -380,6 +380,9 @@ PE_lockdown_iokit(void)
+ 	 */
+ 	zalloc_iokit_lockdown();
+ 	StartIOKitMatching();
++#if defined(DANDELION)
++	printf("DANDELION: PE_lockdown_iokit done\n");
++#endif
+ }
+ 
+ void

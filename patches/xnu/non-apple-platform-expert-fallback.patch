@@ -1,8 +1,38 @@
 diff --git a/iokit/Kernel/IOPlatformExpert.cpp b/iokit/Kernel/IOPlatformExpert.cpp
-index 7a32a23..1e44454 100644
+index 7a32a23..b2e1fb2 100644
 --- a/iokit/Kernel/IOPlatformExpert.cpp
 +++ b/iokit/Kernel/IOPlatformExpert.cpp
-@@ -2315,8 +2315,24 @@ IOPanicPlatform::start(IOService * provider)
+@@ -175,10 +175,19 @@ IOPlatformExpert::start( IOService * provider )
+ 	setPlatform( this );
+ 	gIOPlatform = this;
+ 
++#if defined(DANDELION)
++	printf("DANDELION: platform expert: instantiating power domains\n");
++#endif
+ 	PMInstantiatePowerDomains();
++#if defined(DANDELION)
++	printf("DANDELION: platform expert: power domains up\n");
++#endif
+ 
+ #if !defined(__x86_64__)
+ 	publishPlatformUUIDAndSerial();
++#if defined(DANDELION)
++	printf("DANDELION: platform expert: uuid published\n");
++#endif
+ #endif /* !defined(__x86_64__) */
+ 
+ #if defined (__x86_64__)
+@@ -191,6 +200,9 @@ IOPlatformExpert::start( IOService * provider )
+ 	PE_parse_boot_argn("enforce_platform_action_safety", &gEnforcePlatformActionSafety,
+ 	    sizeof(gEnforcePlatformActionSafety));
+ 
++#if defined(DANDELION)
++	printf("DANDELION: platform expert: configure\n");
++#endif
+ 	return configure(provider);
+ }
+ 
+@@ -2315,8 +2327,24 @@ IOPanicPlatform::start(IOService * provider)
  		platform_name = provider->getName();
  	}
  
