@@ -159,9 +159,20 @@ fastboot flash boot D:\aios\dandelion-xnu\out\boot_backup.img
 ```
 bsd_init: calling setconf
 DANDELION: platform expert: configure
+DANDELION: gic pidr2=0 arch=0 typer=790414 gicr_typer=0
+DANDELION: configure: topLevel=0
+DANDELION: configure: done
 ```
 
-即卡在 `IOPlatformExpert::configure()` 的 `createNub / attach / registerService` 里。
+**更正**：`configure()` 并没有卡住，它正常返回了（`topLevel == 0`，循环未执行）。
+真正的停止点在 `IOPlatformExpert::start()` 返回之后。详见
+[docs/FINDINGS-2026-10-26.md](FINDINGS-2026-10-26.md)。
+
+两个独立阻塞：
+
+1. ADT 根节点缺少 `top-level` 属性 → 一个设备节点都没创建 → 不会有任何 IOKit 驱动被匹配
+2. GIC 不是可用的 GICv3 系统寄存器模式（`PIDR2=0`、`GICR_TYPER=0`、`ICC_BPR0_EL1` UNDEFINED）
+   → 没有任何中断源 → 定时器不跳 → 任何阻塞等待永不返回
 
 已确认 / 强推断：
 
@@ -176,11 +187,12 @@ DANDELION: platform expert: configure
 
 下一步优先级：
 
-1. 拿到 `GICD_PIDR2`、`GICD_TYPER`、`GICR_TYPER` 的真实值（日志会滚走，
-   已改为在 `IOPlatformExpert` 里二次打印，见 `dandelion_gic_*` 全局变量）
-2. 若确认 GICv2：在 `pe_fiq.c` 里实现 GICv2 路径（GICC 内存映射，
-   GICC_CTLR/PMR/BPR + GICD_ISENABLER 使能 PPI），替换现在的 GICv3 系统寄存器路径
-3. 有定时器中断后再看 `configure()` 能否走完
+1. **给 ADT 补上 `top-level` 设备节点**（或让 `DandelionPlatformExpert` 手工创建根 nub）。
+   这是当前最靠前的阻塞：没有设备节点，任何驱动都不会被匹配
+2. **确定 GIC 工作模式**：读 `GICD_CTLR`（0x0）的 `ARE_NS` 位判断是否 v2 兼容模式；
+   在真实 DTB 里找 GICC 区。若是 v2，在 `pe_fiq.c` 里实现 GICv2 内存映射路径
+   （GICC_CTLR / GICC_PMR / GICC_BPR + GICD_ISENABLER 使能定时器 PPI）
+3. 定时器中断可用后，再看 `bsd_init` 能否走到 `waiting for root device`
 
 ## 10. 硬上限（要提前知道）
 
