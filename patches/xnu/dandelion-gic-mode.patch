@@ -1,33 +1,42 @@
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
-index 3ad743f..f7c62e0 100644
+index 3ad743f..a02f725 100644
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
-@@ -1,5 +1,23 @@
+@@ -1,177 +1,146 @@
  /*
   * Copyright (c) 2021 Apple Inc. All rights reserved.
 + *
-+ * Dandelion (Xiaomi Redmi 9A / MediaTek MT6762G) interrupt controller
-+ * bring-up.
++ * Dandelion (Xiaomi Redmi 9A / MediaTek MT6762G) interrupt controller glue.
 + *
-+ * Apple's version of this file programs a GICv3 through ICC_*_EL1 and enables
-+ * Group 0, because Apple's platforms are single-security-state: Group 0 is
-+ * not protected and arrives as FIQ, which is what sleh_fiq() expects.
++ * Division of labour, decided by measurement on the device:
 + *
-+ * The MT6762G is also a GICv3, but its GICD_TYPER.SecurityExtn bit says the
-+ * controller implements both security states, so Group 0 belongs to the
-+ * secure world and a non-secure EL1 kernel can only receive Group 1 as IRQ.
-+ * On such a part, programming ICC_IGRPEN0_EL1 and waiting for a FIQ timer
-+ * produces a kernel with no ticks at all.
++ *   boot shim (MMU off)
++ *       Programs the distributor and this PE's redistributor through
++ *       pexpert/pexpert/arm64/dandelion_gic.h, with the MMU off.  Every access
++ *       there either takes effect or is silently dropped by the security
++ *       fabric, and the machine survives either way.
 + *
-+ * The identification and register programming therefore live in
-+ * pexpert/pexpert/arm64/dandelion_gic.h, which the boot shim uses as well, and
-+ * which picks Group 0 or Group 1 from the hardware rather than assuming one.
-+ * sleh.c asks this file which group is in use when it acknowledges.
++ *   kernel (MMU on)
++ *       Programs only the system-register CPU interface (ICC_*), which is
++ *       per-CPU state and does not go through the interconnect.
++ *
++ * Why the kernel must not touch the distributor: doing so stalled the bus and
++ * the boot stopped right after 'arm_init: cpu_timabase_init', a dozen lines
++ * earlier than with the untouched GIC.  On this SoC the GIC implements both
++ * security states, so most distributor state belongs to EL3 in the first
++ * place - Linux receives its arch timer interrupt because the secure firmware
++ * has already arranged the groups, not because Linux set them up.
++ *
++ * Everything the kernel needs from the hardware - mode (GICv3), group
++ * (Group 1 / IRQ, because GICD_TYPER.SecurityExtn == 1) and the timer INTID -
++ * was measured with the shim's GIC inventory and is reported there.
   */
  
  #include <stdint.h>
-@@ -9,169 +27,234 @@
- #include <machine/atomic.h>
+ #include <arm64/proc_reg.h>
+ #include <kern/clock.h>
+-#include <mach/mach_time.h>
+-#include <machine/atomic.h>
  #include <machine/machine_routines.h>
  #include <pexpert/device_tree.h>
 +#include <pexpert/pexpert.h>
@@ -52,10 +61,6 @@ index 3ad743f..f7c62e0 100644
 -static vm_offset_t gicd_base;
 -static vm_offset_t gicr_base;
 -static vm_offset_t gicr_size;
-+/*
-+ * One controller per boot.  Secondary CPUs reuse the mapping and only program
-+ * their own redistributor, exactly like Apple's implementation.
-+ */
 +static struct dgic dandelion_gic;
 +static int dandelion_gic_ready;
 +static int dandelion_gic_group0;
@@ -75,22 +80,16 @@ index 3ad743f..f7c62e0 100644
 +dandelion_gic_ack(void)
  {
 -	return *((volatile uint64_t *) addr);
+-}
+-
+-static void
+-_gic_write32(vm_offset_t addr, uint32_t value)
+-{
+-	*((volatile uint32_t *) addr) = value;
 +	if (!dandelion_gic_ready) {
 +		return DGIC_INTID_SPURIOUS;
 +	}
 +	return dgic_ack(&dandelion_gic);
- }
- 
--static void
--_gic_write32(vm_offset_t addr, uint32_t value)
-+void
-+dandelion_gic_eoi(uint32_t intid)
- {
--	*((volatile uint32_t *) addr) = value;
-+	if (!dandelion_gic_ready) {
-+		return;
-+	}
-+	dgic_eoi(&dandelion_gic, intid);
  }
  
 -#define gicd_read32(offset) (_gic_read32(gicd_base + (offset)))
@@ -101,15 +100,12 @@ index 3ad743f..f7c62e0 100644
 -
 -static vm_offset_t
 -find_gicr_pe_base()
-+/* Does the device tree call this interrupt controller "arm,gic-v3"? */
-+static int
-+dandelion_gic_node_is_v3(DTEntry entry)
++void
++dandelion_gic_eoi(uint32_t intid)
  {
 -	// We only care about aff1 and aff0
 -	uint32_t phys_id = __builtin_arm_rsr64("MPIDR_EL1") & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK);
-+	void const *prop;
-+	unsigned int size;
- 
+-
 -	for (vm_offset_t offset = 0; offset < gicr_size; offset += GICR_PE_SIZE) {
 -		vm_offset_t gicr_pe_base = gicr_base + offset;
 -		uint64_t gicr_typer = gicr_read64(GICR_TYPER);
@@ -118,23 +114,16 @@ index 3ad743f..f7c62e0 100644
 -		if (phys_id == aff_value) {
 -			return gicr_pe_base;
 -		}
-+	if (SecureDTGetProperty(entry, "compatible", &prop, &size) != kSuccess ||
-+	    size < 6) {
-+		return -1;
-+	}
- 
+-
 -		if (gicr_typer & GICR_TYPER_LAST) {
 -			break;
-+	const char *text = prop;
-+	for (unsigned int i = 0; i + 6 <= size; i++) {
-+		if (text[i] == 'g' && text[i + 1] == 'i' && text[i + 2] == 'c' &&
-+		    text[i + 3] == '-' && text[i + 4] == 'v' && text[i + 5] == '3') {
-+			return 1;
- 		}
+-		}
++	if (!dandelion_gic_ready) {
++		return;
  	}
 -
 -	panic("%s: cannot find GICR base for core %u", __func__, ml_get_cpu_number(phys_id));
-+	return 0;
++	dgic_eoi(&dandelion_gic, intid);
  }
  
  void
@@ -142,26 +131,22 @@ index 3ad743f..f7c62e0 100644
 +pe_init_fiq(void)
  {
  	int error;
- 	DTEntry entry;
- 
+-	DTEntry entry;
+-
 -	// gicd_base is 0x0 only before it's initialized by the boot processor.
 -	// Avoid calling SecureDT* routines on secondary processors to avoid
 -	// race conditions because they are not thread-safe.
 -	if (!gicd_base) {
 -		// Find GIC DT node
-+	/* Nothing is mapped until the boot processor has done this once. */
-+	if (!dandelion_gic_ready) {
- 		error = SecureDTLookupEntry(NULL, "/arm-io/gic", &entry);
- 		if (error != kSuccess) {
+-		error = SecureDTLookupEntry(NULL, "/arm-io/gic", &entry);
+-		if (error != kSuccess) {
 -			panic("%s: cannot find GIC node in DT", __func__);
-+			kprintf("DANDELION: no GIC node in the ADT (%d)\n", error);
-+			return;
- 		}
- 
+-		}
+-
 -		// Find "reg" property
- 		void const *prop;
- 		unsigned int prop_size;
- 		error = SecureDTGetProperty(entry, "reg", &prop, &prop_size);
+-		void const *prop;
+-		unsigned int prop_size;
+-		error = SecureDTGetProperty(entry, "reg", &prop, &prop_size);
 -		if (error != kSuccess) {
 -			panic("%s: cannot find GIC MMIO regions in DT", __func__);
 -		}
@@ -169,14 +154,10 @@ index 3ad743f..f7c62e0 100644
 -		// Need at least GICD base, GICD size, GICR base and GICR size
 -		if (prop_size < 4 * sizeof(uint64_t)) {
 -			panic("%s: incorrect reg property size in GIC DT node; expecting 32 bytes but got %u bytes", __func__, prop_size);
-+		if (error != kSuccess || prop_size < 4 * sizeof(uint64_t)) {
-+			kprintf("DANDELION: GIC reg property unusable (%d, %u bytes)\n",
-+			    error, prop_size);
-+			return;
- 		}
- 
- 		vm_offset_t soc_base_phys = pe_arm_get_soc_base_phys();
+-		}
 -
+-		vm_offset_t soc_base_phys = pe_arm_get_soc_base_phys();
+ 
 -		uint64_t const gicd_base_prop = ((uint64_t const *) prop)[0];
 -		uint64_t const gicd_size_prop = ((uint64_t const *) prop)[1];
 -		uint64_t const gicr_base_prop = ((uint64_t const *) prop)[2];
@@ -187,103 +168,52 @@ index 3ad743f..f7c62e0 100644
 -
 -		if (!gicd_base) {
 -			panic("%s: cannot map GICD region", __func__);
-+		uint64_t const gicd_base_prop = ((uint64_t const *)prop)[0];
-+		uint64_t const gicd_size_prop = ((uint64_t const *)prop)[1];
-+		uint64_t const second_base_prop = ((uint64_t const *)prop)[2];
-+		uint64_t const second_size_prop = ((uint64_t const *)prop)[3];
++	/*
++	 * One-time CPU interface setup for this PE.  No MMIO: see the file
++	 * comment.  The shim has already done the distributor/redistributor
++	 * work, including enabling the timer PPI on the boot CPU.
++	 */
++	if (!dandelion_gic_ready) {
++		dandelion_gic.mode = DGIC_MODE_V3;
++		dandelion_gic.group = DGIC_GROUP1;      /* SecurityExtn == 1 */
++		dandelion_gic.redist = 0;
++		dandelion_gic.gicc = 0;
 +
-+		vm_offset_t gicd = ml_io_map(soc_base_phys + gicd_base_prop,
-+		    gicd_size_prop);
-+		vm_offset_t second = ml_io_map(soc_base_phys + second_base_prop,
-+		    second_size_prop);
-+		if (!gicd || !second) {
-+			kprintf("DANDELION: cannot map the GIC (gicd=%lx second=%lx)\n",
-+			    (unsigned long)gicd, (unsigned long)second);
++		error = dgic_cpuif_init(&dandelion_gic);
++		if (error != DGIC_OK) {
++			kprintf("DANDELION: cpu interface init failed (%d)\n",
++			    error);
 +			return;
  		}
  
 -		// Find GICR base address
 -		gicr_base = ml_io_map(soc_base_phys + gicr_base_prop, gicr_size_prop);
--
++		dandelion_gic_group0 = 0;
++		dandelion_gic_ready = 1;
++		dandelion_gic_arch_rev = 3;
+ 
 -		if (!gicr_base) {
 -			panic("%s: cannot map GICR region", __func__);
-+		error = dgic_identify(&dandelion_gic, gicd, gicd_size_prop,
-+		    second, second_size_prop, dandelion_gic_node_is_v3(entry));
-+
-+		/*
-+		 * Do NOT write GICD_CTLR or GICD_IGROUPR from here.
-+		 *
-+		 * On this SoC those two accesses behave differently depending on
-+		 * the context, which cost a boot to discover: from the boot shim
-+		 * (MMU off) they are silently dropped and read back unchanged,
-+		 * while from kernel context (MMU on) the write stalls the bus and
-+		 * the kernel stops right after arm_init: cpu_timabase_init.  The
-+		 * GIC implements both security states, so the group registers
-+		 * belong to EL3; poking them from non-secure code is not just
-+		 * ineffective here, it hangs.
-+		 *
-+		 * The four exported values stay (the late report prints them) but
-+		 * now describe what identify() saw, not a write experiment.
-+		 */
-+		dandelion_gic_ctlr_pre = dandelion_gic.ctlr;
-+		dandelion_gic_ctlr_post = dandelion_gic.ctlr;
-+		dandelion_gic_igroupr_pre = 0;
-+		dandelion_gic_igroupr_post = 0;
-+
-+		dandelion_gic_typer = dandelion_gic.typer;
-+		dandelion_gic_pidr2 = (dandelion_gic.pidr2_64k != 0) ?
-+		    dandelion_gic.pidr2_64k : dandelion_gic.pidr2_4k;
-+		dandelion_gic_arch_rev = dandelion_gic.arch_rev;
-+		dandelion_gicr_typer_v = dgic_read64(second, DGICR_TYPER);
-+
-+		kprintf("DANDELION: gic %s gicd=%lx typer=%x iidr=%x arch=%u "
-+		    "secext=%u pidr2(4k)=%x pidr2(64k)=%x\n",
-+		    dandelion_gic.mode == DGIC_MODE_V3 ? "v3" :
-+		    dandelion_gic.mode == DGIC_MODE_V2 ? "v2" : "unknown",
-+		    (unsigned long)gicd, dandelion_gic.typer, dandelion_gic.iidr,
-+		    dandelion_gic.arch_rev, dandelion_gic.secure_extn,
-+		    dandelion_gic.pidr2_4k, dandelion_gic.pidr2_64k);
-+
-+		if (error != DGIC_OK && error != DGIC_ERR_NO_CPUIF) {
-+			kprintf("DANDELION: gic identify failed (%d); "
-+			    "no interrupts will be delivered\n", error);
-+			return;
- 		}
- 
--		gicr_size = gicr_size_prop;
--	}
+-		}
 -
+-		gicr_size = gicr_size_prop;
++		kprintf("DANDELION: icc ready (sre=%lx pmr=%lx ctlr=%lx), "
++		    "timer INTID %u on Group1/IRQ\n",
++		    dandelion_gic.icc_sre_el1, dandelion_gic.icc_pmr,
++		    dandelion_gic.icc_ctlr, DANDELION_TIMER_IRQ);
++		return;
+ 	}
+ 
 -	// Find the redistributor for this processor
 -	vm_offset_t gicr_pe_base = find_gicr_pe_base();
-+		/*
-+		 * This PE's redistributor and the CPU interface only.
-+		 *
-+		 * The distributor's group-control registers (GICD_CTLR,
-+		 * GICD_IGROUPR) and the redistributor's group register belong to
-+		 * EL3 on this SoC.  Writing them from the shim (MMU off) is
-+		 * silently dropped; writing them here, with the MMU on, stalls
-+		 * the bus and the boot stops at cpu_timabase_init.  So the
-+		 * distributor is left entirely to the secure firmware, and only
-+		 * the parts that non-secure code genuinely owns are programmed.
-+		 */
-+		error = dgic_cpu_init(&dandelion_gic, 0);
-+		if (error != DGIC_OK) {
-+			kprintf("DANDELION: gic cpu init failed (%d); "
-+			    "no interrupts will be delivered\n", error);
-+			return;
-+		}
- 
+-
 -	// Mark this PE to be awake
 -	uint32_t gicr_waker = gicr_read32(GICR_WAKER);
 -	if (gicr_waker & GICR_WAKER_CHILDRENASLEEP) {
 -		gicr_waker &= ~GICR_WAKER_PROCESSORSLEEP;
-+		/* The timer PPI belongs to this CPU's SGI/PPI frame. */
-+		dgic_enable_ppi(&dandelion_gic, DANDELION_TIMER_IRQ);
- 
+-
 -		gicr_write32(GICR_WAKER, gicr_waker);
-+		dandelion_gic_group0 = (dandelion_gic.group == DGIC_GROUP0);
-+		dandelion_gic_ready = 1;
- 
+-
 -		uint64_t gicr_wake_deadline;
 -		nanoseconds_to_deadline(os_atomic_load(&gicr_wake_timeout_ns, relaxed), &gicr_wake_deadline);
 -		while (gicr_read32(GICR_WAKER) & GICR_WAKER_CHILDRENASLEEP) {
@@ -292,18 +222,15 @@ index 3ad743f..f7c62e0 100644
 -				panic("%s: core %u timed out waiting for redistributor to wake up",
 -				    __func__, ml_get_cpu_number_local());
 -			}
-+		kprintf("DANDELION: gic ready: %s, timer INTID %u, %s\n",
-+		    dandelion_gic.mode == DGIC_MODE_V3 ? "GICv3" : "GICv2",
-+		    DANDELION_TIMER_IRQ,
-+		    dandelion_gic_group0 ? "Group0/FIQ" : "Group1/IRQ");
-+		if (dandelion_gic.mode == DGIC_MODE_V3) {
-+			kprintf("DANDELION: icc_sre=%lx icc_iidr=%lx icc_ctlr=%lx pmr=%lx\n",
-+			    dandelion_gic.icc_sre_el1, dandelion_gic.icc_iidr,
-+			    dandelion_gic.icc_ctlr, dandelion_gic.icc_pmr);
- 		}
+-		}
++	/* Secondary CPU: its own CPU interface, nothing shared. */
++	error = dgic_cpuif_init(&dandelion_gic);
++	if (error != DGIC_OK) {
++		kprintf("DANDELION: cpu%u cpu interface init failed (%d)\n",
++		    ml_get_cpu_number_local(), error);
 +		return;
  	}
- 
+-
 -	// Configure timers and legacy FIQ to be group 0
 -	gicr_write32(GICR_IGROUPR0, 0x81FFFFFF);
 -
@@ -331,23 +258,7 @@ index 3ad743f..f7c62e0 100644
 -	gicd_write32(GICD_CTLR, gicd_ctlr);
 -	__builtin_arm_wsr64("ICC_IGRPEN0_EL1", 1);
 -	__builtin_arm_isb(ISB_SY);
-+	/* Secondary CPU: only its own redistributor and CPU interface. */
-+	if (dandelion_gic.mode == DGIC_MODE_V3) {
-+		error = dgic_redist_init(&dandelion_gic, 0);
-+		if (error != DGIC_OK) {
-+			kprintf("DANDELION: cpu%u redistributor init failed (%d)\n",
-+			    ml_get_cpu_number_local(), error);
-+			return;
-+		}
-+	}
-+	error = dgic_cpuif_init(&dandelion_gic);
-+	if (error != DGIC_OK) {
-+		kprintf("DANDELION: cpu%u cpu interface init failed (%d)\n",
-+		    ml_get_cpu_number_local(), error);
-+		return;
-+	}
-+	dgic_enable_ppi(&dandelion_gic, DANDELION_TIMER_IRQ);
-+	kprintf("DANDELION: cpu%u gic up\n", ml_get_cpu_number_local());
++	kprintf("DANDELION: cpu%u icc up\n", ml_get_cpu_number_local());
  }
  #else
  void
