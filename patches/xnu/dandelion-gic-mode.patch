@@ -1,5 +1,5 @@
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
-index 3ad743f..7aa7908 100644
+index 3ad743f..17617aa 100644
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
 @@ -1,5 +1,23 @@
@@ -26,7 +26,7 @@ index 3ad743f..7aa7908 100644
   */
  
  #include <stdint.h>
-@@ -9,169 +27,219 @@
+@@ -9,169 +27,226 @@
  #include <machine/atomic.h>
  #include <machine/machine_routines.h>
  #include <pexpert/device_tree.h>
@@ -40,6 +40,10 @@ index 3ad743f..7aa7908 100644
 +uint32_t dandelion_gic_pidr2;
 +uint32_t dandelion_gic_typer;
 +uint64_t dandelion_gicr_typer_v;
++uint32_t dandelion_gic_ctlr_pre;
++uint32_t dandelion_gic_ctlr_post;
++uint32_t dandelion_gic_igroupr_pre;
++uint32_t dandelion_gic_igroupr_post;
 +
  #if HAS_GIC_V3
 -#define GICR_WAKE_TIMEOUT_NS (1000000000ULL) // timeout for redistributor wakeup (default 1s)
@@ -211,18 +215,21 @@ index 3ad743f..7aa7908 100644
 +		 * the shim, with the MMU off, and the two group-control writes
 +		 * never took.  Linux does the same writes from kernel context
 +		 * with the MMU on and works on this device, so repeat them here
-+		 * and print the readbacks.
++		 * and keep the readbacks for the late report (the early console
++		 * scrolls them away within a second).
 +		 */
-+		kprintf("DANDELION: gic pre  ctlr=%x igroupr=%x\n",
-+		    dgic_read32(gicd, DGICD_CTLR),
-+		    dgic_read32(gicd, DGICD_IGROUPR));
++		dandelion_gic_ctlr_pre = dgic_read32(gicd, DGICD_CTLR);
++		dandelion_gic_igroupr_pre = dgic_read32(gicd, DGICD_IGROUPR);
 +		dgic_write32(gicd, DGICD_CTLR, 0x13u);
 +		dgic_write32(gicd, DGICD_IGROUPR, 0xffffffffu);
 +		__asm__ volatile("dsb sy" ::: "memory");
-+		kprintf("DANDELION: gic post ctlr=%x igroupr=%x\n",
-+		    dgic_read32(gicd, DGICD_CTLR),
-+		    dgic_read32(gicd, DGICD_IGROUPR));
-+		dgic_write32(gicd, DGICD_IGROUPR, 0x0u);
++		dandelion_gic_ctlr_post = dgic_read32(gicd, DGICD_CTLR);
++		dandelion_gic_igroupr_post = dgic_read32(gicd, DGICD_IGROUPR);
++		/* Leave the group bits as they were. */
++		if (dandelion_gic_igroupr_post != dandelion_gic_igroupr_pre) {
++			dgic_write32(gicd, DGICD_IGROUPR,
++			    dandelion_gic_igroupr_pre);
++		}
 +		__asm__ volatile("dsb sy" ::: "memory");
 +
 +		dandelion_gic_typer = dandelion_gic.typer;

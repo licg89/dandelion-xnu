@@ -1,5 +1,5 @@
 diff --git a/iokit/Kernel/IOPlatformExpert.cpp b/iokit/Kernel/IOPlatformExpert.cpp
-index 7a32a23..eac3e4c 100644
+index 7a32a23..e236324 100644
 --- a/iokit/Kernel/IOPlatformExpert.cpp
 +++ b/iokit/Kernel/IOPlatformExpert.cpp
 @@ -175,10 +175,19 @@ IOPlatformExpert::start( IOService * provider )
@@ -22,7 +22,7 @@ index 7a32a23..eac3e4c 100644
  #endif /* !defined(__x86_64__) */
  
  #if defined (__x86_64__)
-@@ -191,6 +200,19 @@ IOPlatformExpert::start( IOService * provider )
+@@ -191,6 +200,26 @@ IOPlatformExpert::start( IOService * provider )
  	PE_parse_boot_argn("enforce_platform_action_safety", &gEnforcePlatformActionSafety,
  	    sizeof(gEnforcePlatformActionSafety));
  
@@ -33,16 +33,23 @@ index 7a32a23..eac3e4c 100644
 +		extern uint32_t dandelion_gic_pidr2;
 +		extern uint32_t dandelion_gic_typer;
 +		extern uint64_t dandelion_gicr_typer_v;
++		extern uint32_t dandelion_gic_ctlr_pre;
++		extern uint32_t dandelion_gic_ctlr_post;
++		extern uint32_t dandelion_gic_igroupr_pre;
++		extern uint32_t dandelion_gic_igroupr_post;
 +
 +		printf("DANDELION: gic pidr2=%x arch=%u typer=%x gicr_typer=%lx\n",
 +		    dandelion_gic_pidr2, dandelion_gic_arch_rev,
 +		    dandelion_gic_typer, (unsigned long)dandelion_gicr_typer_v);
++		printf("DANDELION: gic ctlr %x -> %x, igroupr %x -> %x\n",
++		    dandelion_gic_ctlr_pre, dandelion_gic_ctlr_post,
++		    dandelion_gic_igroupr_pre, dandelion_gic_igroupr_post);
 +	}
 +#endif
  	return configure(provider);
  }
  
-@@ -202,6 +224,9 @@ IOPlatformExpert::configure( IOService * provider )
+@@ -202,6 +231,9 @@ IOPlatformExpert::configure( IOService * provider )
  	IOService *         nub = NULL;
  
  	topLevel = OSDynamicCast( OSSet, getProperty("top-level"));
@@ -52,7 +59,7 @@ index 7a32a23..eac3e4c 100644
  
  	if (topLevel) {
  		while ((dict = OSDynamicCast( OSDictionary,
-@@ -209,16 +234,31 @@ IOPlatformExpert::configure( IOService * provider )
+@@ -209,16 +241,31 @@ IOPlatformExpert::configure( IOService * provider )
  			dict->retain();
  			topLevel->removeObject( dict );
  			OSSafeReleaseNULL(nub);
@@ -84,7 +91,7 @@ index 7a32a23..eac3e4c 100644
  	return true;
  }
  
-@@ -2315,8 +2355,24 @@ IOPanicPlatform::start(IOService * provider)
+@@ -2315,8 +2362,24 @@ IOPanicPlatform::start(IOService * provider)
  		platform_name = provider->getName();
  	}
  
