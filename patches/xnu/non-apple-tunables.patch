@@ -1,5 +1,5 @@
 diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
-index e5336e5..d1b9347 100644
+index e5336e5..09a7be9 100644
 --- a/osfmk/arm64/start.s
 +++ b/osfmk/arm64/start.s
 @@ -33,7 +33,9 @@
@@ -12,7 +12,7 @@ index e5336e5..d1b9347 100644
  #include <arm64/exception_asm.h>
  
  #if __ARM_KERNEL_PROTECT__
-@@ -88,6 +90,51 @@
+@@ -88,6 +90,79 @@
  #endif /* defined(KERNEL_INTEGRITY_KTRR) */
  .endmacro
  
@@ -54,17 +54,45 @@ index e5336e5..d1b9347 100644
 +.endmacro
 +
 +.macro DANDELION_STAGE_LATE num
++	/* physical scratch word */
 +	movz	x9, #0x5fbe, lsl #16
 +	mov	w10, #\num
 +	str	w10, [x9]
 +	dc	cvac, x9
++	/* live marker: red bar near the bottom of the framebuffer */
++	movz	x9, #0x7ec5, lsl #16
++	mov	x10, #1520
++	mov	x11, #2944
++	mul	x10, x10, x11
++	add	x9, x9, x10
++	mov	x12, #24
++	mov	w13, #0xffff0000
++	mov	x14, #(\num * 96)
++1:
++	mov	x15, x14
++	mov	x16, x9
++2:
++	str	w13, [x16], #4
++	subs	x15, x15, #1
++	b.ne	2b
++	/* clean the row to the point of coherency: this mapping is cacheable */
++	mov	x15, x14
++	mov	x16, x9
++3:
++	dc	cvac, x16
++	add	x16, x16, #64
++	subs	x15, x15, #16
++	b.gt	3b
++	add	x9, x9, x11
++	subs	x12, x12, #1
++	b.ne	1b
 +	dsb	sy
 +.endmacro
 +
  /*
   * Checks the reset handler for global and CPU-specific reset-assist functions,
   * then jumps to the reset handler with boot args and cpu data. This is copied
-@@ -220,6 +267,7 @@ LEXT(ResetHandlerData)
+@@ -220,6 +295,7 @@ LEXT(ResetHandlerData)
  	.align	3
  	.globl EXT(_start)
  LEXT(_start)
@@ -72,7 +100,7 @@ index e5336e5..d1b9347 100644
  	b	EXT(start_first_cpu)
  
  
-@@ -456,6 +504,8 @@ start_cpu:
+@@ -456,6 +532,8 @@ start_cpu:
  	.globl EXT(start_first_cpu)
  LEXT(start_first_cpu)
  
@@ -81,7 +109,36 @@ index e5336e5..d1b9347 100644
  	// Unlock the core for debugging
  	msr		OSLAR_EL1, xzr
  	msr		DAIFSet, #(DAIFSC_ALL)				// Disable all interrupts
-@@ -612,6 +662,7 @@ Lkernelcache_base_found:
+@@ -609,9 +687,36 @@ Lkernelcache_base_found:
+ 	lsr		x5,  x24, #(ARM_TT_L2_SHIFT)
+ 	create_bootstrap_mapping x14, x15, x5, x3, x2, x9, x10, x11, x12, x13
+ 
++	/*
++	 * Dandelion: map three extra 2 MiB blocks so that the framebuffer stays
++	 * reachable once the MMU is on.  Everything past this point can only
++	 * report progress by painting into it, and 0x7ec50000 sits outside the
++	 * mem_size window the bootstrap map covers.  The V=P L2 table is the
++	 * first page allocated from the free pointer, i.e. the page right
++	 * after the two L1 tables.  The marker bar lives at y=1520, which is
++	 * 0x7f0b1400, so one block is not enough.
++	 */
++	add		x2, x25, #(2 * PGBYTES)
++	ubfx	x3, x23, #(ARM_TT_L2_SHIFT), #9		// L2 index of the kernel base
++	ldr		x1, [x2, x3, lsl #(TTE_SHIFT)]
++	and		x1, x1, #0xffff				// keep attributes and type bits
++	movz	x4, #0x7ec0, lsl #16			// 0x7ec00000
++	orr		x1, x1, x4
++	movz	x3, #(0x1f6 * 8)			// L2 index of 0x7ec00000
++	mov	x5, #3					// blocks 0x7ec00000..0x80000000
++	mov	x6, #(1 << ARM_TT_L2_SHIFT)
++4:
++	str		x1, [x2, x3]
++	add		x1, x1, x6
++	add		x3, x3, #8
++	subs	x5, x5, #1
++	b.ne	4b
++	dsb		sy
++
  	/* Ensure TTEs are visible */
  	dsb		ish
  
@@ -89,16 +146,21 @@ index e5336e5..d1b9347 100644
  
  	b		common_start
  
-@@ -745,6 +796,8 @@ common_start:
+@@ -741,10 +846,13 @@ common_start:
+ #endif /* HAS_APPLE_PAC */
+ 
+ 	// Enable caches, MMU, ROP and JOP
++	DANDELION_STAGE_EARLY 4
+ 	MOV64   x0, SCTLR_EL1_DEFAULT
  	MSR_SCTLR_EL1_X0
  	isb		sy
  
-+	DANDELION_STAGE_LATE 4
++	DANDELION_STAGE_LATE 5
 +
  #if !VMAPPLE
  	MOV64   x1, SCTLR_EL1_DEFAULT
  	cmp		x0, x1
-@@ -774,10 +827,12 @@ common_start:
+@@ -774,10 +882,12 @@ common_start:
  	// Initialization common to all non-virtual Apple targets
  #endif  // APPLE_ARM64_ARCH_FAMILY
  
@@ -111,11 +173,11 @@ index e5336e5..d1b9347 100644
  
  
  #if HAS_CLUSTER
-@@ -807,6 +862,8 @@ common_start:
+@@ -807,6 +917,8 @@ common_start:
  	mov	lr, x21
  #endif
  
-+	DANDELION_STAGE_LATE 5
++	DANDELION_STAGE_LATE 6
 +
  	// Return to arm_init()
  	ret

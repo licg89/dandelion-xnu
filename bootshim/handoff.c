@@ -282,6 +282,60 @@ extern size_t dandelion_make_adt(void *buffer, size_t capacity,
 				  const unsigned char *seed, size_t seed_bytes);
 
 #if defined(__aarch64__)
+/*
+ * Invalidate the whole data cache by set/way before handing over to XNU.
+ *
+ * LK runs with the caches enabled and leaves clean lines behind for physical
+ * memory that now holds our payload and page tables.  The shim itself runs
+ * with the MMU and caches off, so its accesses bypass those lines, but as
+ * soon as XNU turns the MMU on the stale lines shadow the real contents of
+ * DRAM and the first thing that breaks is the bootstrap page table walk.
+ *
+ * Invalidate (not clean): cleaning would write LK's stale copy of the boot
+ * image back over the payload we just copied into place.
+ */
+static void dcache_invalidate_all(void)
+{
+	uint64_t clidr;
+	__asm__ volatile("mrs %0, clidr_el1" : "=r"(clidr));
+	unsigned loc = (unsigned)((clidr >> 24) & 7u);
+	if (loc == 0)
+		return;
+
+	__asm__ volatile("dsb sy" ::: "memory");
+
+	for (unsigned level = 0; level < loc; level++) {
+		uint32_t ctype = (uint32_t)((clidr >> (3 * level)) & 7u);
+		/* 0 = no cache, 1 = instruction only; 2/3/4 all have data. */
+		if (ctype == 0 || ctype == 1)
+			continue;
+
+		__asm__ volatile("msr csselr_el1, %0"
+		    : : "r"((uint64_t)level << 1) : "memory");
+		__asm__ volatile("isb" ::: "memory");
+
+		uint64_t ccsidr;
+		__asm__ volatile("mrs %0, ccsidr_el1" : "=r"(ccsidr));
+
+		unsigned line_shift = (unsigned)(ccsidr & 7u) + 4;
+		unsigned ways = (unsigned)(((ccsidr >> 3) & 0x3ffu) + 1u);
+		unsigned sets = (unsigned)(((ccsidr >> 13) & 0x7fffu) + 1u);
+		unsigned way_shift = 32u - (unsigned)__builtin_ctz(ways);
+
+		for (unsigned w = 0; w < ways; w++) {
+			for (unsigned s = 0; s < sets; s++) {
+				uint64_t setway = ((uint64_t)w << way_shift) |
+				    ((uint64_t)s << line_shift);
+				__asm__ volatile("dc isw, %0"
+				    : : "r"(setway) : "memory");
+			}
+		}
+	}
+
+	__asm__ volatile("dsb sy" ::: "memory");
+	__asm__ volatile("isb" ::: "memory");
+}
+
 /* The jump itself is aarch64 only; host builds only use handoff_validate(). */
 const char *handoff_boot(const struct fdt_info *fdt, uint64_t fdt_pa, uint64_t payload_addr, uint64_t payload_size)
 {
@@ -404,6 +458,7 @@ const char *handoff_boot(const struct fdt_info *fdt, uint64_t fdt_pa, uint64_t p
 	copy_bytes(plan.args_pa, &ba, sizeof(ba));
 
 	/* Flush caches and jump */
+	dcache_invalidate_all();
 	__asm__ volatile("dsb sy; ic iallu; dsb sy; isb" ::: "memory");
 
 	((void (*)(uint64_t))(uintptr_t)plan.entry_pa)(plan.args_pa);
