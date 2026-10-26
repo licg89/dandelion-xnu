@@ -61,10 +61,32 @@ XNU 原生的 FIQ/Group0 路线在这颗芯片上不可能工作。
 
 | 事实 | 证据 |
 |---|---|
-| GIC 是 GICv3 | `PIDR2@0xFFE8 = 0x3b`，`GICD_IIDR = 0x1143b`（GIC-500 r1p1） |
+| GIC 是 GICv3（GIC-500 r1p1） | `PIDR2@0xFFE8 = 0x3b`，`GICD_IIDR = 0x1143b` |
 | 两安全态 | `GICD_TYPER = 0x790414`，SecurityExtn=1 |
 | PPI/组控制对 NS 只读 | `IGROUPR0` 写 0xffffffff 回读 0；`GICD_CTLR` 写 0x13 回读 0x12 |
-| ICC 系统寄存器可用 | `ICC_SRE_EL1=1`、PMR/CTLR/IGRPEN1 可写、`CNTFRQ=13MHz` |
-| arch timer PPI 27 收不到 | 强制 pending 后 `IAR` 二十分钟仍是 spurious（1020/1023） |
+| SPI 同样不行 | `GICD_IGROUPR[6]` 写 0xffffffff 回读 0；强制 pending INTID 200 后 `IAR` 仍是 spurious |
+| 两个定时器 PPI 都收不到 | `CNTP`/INTID 30 与 `CNTV`/INTID 27 强制后 `HPPIR` 都是 `0x3fc`(1020) |
+| 没有 NS 可写别名 | `0x0c000000` 与 `0x0c200000`（镜像）都 read-only；`0x0c400000`（`mediatek,gic_cpu`）是空块 |
+| ICC 系统寄存器可用 | `ICC_SRE_EL1=1`、PMR/CTLR/IGRPEN1 可写、`CNTFRQ=13MHz`、`CNTVCT` 在跑 |
 | `fastboot boot` 不可用 | 下载 OKAY 后 `Booting FAILED (Status read failed)` |
 | MUSB 控制器可写、无 VBUS | `POWER=0x60`、`DEVCTL=0x00`、主机无枚举 |
+| LK 内有 USB/GIC 线索 | `lk.img` 里能搜到 `mediatek,mt6765-usb20`、`GIC_SYNC_DCM`、`MP_GIC_RGU_SYNC_DCM` |
+
+分区备份（`D:\aios\artifacts\backup\`，通过 Magisk root + `dd` 取得）：
+`lk.img`、`lk2.img`、`dtbo.img`、`boot_para.img`、`seccfg.img`、`mmcblk0boot0.img`（preloader）。
+有这些就能在改引导器失败时恢复。
+
+## 关键矛盾与下一步方向
+
+Android（非安全）能收中断，而我们同样在非安全态却一个都收不到。差异只能来自
+**安全侧/引导器对这条启动路径的配置**。因此剩下的路都指向引导器：
+
+1. **看 LK 是怎么做的**：`lk.img` 里有 `GIC_SYNC_DCM` / `MP_GIC_RGU_SYNC_DCM`
+   这类 MTK 专有寄存器名，说明 MTK 给 GIC 加了时钟域同步包装。反汇编 LK
+   里引用这些字符串的函数，可能找到"让 NS 能写 GIC 分组/使能"的那一步
+   （例如先把 GIC 的 APB/DCM 切到正确时钟域）。
+2. **改 LK 再跳我们的镜像**：编译或 patch `lk.img`，在跳转前完成
+   `IGROUPR = 0xffffffff` + `GICD_CTLR.EnableGrp1NS`，然后 `fastboot flash lk`。
+   已有 `lk.img`/`lk2.img` 备份，可回退。
+3. 备选：确认 Android 是否使用**另一个中断控制器**（MTK sysirq/AIC）。
+   A04BR3 参考项目就是 "GICv2 + MediaTek AIC" 的组合，这颗 SoC 可能类似。

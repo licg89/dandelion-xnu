@@ -653,12 +653,117 @@ gic_probe_run(const struct fdt_platform *platform, struct gic_probe_result *r)
 	dgic_send_sgi(&r->gic, 15u, 0u, 1u);
 	fb_puts("ok\n", CLR_GREEN);
 
-	out("  verdict      ", CLR_CYAN);
-	if (r->timer_group1 == 1) {
-		out("timer PPI reached the CPU interface\n", CLR_GREEN);
-	} else {
-		out("timer PPI never appeared\n", CLR_RED);
+	/*
+	 * GICD_IGROUPR is RAZ/WI in the non-secure view, so the zero we read
+	 * says nothing about the real group assignment: the secure firmware
+	 * decides what non-secure code may receive.  Android/Linux uses the EL1
+	 * *physical* timer (CNTP, INTID 30) while Apple's XNU uses the *virtual*
+	 * timer (CNTV, INTID 27), so try both and see which one the firmware
+	 * actually handed us.
+	 */
+	{
+		static const unsigned int candidates[2] = { 30u, 27u };
+
+		for (unsigned c = 0; c < 2; c++) {
+			unsigned int intid = candidates[c];
+			unsigned int hppir = 0;
+			unsigned long deadline;
+
+			dgic_enable_ppi(&r->gic, intid);
+			dgic_timer_test_clear(&r->gic, intid);
+
+			if (intid == 30u) {
+				__asm__ volatile("msr CNTP_TVAL_EL0, %0" : :
+				    "r"(dgic_cntfrq() / 1000u) : "memory");
+				__asm__ volatile("msr CNTP_CTL_EL0, %0" : :
+				    "r"(1ul) : "memory");
+			} else {
+				__asm__ volatile("msr CNTV_TVAL_EL0, %0" : :
+				    "r"(dgic_cntfrq() / 1000u) : "memory");
+				__asm__ volatile("msr CNTV_CTL_EL0, %0" : :
+				    "r"(1ul) : "memory");
+			}
+			dgic_isb();
+
+			deadline = dgic_cntvct() + (dgic_cntfrq() / 1000ul) * 20ul;
+			while ((long)(dgic_cntvct() - deadline) < 0) {
+				hppir = dgic_hppir(&r->gic);
+				if (hppir == intid) {
+					break;
+				}
+			}
+
+			__asm__ volatile("msr CNTP_CTL_EL0, %0" : : "r"(0ul) : "memory");
+			__asm__ volatile("msr CNTV_CTL_EL0, %0" : : "r"(0ul) : "memory");
+			dgic_isb();
+
+			out(intid == 30u ? "  timer CNTP30 " : "  timer CNTV27 ",
+			    CLR_CYAN);
+			outhex(hppir);
+			out(hppir == intid ? "  <- DELIVERED\n" :
+			    "  <- not delivered\n",
+			    hppir == intid ? CLR_GREEN : CLR_RED);
+
+			if (intid == 30u) {
+				r->timer_group0 = (hppir == intid);
+			} else {
+				r->timer_group1 = (hppir == intid);
+			}
+		}
 	}
-	dgic_timer_test_clear(&r->gic, irq);
+
+	out("  verdict      ", CLR_CYAN);
+	if (r->timer_group0 == 1 || r->timer_group1 == 1) {
+		out("at least one timer PPI is deliverable\n", CLR_GREEN);
+	} else {
+		out("no timer PPI is deliverable to NS\n", CLR_RED);
+	}
+
+	/*
+	 * Alias hunt.  Everything above assumes the distributor lives at the
+	 * address the arm,gic-v3 node gives (0x0c000000), where reads work but
+	 * the group/enable writes are silently dropped.  The device tree also
+	 * describes mediatek,gic_cpu at 0x0c400000 (256 KiB).  If that is the
+	 * non-secure view of the same distributor, its registers are the ones
+	 * that matter.  Read TYPER, then try to write IGROUPR and GICD_CTLR and
+	 * see which base accepts them.
+	 */
+	{
+		static const unsigned long bases[3] = {
+			0x0C000000UL, 0x0C400000UL, 0x0C200000UL
+		};
+
+		for (unsigned b = 0; b < 3; b++) {
+			unsigned long base = bases[b];
+			unsigned int typer, igupr, ctlr;
+
+			out("  base ", CLR_CYAN);
+			outhex(base);
+			typer = dgic_read32(base, DGICD_TYPER);
+			out(" typer ", CLR_CYAN);
+			outhex(typer);
+			fb_newline();
+
+			out("    igupr w/r ", CLR_CYAN);
+			dgic_write32(base, DGICD_IGROUPR, 0xffffffffu);
+			igupr = dgic_read32(base, DGICD_IGROUPR);
+			outhex(igupr);
+			out(igupr == 0xffffffffu ? "  <- writable" : "  <- read-only",
+			    igupr == 0xffffffffu ? CLR_GREEN : CLR_RED);
+			fb_newline();
+
+			out("    ctlr  w/r ", CLR_CYAN);
+			dgic_write32(base, DGICD_CTLR, 0x13u);
+			ctlr = dgic_read32(base, DGICD_CTLR);
+			outhex(ctlr);
+			out((ctlr & 0x1u) ? "  <- EnableGrp1NS set" :
+			    "  <- bit0 dropped",
+			    (ctlr & 0x1u) ? CLR_GREEN : CLR_RED);
+			fb_newline();
+		}
+	}
+
+	dgic_timer_test_clear(&r->gic, 27u);
+	dgic_timer_test_clear(&r->gic, 30u);
 	return;
 }
