@@ -369,6 +369,16 @@ void usb_cdc_dump(void)
 	fb_puts(" req=", 0xFF00FFFF);
 	fb_putdec_raw(request_count);
 	fb_newline();
+
+	/* Are the clock controllers reachable at all?  A live APB means the PHY
+	 * reading 0 is a gate/mapping problem rather than "nothing is powered". */
+	fb_puts("clk top=", 0xFF00FFFF);
+	fb_puthex_raw(*(volatile uint32_t *)(uintptr_t)0x10000000UL);
+	fb_puts(" infra=", 0xFF00FFFF);
+	fb_puthex_raw(*(volatile uint32_t *)(uintptr_t)0x10001000UL);
+	fb_puts(" sif=", 0xFF00FFFF);
+	fb_puthex_raw(*(volatile uint32_t *)(uintptr_t)0x11210000UL);
+	fb_newline();
 }
 
 int usb_cdc_init(void)
