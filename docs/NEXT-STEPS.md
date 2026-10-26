@@ -106,13 +106,21 @@ Android（非安全）能收中断，而我们同样在非安全态却一个都�
 
 ### 候选突破口（按可行性）
 
-1. **反汇编 `lk.img` 找 GIC 初始化**：LK 里有 `GIC_SYNC_DCM`、`MP_GIC_RGU_SYNC_DCM`
-   字符串和完整的内嵌 DTB。若 LK 在跳转前写 GICD_CTLR/IGROUPR，就能照抄。
-   已用常量扫描定位到若干候选区间（0x6f4xx–0x6f8xx、0x748xx），但需要按指令
-   （ADRP/ADD 引用字符串表）继续追，属于下一步的主线工作。
-2. **patch LK**（有 `lk.img`/`lk2.img` 备份）：在跳 Android 前手动置位后跳我们的镜像。
-3. **在 Android 内核里插桩**：编译一个能读 GIC 寄存器的最小模块（需要匹配的
-   kernel headers/vermagic，难度高），或找 MTK 的 `mt_gic` 调试节点。
-4. **绕开 GIC**：确认 sysirq 与 GIC 的连接方式（`sysirq` 只有 0x50 字节寄存器、
-   且 `/proc/interrupts` 里看不到它的 GIC 父线），若 sysirq 的某根输出 SPI 是
-   Android 申请过的，就能复用那根线；否则此路不通。
+0. **⚠️ 已排除：在核心里写 GIC 组寄存器会挂死总线**
+   从 shim（MMU 关）写 `GICD_CTLR` / `GICD_IGROUPR` 只是被静默丢弃；
+   从内核（MMU 开，`ml_io_map` 得到的 Device 映射）写同样的地址，
+   **内核停在 `arm_init: cpu_timabase_init`**（比正常少走十几行）。
+   所以这不是"内存属性不同导致写生效"的问题，而是**该访问会 stall**。
+   代码里已加注释禁止再写，见 `pexpert/arm/pe_fiq.c`。
+   这也意味着 **XNU 侧永远拿不到这两个寄存器**，Android 必然是在
+   更早的特权阶段把它们配置好的。
+1. **反汇编 `lk.img` 找 GIC 初始化**：已做常量扫描与 ADRP 交叉引用分析，
+   结论是 LK 载荷里**没有** `IGROUPR`/`CTLR` 的直接写，也没有对
+   `GIC_SYNC_DCM` 等字符串的引用（这些字符串在载荷外，属于内嵌 DTB）。
+   因此 LK 很可能根本不碰 GIC —— 配置发生在 **preloader/ATF（EL3）**。
+2. **patch LK/preloader**：唯一还能"在跳转前"动手的地方。`lk.img`/`lk2.img`
+   已备份，`preloader`（`mmcblk0boot0`）也已备份。
+3. **在 Android 内核里插桩**：需要匹配 vermagic 的模块，难度高。
+4. **绕开 GIC**：`sysirq`(0x10200b00) 与 `sys_timer`(0x10017000) 对 NS 可读，
+   但 sysirq 的父线仍在 GIC 上，且 `/proc/interrupts` 里看不到它的 GIC 父线，
+   说明这层映射需要 MTK 私有信息才能接上。
