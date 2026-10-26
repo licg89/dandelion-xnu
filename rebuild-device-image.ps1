@@ -34,10 +34,14 @@ try {
     python mkxnu.py $Kernel -o out/payload-dandelion.bin --cmdline $Cmdline
     if ($LASTEXITCODE -ne 0) { throw "mkxnu failed" }
 
+    # The boot partition holds a plain Android boot image v2: the kernel
+    # section starts with gzip(shim) and has no MediaTek 512-byte section
+    # header.  patch_boot.py keeps the stock header and kernel_size and only
+    # replaces the sections, which is what the bootloader expects.
     Write-Host "== packing boot image =="
-    python mkbootimg_mtk.py ../out/boot_backup.img out/Image.xnu ../out/dandelion.dtb `
-        out/payload-dandelion.bin ../out/boot_xnu.img
-    if ($LASTEXITCODE -ne 0) { throw "mkbootimg failed" }
+    python patch_boot.py ../out/boot_backup.img out/Image.xnu ../out/dandelion.dtb `
+        ../out/boot_xnu.img out/payload-dandelion.bin
+    if ($LASTEXITCODE -ne 0) { throw "patch_boot failed" }
 } finally {
     Pop-Location
 }
