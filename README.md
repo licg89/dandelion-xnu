@@ -2,6 +2,8 @@
 
 **在 Xiaomi Redmi 9A (MT6762G/Helio G25) 上运行 Apple XNU 内核**
 
+> 换机器继续开发 / 重新搭环境：先看 [docs/HANDOVER.md](docs/HANDOVER.md)。
+
 ## 项目状态
 
 | 组件 | 状态 | 说明 |
@@ -11,7 +13,7 @@
 | 测试内核加载 | ✅ 完成 | 嵌入 shim 的测试内核成功在 0x60000000 运行 |
 | 设备 DTB 平台探测 | ✅ 完成 | shim 从设备自己的 DTB 读取 GICv3/定时器/UART/看门狗/CPU，并与 `DANDELION.h` 比对 |
 | 真机平台测试负载 | ✅ 完成（待刷入） | 在 EL1 逐项调用平台专家并画到 framebuffer，见 [docs/PLATFORM_TEST.md](docs/PLATFORM_TEST.md) |
-| XNU 内核适配 | 🚧 进行中 | 平台定义、配置、平台专家（GICv3/定时器/UART/看门狗）已完成并通过交叉编译；尚缺 XNU 源码树集成与完整内核构建 |
+| XNU 内核适配 | 🚧 已进入 BSD 初始化 | 内核完整编译并真机运行到 `bsd_init`；当前停在 `IOPlatformExpert::configure()`，中断控制器（GIC）版本待修正，详见 [docs/HANDOVER.md](docs/HANDOVER.md) |
 | UART 调试 | 🚧 部分实现 | MT6577 UART 驱动已实现（`0x11002000` @921600 8N1）；物理串口未引出，实际仍以 framebuffer 输出为主 |
 | pstore 日志 | ❌ 未实现 | ramoops 格式不兼容 |
 | USB CDC-ACM | ❌ 未实现 | 实时串口输出方案 |
