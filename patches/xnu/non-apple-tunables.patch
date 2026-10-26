@@ -1,5 +1,5 @@
 diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
-index e5336e5..c586ae3 100644
+index e5336e5..d1b9347 100644
 --- a/osfmk/arm64/start.s
 +++ b/osfmk/arm64/start.s
 @@ -33,7 +33,9 @@
@@ -12,7 +12,7 @@ index e5336e5..c586ae3 100644
  #include <arm64/exception_asm.h>
  
  #if __ARM_KERNEL_PROTECT__
-@@ -88,6 +90,29 @@
+@@ -88,6 +90,51 @@
  #endif /* defined(KERNEL_INTEGRITY_KTRR) */
  .endmacro
  
@@ -22,12 +22,34 @@ index e5336e5..c586ae3 100644
 + * XNU can die before any C code runs, which leaves no output anywhere.
 + * Store an increasing stage number in a physical scratch word that the boot
 + * shim reads back on the next boot, so we can tell how far the kernel got.
-+ * Only x9 and x10 are clobbered.
++ * The early variant also paints a live bar into the framebuffer, which the
++ * display controller keeps scanning out while the kernel hangs.
++ * Only x9-x16 are clobbered.
 + */
 +.macro DANDELION_STAGE_EARLY num
++	/* physical scratch word, read back by the shim on the next boot */
 +	movz	x9, #0x5fbe, lsl #16
 +	mov	w10, #\num
 +	str	w10, [x9]
++	/* live marker: red bar near the bottom of the framebuffer */
++	movz	x9, #0x7ec5, lsl #16
++	mov	x10, #1520
++	mov	x11, #2944
++	mul	x10, x10, x11
++	add	x9, x9, x10
++	mov	x12, #24
++	mov	w13, #0xffff0000
++	mov	x14, #(\num * 96)
++1:
++	mov	x15, x14
++	mov	x16, x9
++2:
++	str	w13, [x16], #4
++	subs	x15, x15, #1
++	b.ne	2b
++	add	x9, x9, x11
++	subs	x12, x12, #1
++	b.ne	1b
 +	dsb	sy
 +.endmacro
 +
@@ -42,7 +64,7 @@ index e5336e5..c586ae3 100644
  /*
   * Checks the reset handler for global and CPU-specific reset-assist functions,
   * then jumps to the reset handler with boot args and cpu data. This is copied
-@@ -220,6 +245,7 @@ LEXT(ResetHandlerData)
+@@ -220,6 +267,7 @@ LEXT(ResetHandlerData)
  	.align	3
  	.globl EXT(_start)
  LEXT(_start)
@@ -50,7 +72,7 @@ index e5336e5..c586ae3 100644
  	b	EXT(start_first_cpu)
  
  
-@@ -456,6 +482,8 @@ start_cpu:
+@@ -456,6 +504,8 @@ start_cpu:
  	.globl EXT(start_first_cpu)
  LEXT(start_first_cpu)
  
@@ -59,7 +81,7 @@ index e5336e5..c586ae3 100644
  	// Unlock the core for debugging
  	msr		OSLAR_EL1, xzr
  	msr		DAIFSet, #(DAIFSC_ALL)				// Disable all interrupts
-@@ -612,6 +640,7 @@ Lkernelcache_base_found:
+@@ -612,6 +662,7 @@ Lkernelcache_base_found:
  	/* Ensure TTEs are visible */
  	dsb		ish
  
@@ -67,7 +89,7 @@ index e5336e5..c586ae3 100644
  
  	b		common_start
  
-@@ -745,6 +774,8 @@ common_start:
+@@ -745,6 +796,8 @@ common_start:
  	MSR_SCTLR_EL1_X0
  	isb		sy
  
@@ -76,7 +98,7 @@ index e5336e5..c586ae3 100644
  #if !VMAPPLE
  	MOV64   x1, SCTLR_EL1_DEFAULT
  	cmp		x0, x1
-@@ -774,10 +805,12 @@ common_start:
+@@ -774,10 +827,12 @@ common_start:
  	// Initialization common to all non-virtual Apple targets
  #endif  // APPLE_ARM64_ARCH_FAMILY
  
@@ -89,7 +111,7 @@ index e5336e5..c586ae3 100644
  
  
  #if HAS_CLUSTER
-@@ -807,6 +840,8 @@ common_start:
+@@ -807,6 +862,8 @@ common_start:
  	mov	lr, x21
  #endif
  
