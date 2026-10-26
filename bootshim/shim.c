@@ -9,6 +9,7 @@
 #include "handoff.h"
 #include "log.h"
 #include "pstore.h"
+#include "usb_cdc.h"
 #include "pe_dandelion.h"
 
 #define READ_SYSREG(reg) ({ uint64_t _v; __asm__ volatile("mrs %0, " #reg : "=r"(_v)); _v; })
@@ -262,6 +263,61 @@ __attribute__((noreturn)) void shim_el1(uint64_t dtb)
 
 		gic_probe_run(&fdt_platform_info, &probe);
 	}
+
+#ifdef PROBE_ONLY
+	/*
+	 * Diagnostics build: stop here and leave everything on the panel.  The
+	 * kernel console starts at y=860 and would scroll over the probe's
+	 * results, which is exactly what happened when this was run together
+	 * with a kernel.  Reset after a generous pause so the panel can be
+	 * photographed, and so the next boot prints it again.
+	 */
+	{
+		uint64_t frequency = READ_SYSREG(CNTFRQ_EL0);
+		uint64_t start;
+
+		if (!frequency) {
+			frequency = 13000000;
+		}
+		fb_puts("\nPROBE ONLY - not handing off to XNU\n", CLR_YELLOW);
+		fb_puts("holding this panel for 120 s, then PSCI reset\n", CLR_YELLOW);
+		start = READ_SYSREG(CNTPCT_EL0);
+		while (READ_SYSREG(CNTPCT_EL0) - start < frequency * 120ULL)
+			;
+		stop();
+	}
+#endif
+
+#ifdef USB_CONSOLE
+	/*
+	 * USB debug console: enumerate as CDC-ACM and then keep polling, so the
+	 * host can read this log as a serial port.  Everything printed through
+	 * fb_putc() is mirrored to the bulk IN endpoint, and the panel keeps
+	 * working, so a failed enumeration still leaves evidence on screen.
+	 */
+	{
+		uint32_t requests, last, bytes, events;
+		uint64_t frequency = READ_SYSREG(CNTFRQ_EL0);
+		uint64_t next;
+
+		if (!frequency) {
+			frequency = 13000000;
+		}
+
+		fb_puts("\n--- USB CDC-ACM console ---\n", CLR_YELLOW);
+		usb_cdc_init();
+		fb_puts("controller initialised, waiting for the host\n", CLR_WHITE);
+		next = READ_SYSREG(CNTPCT_EL0);
+
+		for (;;) {
+			usb_poll();
+			if (READ_SYSREG(CNTPCT_EL0) >= next) {
+				usb_cdc_dump();
+				next = READ_SYSREG(CNTPCT_EL0) + frequency;
+			}
+		}
+	}
+#endif
 
 	/* Embedded test kernel handoff */
 	fb_puts("\n--- HANDOFF ---\n", CLR_YELLOW);

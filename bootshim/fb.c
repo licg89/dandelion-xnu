@@ -92,6 +92,12 @@ void fb_newline(void)
 
 void fb_putc(char ch, uint32_t fg)
 {
+#ifdef USB_CONSOLE
+	{
+		extern void usb_cdc_putc(char c);
+		usb_cdc_putc(ch);
+	}
+#endif
 #ifdef QEMU_VIRT
 	(void)fg;
 	uart_putc(ch);
@@ -135,6 +141,32 @@ void fb_puthex(const char *label, uint64_t val, uint32_t fg)
 	for (int s = 60; s >= 0; s -= 4)
 		fb_putc(hex[(val >> s) & 0xf], fg);
 	fb_newline();
+}
+
+void fb_puthex_raw(uint64_t val)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	fb_puts("0x", CLR_WHITE);
+	for (int s = 60; s >= 0; s -= 4)
+		fb_putc(hex[(val >> s) & 0xf], CLR_WHITE);
+}
+
+void fb_putdec_raw(uint64_t val)
+{
+	char tmp[20];
+	int j = 0;
+
+	if (val == 0) {
+		fb_putc('0', CLR_WHITE);
+		return;
+	}
+	while (val) {
+		tmp[j++] = (char)('0' + (val % 10));
+		val /= 10;
+	}
+	while (j > 0) {
+		fb_putc(tmp[--j], CLR_WHITE);
+	}
 }
 
 void fb_putdec(const char *label, uint64_t val, uint32_t fg)

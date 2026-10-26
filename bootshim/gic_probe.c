@@ -411,16 +411,89 @@ gic_probe_run(const struct fdt_platform *platform, struct gic_probe_result *r)
 		field_hex("self redist", r->self_redist);
 	}
 
-	/* Full bring-up, exactly like the kernel does it. */
-	r->cpu_init = dgic_cpu_init(&r->gic);
-	out("  cpu init ", CLR_CYAN);
-	if (r->cpu_init == DGIC_OK) {
-		out("ok\n", CLR_GREEN);
-	} else {
-		out("failed ", CLR_RED);
-		outdec((unsigned long)(-r->cpu_init));
+	/*
+	 * Read the CPU-interface ID register *before* touching the distributor.
+	 * If this hangs, ICC_* is unreachable from EL1 on this part no matter
+	 * what we program; if it works here and hangs later, the distributor or
+	 * redistributor programming is what breaks it.
+	 */
+	if (r->gic.mode == DGIC_MODE_V3) {
+		out("  icc probe (pristine)", CLR_CYAN);
+		outhex(dgic_icc_sre_el1_read());
+		out(" sre ok", CLR_GREEN);
 		fb_newline();
 	}
+
+	/* Full bring-up, exactly like the kernel does it, with checkpoints so a
+	 * hang points at one step instead of the whole sequence. */
+	out("  distributor", CLR_CYAN);
+	dgic_distributor_init(&r->gic);
+	fb_puts(" ok", CLR_GREEN);
+	fb_newline();
+
+	if (r->gic.mode == DGIC_MODE_V3) {
+		out("  redistributor", CLR_CYAN);
+		r->cpu_init = dgic_redist_init(&r->gic);
+		fb_puts(r->cpu_init == DGIC_OK ? " ok" : " failed", CLR_WHITE);
+		fb_newline();
+	}
+
+	/*
+	 * CPU interface, one register at a time.  On this SoC an ICC_* access
+	 * can stall the CPU instead of taking an UNDEFINED exception, so each
+	 * step prints before the access and the last line on screen names the
+	 * register that hung.
+	 */
+	{
+		unsigned long sre, iidr, ctlr;
+
+		out("  sre_rd", CLR_CYAN);
+		sre = dgic_icc_sre_el1_read();
+		outhex(sre);
+		fb_newline();
+
+		out("  sre_wr", CLR_CYAN);
+		dgic_icc_sre_el1_write(sre | 1ul);
+		dgic_isb();
+		fb_puts(" ok\n", CLR_GREEN);
+
+		out("  iidr", CLR_CYAN);
+		iidr = dgic_icc_iidr_read();
+		outhex(iidr);
+		fb_newline();
+
+		out("  bpr1", CLR_CYAN);
+		__asm__ volatile("msr ICC_BPR1_EL1, %0" : : "r"(0ul) : "memory");
+		fb_puts(" ok\n", CLR_GREEN);
+
+		out("  pmr", CLR_CYAN);
+		__asm__ volatile("msr ICC_PMR_EL1, %0" : : "r"(0xfful) : "memory");
+		fb_puts(" ok\n", CLR_GREEN);
+
+		out("  ctlr", CLR_CYAN);
+		__asm__ volatile("msr ICC_CTLR_EL1, %0" : : "r"(0ul) : "memory");
+		fb_puts(" ok\n", CLR_GREEN);
+
+		out("  grpen1", CLR_CYAN);
+		__asm__ volatile("msr ICC_IGRPEN1_EL1, %0" : : "r"(1ul) : "memory");
+		dgic_isb();
+		fb_puts(" ok\n", CLR_GREEN);
+
+		out("  cpuif_rd", CLR_CYAN);
+		ctlr = dgic_icc_ctlr_read();
+		outhex(ctlr);
+		__asm__ volatile("mrs %0, ICC_PMR_EL1" : "=r"(r->gic.icc_pmr));
+		out(" pmr ", CLR_CYAN);
+		outhex(r->gic.icc_pmr);
+		fb_newline();
+		r->cpu_init = DGIC_OK;
+	}
+
+	out("  tick ", CLR_CYAN);
+	outhex(dgic_cntfrq());
+	out(" / ", CLR_WHITE);
+	outhex(dgic_cntvct());
+	fb_newline();
 
 	if (r->gic.mode == DGIC_MODE_V3) {
 		field_hex("ICC_SRE_EL1", r->gic.icc_sre_el1);
@@ -445,41 +518,88 @@ gic_probe_run(const struct fdt_platform *platform, struct gic_probe_result *r)
 	}
 
 	/*
-	 * The decisive part: arm the generic timer and ask the CPU interface
-	 * whether the PPI arrived.  Group 1 is always tried.  Group 0 is only
-	 * touched when the GIC is single-security-state, because on a
-	 * two-state GIC those registers belong to EL3 and an access from EL1
-	 * takes an undefined-instruction exception.
+	 * Which writes does the non-secure view actually accept?  Each probe
+	 * prints its label before the access and the readback after it, so a bus
+	 * stall names the exact register on screen.
 	 */
-	r->timer_group1 = timer_test_for_group(&r->gic, DGIC_GROUP1, irq, 1);
-	report_timer("timer -> IRQ (gp1) ", r->timer_group1,
-	    &r->timer_group1, &r->timer_fired_group1,
-	    "PENDING - delivery works\n", "never pending - NO interrupt");
+	if (r->gic.mode == DGIC_MODE_V3 && r->gic.redist) {
+		unsigned long redist = r->gic.redist;
 
-	if (r->gic.mode == DGIC_MODE_V3 && !r->gic.secure_extn) {
-		int result;
+		out("  w isen (ppi)", CLR_CYAN);
+		dgic_write32(redist, DGICR_ISENABLER0, 1u << irq);
+		outhex(dgic_read32(redist, DGICR_ISENABLER0));
+		fb_newline();
 
-		r->timer_group0_tried = 1;
-		result = timer_test_for_group(&r->gic, DGIC_GROUP0, irq, 0);
-		report_timer("timer -> FIQ (gp0) ", result,
-		    &r->timer_group0, &r->timer_fired_group0,
-		    "PENDING - FIQ path works\n", "never pending - NO FIQ");
-	} else if (r->gic.mode == DGIC_MODE_V2) {
-		out("  timer -> FIQ (gp0) skipped: GICv2 has no non-secure Group0\n",
-		    CLR_YELLOW);
-	} else {
-		out("  timer -> FIQ (gp0) skipped: Group0 is secure\n", CLR_YELLOW);
+		out("  w icfg1      ", CLR_CYAN);
+		dgic_write32(redist, DGICR_ICFGR1, dgic_read32(redist, DGICR_ICFGR1));
+		outhex(dgic_read32(redist, DGICR_ICFGR1));
+		fb_newline();
+
+		out("  w igupr0     ", CLR_CYAN);
+		dgic_write32(redist, DGICR_IGROUPR0, 0xffffffffu);
+		outhex(dgic_read32(redist, DGICR_IGROUPR0));
+		fb_newline();
+
+		out("  w ctlr 0x13  ", CLR_CYAN);
+		dgic_write32(r->gic.gicd, DGICD_CTLR, 0x13u);
+		dgic_wait_rwp(r->gic.gicd);
+		outhex(dgic_read32(r->gic.gicd, DGICD_CTLR));
+		fb_newline();
+
+		out("  w ctlr 0x11  ", CLR_CYAN);
+		dgic_write32(r->gic.gicd, DGICD_CTLR, 0x11u);
+		dgic_wait_rwp(r->gic.gicd);
+		outhex(dgic_read32(r->gic.gicd, DGICD_CTLR));
+		fb_newline();
+
+		out("  w icfgr1 zero", CLR_CYAN);
+		dgic_write32(redist, DGICR_ICFGR1, 0u);
+		outhex(dgic_read32(redist, DGICR_ICFGR1));
+		fb_newline();
 	}
 
-	/* Leave the controller in the group the kernel will pick. */
-	r->gic.group = r->gic.secure_extn ? DGIC_GROUP1 : DGIC_GROUP0;
-	(void)dgic_cpuif_init(&r->gic);
+	/* Arm the timer, then poll the CPU interface, with a marker on each side
+	 * so a stall lands on one line instead of the whole test. */
+	out("  arm tval     ", CLR_CYAN);
+	__asm__ volatile("msr CNTV_TVAL_EL0, %0" : :
+	    "r"(dgic_cntfrq() / 1000u) : "memory");
+	fb_puts("ok\n", CLR_GREEN);
+
+	out("  arm ctl      ", CLR_CYAN);
+	__asm__ volatile("msr CNTV_CTL_EL0, %0" : : "r"(1ul) : "memory");
+	dgic_isb();
+	fb_puts("ok\n", CLR_GREEN);
+
+	out("  poll         ", CLR_CYAN);
+	{
+		unsigned long deadline = dgic_cntvct() + (dgic_cntfrq() / 1000ul) * 20ul;
+		unsigned int hppir = 0, polls = 0;
+
+		while ((long)(dgic_cntvct() - deadline) < 0) {
+			hppir = dgic_hppir(&r->gic);
+			polls++;
+			if (hppir == irq) {
+				break;
+			}
+		}
+		out("hppir ", CLR_WHITE);
+		outdec(hppir);
+		out(" polls ", CLR_CYAN);
+		outdec(polls);
+		fb_newline();
+		r->timer_group1 = (hppir == irq);
+	}
+
+	out("  sgi self     ", CLR_CYAN);
+	dgic_send_sgi(&r->gic, 15u, 0u, 1u);
+	fb_puts("ok\n", CLR_GREEN);
+
+	out("  verdict      ", CLR_CYAN);
+	if (r->timer_group1 == 1) {
+		out("timer PPI reached the CPU interface\n", CLR_GREEN);
+	} else {
+		out("timer PPI never appeared\n", CLR_RED);
+	}
 	dgic_timer_test_clear(&r->gic, irq);
-
-	out("  verdict  ", CLR_CYAN);
-	if (r->timer_group1 == 1 || r->timer_group0 == 1) {
-		out("interrupt delivery OK\n", CLR_GREEN);
-	} else {
-		out("no interrupt delivery - the kernel will not tick\n", CLR_RED);
-	}
+	return;
 }

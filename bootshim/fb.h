@@ -26,6 +26,9 @@ void fb_putc(char ch, uint32_t fg);
 void fb_puts(const char *s, uint32_t fg);
 void fb_puthex(const char *label, uint64_t val, uint32_t fg);
 void fb_putdec(const char *label, uint64_t val, uint32_t fg);
+/* Same, without the trailing newline (for compact one-line status output). */
+void fb_puthex_raw(uint64_t val);
+void fb_putdec_raw(uint64_t val);
 void fb_newline(void);
 
 #endif
