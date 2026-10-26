@@ -894,7 +894,7 @@ index bec97fb..a76cd99 100644
  
  	/* Initialize the runtime for the trust cache interface */
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
-index 3ad743f..8f39db1 100644
+index 3ad743f..cd7314c 100644
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
 @@ -9,6 +9,7 @@
@@ -969,7 +969,7 @@ index 3ad743f..8f39db1 100644
  	if (gicr_waker & GICR_WAKER_CHILDRENASLEEP) {
  		gicr_waker &= ~GICR_WAKER_PROCESSORSLEEP;
  
-@@ -140,18 +154,21 @@ pe_init_fiq()
+@@ -140,34 +154,46 @@ pe_init_fiq()
  			}
  		}
  	}
@@ -990,10 +990,22 @@ index 3ad743f..8f39db1 100644
 +	kprintf("pe_init_fiq: icc_sre = %lx\n", (unsigned long)icc_sre);
  
  	// Set priority masks and binary point for group 0
++	kprintf("pe_init_fiq: before bpr0\n");
  	__builtin_arm_wsr64("ICC_BPR0_EL1", 0);
-@@ -164,10 +181,12 @@ pe_init_fiq()
++	kprintf("pe_init_fiq: after bpr0\n");
+ 	__builtin_arm_wsr64("ICC_PMR_EL1", 0xFF);
++	kprintf("pe_init_fiq: after pmr\n");
+ 
+ 	// Set EOI mode of this processor
+ 	uint64_t icc_ctlr = __builtin_arm_rsr64("ICC_CTLR_EL1");
++	kprintf("pe_init_fiq: icc_ctlr = %lx\n", (unsigned long)icc_ctlr);
+ 	icc_ctlr &= ~ICC_CTLR_EOIMODE;
+ 	__builtin_arm_wsr64("ICC_CTLR_EL1", icc_ctlr);
++	kprintf("pe_init_fiq: after ctlr\n");
  
  	// Enable the forwarding of the vtimer interrupt
++	kprintf("pe_init_fiq: gicd=%lx typer=%x\n",
++	    (unsigned long)gicd_base, gicd_read32(0x4));
  	uint32_t gicd_ctlr = gicd_read32(GICD_CTLR);
 +	kprintf("pe_init_fiq: gicd_ctlr = %x\n", gicd_ctlr);
  	gicd_ctlr |= GICD_CTLR_ENABLEGRP0;
