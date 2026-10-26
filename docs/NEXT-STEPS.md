@@ -79,14 +79,40 @@ XNU 原生的 FIQ/Group0 路线在这颗芯片上不可能工作。
 ## 关键矛盾与下一步方向
 
 Android（非安全）能收中断，而我们同样在非安全态却一个都收不到。差异只能来自
-**安全侧/引导器对这条启动路径的配置**。因此剩下的路都指向引导器：
+**安全侧/引导器对这条启动路径的配置**。因此剩下的路都指向引导器。
 
-1. **看 LK 是怎么做的**：`lk.img` 里有 `GIC_SYNC_DCM` / `MP_GIC_RGU_SYNC_DCM`
-   这类 MTK 专有寄存器名，说明 MTK 给 GIC 加了时钟域同步包装。反汇编 LK
-   里引用这些字符串的函数，可能找到"让 NS 能写 GIC 分组/使能"的那一步
-   （例如先把 GIC 的 APB/DCM 切到正确时钟域）。
-2. **改 LK 再跳我们的镜像**：编译或 patch `lk.img`，在跳转前完成
-   `IGROUPR = 0xffffffff` + `GICD_CTLR.EnableGrp1NS`，然后 `fastboot flash lk`。
-   已有 `lk.img`/`lk2.img` 备份，可回退。
-3. 备选：确认 Android 是否使用**另一个中断控制器**（MTK sysirq/AIC）。
-   A04BR3 参考项目就是 "GICv2 + MediaTek AIC" 的组合，这颗 SoC 可能类似。
+### 本轮的完整证据链（2026-10-26 深夜）
+
+| 观察 | 值 | 结论 |
+|---|---|---|
+| Android `/proc/interrupts` | `GICv3 30 arch_timer`、`GICv3 23 arm-pmu`，其余全走 `MT_SYSIRQ` | Android 确实从 GIC 收到 **PPI 30** |
+| 我们的 `CNTP_CTL.ISTATUS`（轮询中采样） | `fired yes` | 定时器**真的到期了**，不是没启起来 |
+| 我们的 `CNTV_CTL.ISTATUS` | `fired yes` | 同上 |
+| 两者的 `HPPIR` | `0x3fc`(1020) | 中断没有到达 CPU 接口 |
+| `GICD_CTLR` | `0x12`（bit0=0, bit1=1, bit4=1） | NS 视图里 EnableGrp1NS=0 |
+| 写 `GICD_CTLR=0x13` 回读 | `0x12` | bit0 写不进 |
+| `GICD_IGROUPR` / `GICR_IGROUPR0` | 写 0xffffffff 回读 0 | 分组位对 NS RAZ/WI（规范如此） |
+| 三个基址（0xc000000 / 0xc200000 镜像 / 0xc400000） | 都是只读或空块 | 没有 NS 可写别名 |
+| INFRACFG `BUS_DCM_CTRL`（0x10001070/74） | `0x40ff0603` / `0xb47f83e3`，bit9(GIC_SYNC_DCM) 已置位 | DCM 不是原因 |
+| `sysirq` @0x10200b00 | 可读（`+0x8=0x3`, `+0x18=0x8`） | MTK sysirq 对 NS 可访问 |
+| `sys_timer` @0x10017000 | `[0]=0x505`, `[4]=0x100`, `[8]` 是递增计数 | GPT 在跑，NS 可读 |
+| Android 内核日志 | `[Power/dcm] [GIC_SYNC_DCM 0x00000200] state:1` | DCM 由内核开启（我们已确认已开） |
+| `/dev/mem` | 节点可 mknod，但 `dd` 读不出数据 | 内核未开 DEVMEM，无法从 Android 侧读寄存器 |
+
+**结论**：我们的定时器、CPU 接口（ICC）、redistributor 使能、优先级、DCM 全部正常，
+唯一对不上的就是 **`GICD_CTLR.EnableGrp1NS` 与中断分组**——这两个位在 NS 侧写不进去，
+而 Android 显然工作在它们已正确配置的状态下。差别必定来自**跳转前**（ATF/LK）或
+**Android 内核启动时的特权操作**，而我们目前没有任何 NS 手段去读它。
+
+### 候选突破口（按可行性）
+
+1. **反汇编 `lk.img` 找 GIC 初始化**：LK 里有 `GIC_SYNC_DCM`、`MP_GIC_RGU_SYNC_DCM`
+   字符串和完整的内嵌 DTB。若 LK 在跳转前写 GICD_CTLR/IGROUPR，就能照抄。
+   已用常量扫描定位到若干候选区间（0x6f4xx–0x6f8xx、0x748xx），但需要按指令
+   （ADRP/ADD 引用字符串表）继续追，属于下一步的主线工作。
+2. **patch LK**（有 `lk.img`/`lk2.img` 备份）：在跳 Android 前手动置位后跳我们的镜像。
+3. **在 Android 内核里插桩**：编译一个能读 GIC 寄存器的最小模块（需要匹配的
+   kernel headers/vermagic，难度高），或找 MTK 的 `mt_gic` 调试节点。
+4. **绕开 GIC**：确认 sysirq 与 GIC 的连接方式（`sysirq` 只有 0x50 字节寄存器、
+   且 `/proc/interrupts` 里看不到它的 GIC 父线），若 sysirq 的某根输出 SPI 是
+   Android 申请过的，就能复用那根线；否则此路不通。

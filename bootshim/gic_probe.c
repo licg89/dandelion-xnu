@@ -317,6 +317,40 @@ gic_probe_run(const struct fdt_platform *platform, struct gic_probe_result *r)
 
 	out("\n--- GIC INVENTORY ---\n", CLR_YELLOW);
 
+	/*
+	 * MediaTek wraps the GIC in a clock-domain synchroniser, and until it
+	 * is enabled the distributor accepts some writes (ISENABLER, priority)
+	 * while silently dropping others (IGROUPR, GICD_CTLR group enables).
+	 * Android's kernel turns it on through its Power/dcm framework right
+	 * before initialising the GIC:
+	 *
+	 *   [Power/dcm] [GIC_SYNC_DCM 0x00000200] current state:1
+	 *   INFRA_BUS_DCM_CTRL (0x...8070): 0x40ff0603
+	 *   PERI_BUS_DCM_CTRL  (0x...8074): 0xb47f83e3
+	 *
+	 * GIC_SYNC_DCM is bit 9 of the INFRACFG_AO bus DCM control registers,
+	 * i.e. 0x10001070 / 0x10001074.
+	 */
+	{
+		volatile uint32_t *infra_bus = (volatile uint32_t *)0x10001070UL;
+		volatile uint32_t *peri_bus = (volatile uint32_t *)0x10001074UL;
+		uint32_t before_infra = *infra_bus;
+		uint32_t before_peri = *peri_bus;
+
+		*infra_bus = before_infra | (1u << 9);
+		*peri_bus = before_peri | (1u << 9);
+		fb_puts("  dcm infra ", CLR_CYAN);
+		outhex(before_infra);
+		out(" -> ", CLR_WHITE);
+		outhex(*infra_bus);
+		fb_newline();
+		fb_puts("  dcm peri  ", CLR_CYAN);
+		outhex(before_peri);
+		out(" -> ", CLR_WHITE);
+		outhex(*peri_bus);
+		fb_newline();
+	}
+
 	for (unsigned i = 0; i < sizeof(*r); i++) {
 		((unsigned char *)r)[i] = 0;
 	}
@@ -668,6 +702,7 @@ gic_probe_run(const struct fdt_platform *platform, struct gic_probe_result *r)
 			unsigned int intid = candidates[c];
 			unsigned int hppir = 0;
 			unsigned long deadline;
+			int fired = 0;
 
 			dgic_enable_ppi(&r->gic, intid);
 			dgic_timer_test_clear(&r->gic, intid);
@@ -687,6 +722,18 @@ gic_probe_run(const struct fdt_platform *platform, struct gic_probe_result *r)
 
 			deadline = dgic_cntvct() + (dgic_cntfrq() / 1000ul) * 20ul;
 			while ((long)(dgic_cntvct() - deadline) < 0) {
+				unsigned long sample;
+
+				if (intid == 30u) {
+					__asm__ volatile("mrs %0, CNTP_CTL_EL0"
+					    : "=r"(sample));
+				} else {
+					__asm__ volatile("mrs %0, CNTV_CTL_EL0"
+					    : "=r"(sample));
+				}
+				if (sample & 4ul) {
+					fired = 1;
+				}
 				hppir = dgic_hppir(&r->gic);
 				if (hppir == intid) {
 					break;
@@ -703,6 +750,17 @@ gic_probe_run(const struct fdt_platform *platform, struct gic_probe_result *r)
 			out(hppir == intid ? "  <- DELIVERED\n" :
 			    "  <- not delivered\n",
 			    hppir == intid ? CLR_GREEN : CLR_RED);
+
+			/*
+			 * Did the timer itself fire?  ISTATUS (bit 2) was sampled
+			 * inside the poll loop, before the control register was
+			 * cleared, so this answers "did the compare value pass"
+			 * independently of any interrupt routing.
+			 */
+			out("               fired ", CLR_CYAN);
+			out(fired ? "yes" : "NO",
+			    fired ? CLR_GREEN : CLR_RED);
+			fb_newline();
 
 			if (intid == 30u) {
 				r->timer_group0 = (hppir == intid);
@@ -759,6 +817,34 @@ gic_probe_run(const struct fdt_platform *platform, struct gic_probe_result *r)
 			out((ctlr & 0x1u) ? "  <- EnableGrp1NS set" :
 			    "  <- bit0 dropped",
 			    (ctlr & 0x1u) ? CLR_GREEN : CLR_RED);
+			fb_newline();
+		}
+	}
+
+	/*
+	 * MediaTek's own interrupt controller (mediatek,mt6577-sysirq at
+	 * 0x10200b00) sits under the GIC and carries almost every peripheral
+	 * interrupt, including the system timer (timer@10017000, sysirq hwirq
+	 * 194).  Android's /proc/interrupts shows that NS can use it, so this is
+	 * the fallback path for a kernel tick if the GIC stays closed.  Dump
+	 * both register blocks so the layout can be matched against the Linux
+	 * drivers (timer-mediatek.c, irqchip/mtk-sysirq.c).
+	 */
+	{
+		out("\n--- MTK sysirq / sys_timer ---\n", CLR_YELLOW);
+
+		for (unsigned i = 0; i < 8; i++) {
+			out("  sysirq ", CLR_CYAN);
+			outhex(0x10200B00UL + i * 4u);
+			out("=", CLR_WHITE);
+			outhex(dgic_read32(0x10200B00UL, i * 4u));
+			fb_newline();
+		}
+		for (unsigned i = 0; i < 8; i++) {
+			out("  gpt    ", CLR_CYAN);
+			outhex(0x10017000UL + i * 4u);
+			out("=", CLR_WHITE);
+			outhex(dgic_read32(0x10017000UL, i * 4u));
 			fb_newline();
 		}
 	}
