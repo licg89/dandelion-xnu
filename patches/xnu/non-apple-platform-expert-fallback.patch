@@ -1,5 +1,5 @@
 diff --git a/iokit/Kernel/IOPlatformExpert.cpp b/iokit/Kernel/IOPlatformExpert.cpp
-index 7a32a23..b2e1fb2 100644
+index 7a32a23..eac3e4c 100644
 --- a/iokit/Kernel/IOPlatformExpert.cpp
 +++ b/iokit/Kernel/IOPlatformExpert.cpp
 @@ -175,10 +175,19 @@ IOPlatformExpert::start( IOService * provider )
@@ -22,17 +22,69 @@ index 7a32a23..b2e1fb2 100644
  #endif /* !defined(__x86_64__) */
  
  #if defined (__x86_64__)
-@@ -191,6 +200,9 @@ IOPlatformExpert::start( IOService * provider )
+@@ -191,6 +200,19 @@ IOPlatformExpert::start( IOService * provider )
  	PE_parse_boot_argn("enforce_platform_action_safety", &gEnforcePlatformActionSafety,
  	    sizeof(gEnforcePlatformActionSafety));
  
 +#if defined(DANDELION)
 +	printf("DANDELION: platform expert: configure\n");
++	{
++		extern uint32_t dandelion_gic_arch_rev;
++		extern uint32_t dandelion_gic_pidr2;
++		extern uint32_t dandelion_gic_typer;
++		extern uint64_t dandelion_gicr_typer_v;
++
++		printf("DANDELION: gic pidr2=%x arch=%u typer=%x gicr_typer=%lx\n",
++		    dandelion_gic_pidr2, dandelion_gic_arch_rev,
++		    dandelion_gic_typer, (unsigned long)dandelion_gicr_typer_v);
++	}
 +#endif
  	return configure(provider);
  }
  
-@@ -2315,8 +2327,24 @@ IOPanicPlatform::start(IOService * provider)
+@@ -202,6 +224,9 @@ IOPlatformExpert::configure( IOService * provider )
+ 	IOService *         nub = NULL;
+ 
+ 	topLevel = OSDynamicCast( OSSet, getProperty("top-level"));
++#if defined(DANDELION)
++	printf("DANDELION: configure: topLevel=%p\n", (void *)topLevel);
++#endif
+ 
+ 	if (topLevel) {
+ 		while ((dict = OSDynamicCast( OSDictionary,
+@@ -209,16 +234,31 @@ IOPlatformExpert::configure( IOService * provider )
+ 			dict->retain();
+ 			topLevel->removeObject( dict );
+ 			OSSafeReleaseNULL(nub);
++#if defined(DANDELION)
++			printf("DANDELION: configure: createNub\n");
++#endif
+ 			nub = createNub( dict );
+ 			dict->release();
+ 			if (NULL == nub) {
+ 				continue;
+ 			}
++#if defined(DANDELION)
++			printf("DANDELION: configure: attach\n");
++#endif
+ 			nub->attach( this );
++#if defined(DANDELION)
++			printf("DANDELION: configure: registerService\n");
++#endif
+ 			nub->registerService();
++#if defined(DANDELION)
++			printf("DANDELION: configure: registered\n");
++#endif
+ 		}
+ 	}
+ 	OSSafeReleaseNULL(nub);
++#if defined(DANDELION)
++	printf("DANDELION: configure: done\n");
++#endif
+ 	return true;
+ }
+ 
+@@ -2315,8 +2355,24 @@ IOPanicPlatform::start(IOService * provider)
  		platform_name = provider->getName();
  	}
  
