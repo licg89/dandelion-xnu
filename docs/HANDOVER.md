@@ -234,6 +234,10 @@ CI 产物里的 `obj/DEVELOPMENT_ARM64_DANDELION/mach.development.dandelion.unst
   `C:\Users\li\AppData\Local\Android\Sdk\platform-tools\fastboot.exe`
 - 设备 USB 驱动：MTK 平台，Windows 需要能出 fastboot 接口；换机器后先 `fastboot devices` 验证
 - CI runner 固定 `macos-14`，XNU tag 固定 `xnu-8796.141.3`（见 `.github/workflows/build-xnu.yml`）
+- **含中文的字符串不要直接写在 PowerShell 命令行里**：会被控制台代码页吞掉变成 `?`。
+  需要提交到 GitHub API 时，先用编辑器写成 UTF-8 文件，再
+  `[System.IO.File]::ReadAllText($p, [System.Text.UTF8Encoding]::new($false))` 读出，
+  `ConvertTo-Json` 后转成 UTF-8 字节作为 `-Body` 发送
 
 ## 13. 在两台机器之间切换
 
