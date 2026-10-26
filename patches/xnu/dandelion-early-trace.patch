@@ -1,5 +1,5 @@
 diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
-index e26a1d7..5d26625 100644
+index e26a1d7..8e6fb01 100644
 --- a/osfmk/arm/arm_init.c
 +++ b/osfmk/arm/arm_init.c
 @@ -76,6 +76,24 @@
@@ -80,7 +80,7 @@ index e26a1d7..5d26625 100644
  
  	if (PE_parse_boot_argn("maxmem", &maxmem, sizeof(maxmem))) {
  		xmaxmem = (uint64_t) maxmem * (1024 * 1024);
-@@ -513,7 +542,21 @@ arm_init(
+@@ -513,7 +542,22 @@ arm_init(
  	__builtin_arm_wsr("pan", 1);
  #endif  /* __ARM_PAN_AVAILABLE__ */
  
@@ -99,23 +99,26 @@ index e26a1d7..5d26625 100644
  	arm_vm_init(xmaxmem, args);
 +	DANDELION_PROBE(1020, 0xff00ff00U);     /* green: after the call */
 +	DANDELION_TRACE("arm_init: arm_vm_init done\n");
++	DANDELION_PROBE(1040, 0xffff00ffU);     /* magenta: mark returned */
  
  	if (debug_boot_arg) {
  		patch_low_glo();
-@@ -524,10 +567,12 @@ arm_init(
+@@ -524,10 +568,14 @@ arm_init(
  #endif
  
  	PE_consistent_debug_inherit();
 +	DANDELION_TRACE("arm_init: PE_consistent_debug_inherit\n");
++	DANDELION_PROBE(1060, 0xffff8000U);     /* orange: debug inherit ok */
  
  	/* Setup debugging output. */
  	const unsigned int serial_exists = serial_init();
  	kernel_startup_initialize_upto(STARTUP_SUB_KPRINTF);
 +	DANDELION_TRACE("arm_init: startup upto KPRINTF\n");
++	DANDELION_PROBE(1080, 0xff8000ffU);     /* purple: startup->kprintf ok */
  	kprintf("kprintf initialized\n");
  
  	serialmode = 0;
-@@ -569,9 +614,11 @@ arm_init(
+@@ -569,9 +617,11 @@ arm_init(
  		disableConsoleOutput = FALSE;     /* Allow printfs to happen */
  	}
  	PE_create_console();
@@ -127,7 +130,7 @@ index e26a1d7..5d26625 100644
  
  #if __arm64__
  #if DEBUG
-@@ -582,6 +629,7 @@ arm_init(
+@@ -582,6 +632,7 @@ arm_init(
  	cpu_machine_idle_init(TRUE);
  
  	PE_init_platform(TRUE, &BootCpuData);
@@ -135,7 +138,7 @@ index e26a1d7..5d26625 100644
  
  #if __arm64__
  	extern bool cpu_config_correct;
-@@ -590,6 +638,7 @@ arm_init(
+@@ -590,6 +641,7 @@ arm_init(
  	}
  
  	ml_map_cpu_pio();
@@ -143,7 +146,7 @@ index e26a1d7..5d26625 100644
  
  #if APPLE_ARM64_ARCH_FAMILY
  	configure_late_apple_regs();
-@@ -598,6 +647,7 @@ arm_init(
+@@ -598,6 +650,7 @@ arm_init(
  #endif
  
  	cpu_timebase_init(TRUE);
@@ -151,7 +154,7 @@ index e26a1d7..5d26625 100644
  
  #if KPERF
  	/* kptimer_curcpu_up() must be called after cpu_timebase_init */
-@@ -605,7 +655,9 @@ arm_init(
+@@ -605,7 +658,9 @@ arm_init(
  #endif /* KPERF */
  
  	PE_init_cpu();
@@ -161,7 +164,7 @@ index e26a1d7..5d26625 100644
  
  
  #if HIBERNATION
-@@ -634,6 +686,7 @@ arm_init(
+@@ -634,6 +689,7 @@ arm_init(
  
  	gDramBase = *dram_base;
  	gDramSize = *dram_size;
@@ -445,10 +448,10 @@ index 0a00656..aa4c197 100644
  	iotrace_disable();
  
 diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
-index e44008f..78b3d49 100644
+index e44008f..e9b1c8d 100644
 --- a/osfmk/kern/printf.c
 +++ b/osfmk/kern/printf.c
-@@ -908,6 +908,321 @@ vprintf(const char *fmt, va_list ap)
+@@ -908,6 +908,328 @@ vprintf(const char *fmt, va_list ap)
  	return vprintf_internal(fmt, ap, __builtin_return_address(0));
  }
  
@@ -508,6 +511,13 @@ index e44008f..78b3d49 100644
 +#define DANDELION_FB_VISW       720
 +#define DANDELION_FB_Y0         860
 +#define DANDELION_FB_X0         8
++/*
++ * Bottom of the text area.  The panel is 1600 rows tall; the boot shim's
++ * stage bar sits at 1520, so spend everything above it.  When the cursor
++ * runs past this the line is dropped -- that is deliberate, but it means a
++ * silent stop here looks exactly like a crash, so keep it generous.
++ */
++#define DANDELION_FB_YMAX       1580
 +#define DANDELION_FB_FG         0xffffff00U
 +#define DANDELION_FB_BG         0xff000000U
 +
@@ -640,7 +650,7 @@ index e44008f..78b3d49 100644
 +		dandelion_fb_x = DANDELION_FB_X0;
 +		dandelion_fb_y += 16;
 +	}
-+	if (dandelion_fb_y + 16 > 1500) {
++	if (dandelion_fb_y + 16 > DANDELION_FB_YMAX) {
 +		return;
 +	}
 +
