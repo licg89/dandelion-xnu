@@ -558,6 +558,65 @@ gic_probe_run(const struct fdt_platform *platform, struct gic_probe_result *r)
 		fb_newline();
 	}
 
+	/*
+	 * Can the non-secure world drive a *shared peripheral* interrupt at all?
+	 * SPI group bits live in GICD_IGROUPR (writable from NS) rather than the
+	 * redistributor's secure-only view, so this is a different path from the
+	 * arch timer's PPI.  Force one SPI pending and see whether the CPU
+	 * interface hands it to us: if this works, an MTK system timer (or any
+	 * other SPI source) can provide the kernel's tick even though PPI 27
+	 * cannot.
+	 */
+	{
+		unsigned int spi = 200;
+		unsigned int word_off = DGICD_IGROUPR + (spi / 32u) * 4u;
+		unsigned int en_off = DGICD_ISENABLER + (spi / 32u) * 4u;
+		unsigned int pend_off = DGICD_ISPENDR + (spi / 32u) * 4u;
+		unsigned int bit = 1u << (spi % 32u);
+		unsigned int id;
+
+		out("  spi group    ", CLR_CYAN);
+		dgic_write32(r->gic.gicd, word_off, 0xffffffffu);
+		outhex(dgic_read32(r->gic.gicd, word_off));
+		fb_newline();
+
+		out("  spi enable   ", CLR_CYAN);
+		dgic_write32(r->gic.gicd, en_off, bit);
+		outhex(dgic_read32(r->gic.gicd, en_off));
+		fb_newline();
+
+		out("  spi priority ", CLR_CYAN);
+		dgic_set_priority32(r->gic.gicd, DGICD_IPRIORITYR, spi,
+		    DGIC_PRIORITY_DEFAULT);
+		outhex(dgic_read32(r->gic.gicd,
+		    DGICD_IPRIORITYR + (spi / 4u) * 4u));
+		fb_newline();
+
+		out("  spi router   ", CLR_CYAN);
+		dgic_write64(r->gic.gicd, DGICD_IROUTER + spi * 8u, 0ul);
+		outhex(dgic_read64(r->gic.gicd, DGICD_IROUTER + spi * 8u));
+		fb_newline();
+
+		out("  spi force    ", CLR_CYAN);
+		dgic_write32(r->gic.gicd, pend_off, bit);
+		outhex(dgic_read32(r->gic.gicd, pend_off));
+		fb_newline();
+
+		for (volatile unsigned long spin = 0; spin < 200000ul; spin++) {
+		}
+
+		out("  spi ack      ", CLR_CYAN);
+		id = dgic_ack(&r->gic);
+		outdec(id);
+		out(id == spi ? "  <- SPI visible to NS" :
+		    "  <- SPI NOT delivered", id == spi ? CLR_GREEN : CLR_RED);
+		fb_newline();
+		if (id < DGIC_INTID_SPURIOUS) {
+			dgic_eoi(&r->gic, id);
+		}
+		r->spi_probe = id;
+	}
+
 	/* Arm the timer, then poll the CPU interface, with a marker on each side
 	 * so a stall lands on one line instead of the whole test. */
 	out("  arm tval     ", CLR_CYAN);

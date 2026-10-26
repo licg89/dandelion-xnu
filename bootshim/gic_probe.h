@@ -26,6 +26,7 @@ struct gic_probe_result {
 	int timer_fired_group1;         /* 1 = the timer itself expired       */
 	int timer_fired_group0;
 	int timer_group0_tried;
+	unsigned int spi_probe;         /* INTID returned for a forced SPI  */
 	unsigned redist_frames;
 	unsigned long redist_base[16];
 	unsigned long redist_typer[16];
