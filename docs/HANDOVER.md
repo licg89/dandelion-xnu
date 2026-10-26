@@ -215,7 +215,6 @@ CI 产物里的 `obj/DEVELOPMENT_ARM64_DANDELION/mach.development.dandelion.unst
 是带符号的，排错用它而不是 `mach_kernel`。
 
 ## 12. 环境差异注意
-
 - **PowerShell 不支持 `&&`**，用 `;`
 - PowerShell 的 `>` 写 UTF-16 LE；二进制/补丁一律用 `cmd /c "... > file"` + 去 CR
 - Windows 路径 vs bash 路径：bash 里是 `/d/aios/...`
@@ -223,3 +222,38 @@ CI 产物里的 `obj/DEVELOPMENT_ARM64_DANDELION/mach.development.dandelion.unst
   `C:\Users\li\AppData\Local\Android\Sdk\platform-tools\fastboot.exe`
 - 设备 USB 驱动：MTK 平台，Windows 需要能出 fastboot 接口；换机器后先 `fastboot devices` 验证
 - CI runner 固定 `macos-14`，XNU tag 固定 `xnu-8796.141.3`（见 `.github/workflows/build-xnu.yml`）
+
+## 13. 在两台机器之间切换
+
+`git pull` 只会更新 `dandelion-xnu`，**不会更新 `D:\aios\xnu` 工作树**。
+回来后如果直接改内核，会基于旧补丁，且 `apply-patches.sh` 可能在某个补丁上报
+`does not apply`（同一个文件被两个补丁改过时的典型症状）。
+
+每次切换回来，先重置 XNU 树再重建：
+
+```powershell
+cd D:\aios\xnu
+git checkout -- .        # 撤销所有已打补丁的改动
+git clean -fd            # 删掉 apply-board 复制进来的 board 文件和补丁新建的 kpc.c
+"C:\Program Files\Git\bin\bash.exe" -lc "cd /d/aios/dandelion-xnu && tools/ci/apply-patches.sh /d/aios/xnu && tools/ci/apply-board.sh /d/aios/xnu"
+```
+
+`git clean -fd` 会删 `config/MASTER.arm64.dandelion`、`pexpert/pexpert/arm64/DANDELION.h`、
+`iokit/Kernel/arm/DandelionPlatformExpert.cpp`、`osfmk/arm64/kpc.c` —— 它们分别由
+`apply-board.sh` 和 `non-apple-kpc.patch` 重新生成，顺序不能反。
+
+不会跨机器同步的东西：
+
+| 项目 | 说明 |
+|---|---|
+| `D:\aios\xnu` 工作树 | 按上面重置重建，不要用 U 盘拷 |
+| `out\` | 尤其 `boot_backup.img`，两台机器都要各留一份 |
+| GitHub 凭据 | 各自 Windows 凭据管理器 |
+| OpenCode 会话历史 | 不跨机器，本文件就是交接载体 |
+| 模型 / provider 配置 | 按机器各自配置 |
+
+不要做的事：
+
+- 不要拷贝整棵 `xnu` 树覆盖另一台 —— 补丁才是真相，拷贝容易带进不一致状态
+- 不要在两台机器上各改一批补丁再合并 —— 补丁是整文件全量 diff，合并极其困难
+
