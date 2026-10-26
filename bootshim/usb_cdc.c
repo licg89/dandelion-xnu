@@ -17,6 +17,26 @@
 
 #define MUSB_BASE        0x11200000UL
 #define USB_PHY_BASE     0x11CC0000UL
+#define TOPCK_BASE       0x10000000UL
+#define INFRAAO_BASE     0x10001000UL
+#define APMIX_BASE       0x1000C000UL
+#define PERICFG_BASE     0x10003000UL
+
+/* PHY "a60810" registers we touch (see docs/USB_CONSOLE.md) */
+#define PHY_ACR0         0x00
+#define PHY_ACR6         0x18
+#define PHY_ACR4         0x20
+#define PHY_DTM0         0x68
+#define PHY_DTM1         0x6C
+#define PHY_VERSIONC     0xF0
+
+#define PHY_DEV_ACTIVE   0x00003F2Fu
+
+/* Checkpoints for the on-panel summary. */
+static uint32_t phy_versionc;
+static uint32_t phy_acr6_after;
+static uint32_t phy_dtm1_after;
+static uint32_t musb_devctl_after;
 
 /* --- core registers ---------------------------------------------------- */
 #define MUSB_FADDR       (MUSB_BASE + 0x00)
@@ -118,6 +138,96 @@ static uint8_t r8(uint32_t reg) { return *(volatile uint8_t *)(uintptr_t)reg; }
 static void w8(uint32_t reg, uint8_t value) { *(volatile uint8_t *)(uintptr_t)reg = value; }
 static uint16_t r16(uint32_t reg) { return *(volatile uint16_t *)(uintptr_t)reg; }
 static void w16(uint32_t reg, uint16_t value) { *(volatile uint16_t *)(uintptr_t)reg = value; }
+
+static uint32_t r32(uint32_t reg) { return *(volatile uint32_t *)(uintptr_t)reg; }
+static void w32(uint32_t reg, uint32_t value)
+{
+	*(volatile uint32_t *)(uintptr_t)reg = value;
+	__asm__ volatile("dsb sy" ::: "memory");
+}
+static void setclr(uint32_t reg, uint32_t clear, uint32_t set)
+{
+	uint32_t value = r32(reg);
+	value &= ~clear;
+	value |= set;
+	w32(reg, value);
+}
+
+/* Busy-wait using the EL0 physical counter (13 MHz on this SoC). */
+static void udelay(unsigned microseconds)
+{
+	unsigned long frequency;
+	unsigned long start;
+
+	__asm__ volatile("mrs %0, cntfrq_el0" : "=r"(frequency));
+	if (frequency == 0) {
+		frequency = 13000000;
+	}
+	__asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(start));
+	start += (frequency / 1000000ul) * microseconds;
+	while (1) {
+		unsigned long now;
+		__asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(now));
+		if ((long)(now - start) >= 0) {
+			break;
+		}
+	}
+}
+
+/*
+ * Power up MediaTek's "a60810" USB2 PHY so the controller can see the bus.
+ *
+ * The bootloader leaves the PHY gated after fastboot, so MUSB stays readable
+ * while DEVCTL reads 0 (its VBUS/BDEVICE bits come straight from the PHY's
+ * UTMI comparators).  Sequence and values are taken from the vendor kernel
+ * (drivers/misc/mediatek/usb20/mt6765/usb20_phy.c, mtk-phy-a60810.h).
+ */
+static int usb_phy_bringup(void)
+{
+	/* Phase 1: clocks.  Read-modify-write only: 0x104 and apmixed 0x14 are
+	 * shared with camera/display clocks. */
+	w32(INFRAAO_BASE + 0x84, 1u << 8);              /* CG_CLR ICUSB on */
+	setclr(TOPCK_BASE + 0x90, 0, 1u << 16);         /* usb_top_sel = univpll3_d4 */
+	w32(TOPCK_BASE + 0x004, 1u << 22);              /* commit the mux */
+	w32(TOPCK_BASE + 0x98, 1u << 23);               /* ungate usb_top_sel */
+	setclr(TOPCK_BASE + 0x104, 0, (1u << 8) | (1u << 9));
+	setclr(APMIX_BASE + 0x14, 0, 1u << 4);          /* SSUSB26M on */
+	udelay(50);
+
+	/* Phase 2: USB IP soft reset (also resets MUSB, so it runs before it). */
+	setclr(PERICFG_BASE + 0x00, 0, 1u << 29);
+	udelay(10000);
+	setclr(PERICFG_BASE + 0x00, 1u << 29, 0);
+	udelay(100);
+
+	/* Phase 3: is the PHY register file alive at all? */
+	phy_versionc = r32(USB_PHY_BASE + PHY_VERSIONC);
+	if (phy_versionc == 0 && r32(USB_PHY_BASE + PHY_VERSIONC + 0x800) == 0) {
+		return -1;
+	}
+
+	/* Phase 4: PHY power-on ("M17_USB_PWR"). */
+	udelay(50);
+	setclr(USB_PHY_BASE + PHY_DTM0, 1u << 26, 0);           /* FORCE_UART_EN */
+	setclr(USB_PHY_BASE + PHY_DTM1, 1u << 16, 0);           /* UART_EN */
+	setclr(USB_PHY_BASE + PHY_ACR4, (1u << 9) | (1u << 8), 0);
+	setclr(USB_PHY_BASE + PHY_ACR6, 1u << 23, 0);           /* BC11_SW_EN */
+	setclr(USB_PHY_BASE + PHY_ACR4, 0, 1u << 18);           /* DP_100K_MODE */
+	setclr(USB_PHY_BASE + PHY_ACR4, (1u << 16) | (1u << 17), 0);
+	setclr(USB_PHY_BASE + PHY_ACR6, 0, 1u << 20);           /* OTG_VBUSCMP_EN */
+	setclr(USB_PHY_BASE + PHY_DTM0, 1u << 18, 0);           /* FORCE_SUSPENDM */
+	setclr(USB_PHY_BASE + PHY_ACR6, 0xFFu << 24, 0x40u << 24); /* PHY_REV */
+	udelay(800);
+	phy_acr6_after = r32(USB_PHY_BASE + PHY_ACR6);
+
+	/* Phase 5: force device mode, which makes DEVCTL report VBUS. */
+	w32(USB_PHY_BASE + PHY_DTM1,
+	    (r32(USB_PHY_BASE + PHY_DTM1) & ~0x00003F12u) | PHY_DEV_ACTIVE);
+	udelay(10);
+	setclr(USB_PHY_BASE + PHY_ACR6, 0xF0u, 0xF0u);          /* DISCTH max */
+	phy_dtm1_after = r32(USB_PHY_BASE + PHY_DTM1);
+	return 0;
+}
 
 static void select_ep(uint8_t ep) { w8(MUSB_INDEX, ep); }
 
@@ -349,6 +459,25 @@ void usb_cdc_dump(void)
 	phy_cc = *(volatile uint32_t *)(uintptr_t)0x11CC0000UL;
 	phy_28 = *(volatile uint32_t *)(uintptr_t)0x11280000UL;
 
+	/* The USB verdict line: PHY alive, PHY forced to device mode, DEVCTL.
+	 * Success is DEVCTL == 0x98 (BDEVICE | VBUS = 11). */
+	fb_puts("usb phy ver=", 0xFF00FFFF);
+	fb_puthex_raw(phy_versionc);
+	fb_puts(" acr6=", 0xFF00FFFF);
+	fb_puthex_raw(phy_acr6_after);
+	fb_puts(" dtm1=", 0xFF00FFFF);
+	fb_puthex_raw(phy_dtm1_after);
+	fb_newline();
+	fb_puts("usb devctl=", 0xFF00FFFF);
+	fb_puthex_raw(r8(MUSB_DEVCTL));
+	fb_puts(" power=", 0xFF00FFFF);
+	fb_puthex_raw(r8(MUSB_POWER));
+	fb_puts(" intr=", 0xFF00FFFF);
+	fb_puthex_raw(r8(MUSB_INTRUSB));
+	fb_puts(" cfg=", 0xFF00FFFF);
+	fb_putdec_raw((uint64_t)configured);
+	fb_newline();
+
 	/* Two short lines: 80 columns is the visible width of the panel. */
 	fb_puts("usb ctl P=", 0xFF00FFFF);
 	fb_puthex_raw(r8(MUSB_POWER));
@@ -383,11 +512,14 @@ void usb_cdc_dump(void)
 
 int usb_cdc_init(void)
 {
-	/* Do not touch the PHY or the USB clock: the bootloader set both up for
-	 * fastboot, and re-initialising them here is what makes MUSB bring-up
-	 * expensive.  Only the controller is (re)configured. */
+	/*
+	 * Power the PHY first.  The bootloader gates it after fastboot, and
+	 * without it DEVCTL stays 0 no matter what the controller is told to do
+	 * (its VBUS/BDEVICE bits come from the PHY's UTMI comparators).
+	 */
+	int phy_error = usb_phy_bringup();
+
 	w8(MUSB_INTRUSBE, 0x00);
-	w8(MUSB_INTRTXE, 0x0000);
 	w16(MUSB_INTRTXE, 0x0000);
 
 	/* Soft reset the core, then come back in device mode. */
@@ -415,26 +547,18 @@ int usb_cdc_init(void)
 	/* Connect: clearing and setting SOFTCONN makes the host re-enumerate
 	 * with our descriptors instead of the bootloader's. */
 	w8(MUSB_POWER, 0);
-	for (volatile int i = 0; i < 200000; i++) {
-	}
+	udelay(500);
 	w8(MUSB_POWER, POWER_SOFTCONN | POWER_HSEN);
-	for (volatile int i = 0; i < 200000; i++) {
-	}
+	udelay(500);
 	w8(MUSB_DEVCTL, 0x00);
+	udelay(100);
 
-	/*
-	 * Request a session explicitly.  If the PHY reported no VBUS (DEVCTL
-	 * bits 7:6 == 0) the core will not drive the bus, and a session request
-	 * is the one thing software can do about it without touching the PHY.
-	 */
-	w8(MUSB_DEVCTL, r8(MUSB_DEVCTL) | 0x01);
-	for (volatile int i = 0; i < 200000; i++) {
-	}
+	musb_devctl_after = r8(MUSB_DEVCTL);
 
 	connected = 0;
 	configured = 0;
 	desc_remaining = 0;
-	return 0;
+	return phy_error;
 }
 
 void usb_cdc_putc(char c)
