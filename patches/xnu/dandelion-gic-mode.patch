@@ -1,5 +1,5 @@
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
-index 3ad743f..6ea5fdd 100644
+index 3ad743f..7aa7908 100644
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
 @@ -1,5 +1,23 @@
@@ -26,7 +26,7 @@ index 3ad743f..6ea5fdd 100644
   */
  
  #include <stdint.h>
-@@ -9,169 +27,200 @@
+@@ -9,169 +27,219 @@
  #include <machine/atomic.h>
  #include <machine/machine_routines.h>
  #include <pexpert/device_tree.h>
@@ -205,6 +205,25 @@ index 3ad743f..6ea5fdd 100644
 -			panic("%s: cannot map GICR region", __func__);
 +		error = dgic_identify(&dandelion_gic, gicd, gicd_size_prop,
 +		    second, second_size_prop, dandelion_gic_node_is_v3(entry));
++
++		/*
++		 * Diagnostic: every GIC write in this project so far happened in
++		 * the shim, with the MMU off, and the two group-control writes
++		 * never took.  Linux does the same writes from kernel context
++		 * with the MMU on and works on this device, so repeat them here
++		 * and print the readbacks.
++		 */
++		kprintf("DANDELION: gic pre  ctlr=%x igroupr=%x\n",
++		    dgic_read32(gicd, DGICD_CTLR),
++		    dgic_read32(gicd, DGICD_IGROUPR));
++		dgic_write32(gicd, DGICD_CTLR, 0x13u);
++		dgic_write32(gicd, DGICD_IGROUPR, 0xffffffffu);
++		__asm__ volatile("dsb sy" ::: "memory");
++		kprintf("DANDELION: gic post ctlr=%x igroupr=%x\n",
++		    dgic_read32(gicd, DGICD_CTLR),
++		    dgic_read32(gicd, DGICD_IGROUPR));
++		dgic_write32(gicd, DGICD_IGROUPR, 0x0u);
++		__asm__ volatile("dsb sy" ::: "memory");
 +
 +		dandelion_gic_typer = dandelion_gic.typer;
 +		dandelion_gic_pidr2 = (dandelion_gic.pidr2_64k != 0) ?
