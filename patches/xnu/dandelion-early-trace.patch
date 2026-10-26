@@ -1,5 +1,5 @@
 diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
-index e26a1d7..16f6b5f 100644
+index e26a1d7..9c9a19c 100644
 --- a/osfmk/arm/arm_init.c
 +++ b/osfmk/arm/arm_init.c
 @@ -76,6 +76,21 @@
@@ -77,7 +77,7 @@ index e26a1d7..16f6b5f 100644
  
  	if (PE_parse_boot_argn("maxmem", &maxmem, sizeof(maxmem))) {
  		xmaxmem = (uint64_t) maxmem * (1024 * 1024);
-@@ -513,7 +539,13 @@ arm_init(
+@@ -513,7 +539,29 @@ arm_init(
  	__builtin_arm_wsr("pan", 1);
  #endif  /* __ARM_PAN_AVAILABLE__ */
  
@@ -87,11 +87,27 @@ index e26a1d7..16f6b5f 100644
 +	 * dandelion_trace_attach() itself right after the switch.
 +	 */
  	arm_vm_init(xmaxmem, args);
++	/*
++	 * Bring-up probe: paint a green bar straight onto the panel with no
++	 * function call, no kernel data and no trace-buffer access.  If it
++	 * shows up, arm_vm_init() really did return here and the failure is
++	 * inside the tracing path; if it does not, the return itself is
++	 * broken (stack/LR corruption on the 16KB INTSTACK).
++	 */
++	{
++		volatile unsigned int *bar = (volatile unsigned int *)
++		    (0x7ec50000UL + (unsigned long)1540 * 2944UL);
++
++		for (int i = 0; i < 240; i++) {
++			bar[i] = 0xff00ff00U;
++		}
++		__asm__ volatile("dsb sy" ::: "memory");
++	}
 +	DANDELION_TRACE("arm_init: arm_vm_init done\n");
  
  	if (debug_boot_arg) {
  		patch_low_glo();
-@@ -524,10 +556,12 @@ arm_init(
+@@ -524,10 +572,12 @@ arm_init(
  #endif
  
  	PE_consistent_debug_inherit();
@@ -104,7 +120,7 @@ index e26a1d7..16f6b5f 100644
  	kprintf("kprintf initialized\n");
  
  	serialmode = 0;
-@@ -569,9 +603,11 @@ arm_init(
+@@ -569,9 +619,11 @@ arm_init(
  		disableConsoleOutput = FALSE;     /* Allow printfs to happen */
  	}
  	PE_create_console();
@@ -116,7 +132,7 @@ index e26a1d7..16f6b5f 100644
  
  #if __arm64__
  #if DEBUG
-@@ -582,6 +618,7 @@ arm_init(
+@@ -582,6 +634,7 @@ arm_init(
  	cpu_machine_idle_init(TRUE);
  
  	PE_init_platform(TRUE, &BootCpuData);
@@ -124,7 +140,7 @@ index e26a1d7..16f6b5f 100644
  
  #if __arm64__
  	extern bool cpu_config_correct;
-@@ -590,6 +627,7 @@ arm_init(
+@@ -590,6 +643,7 @@ arm_init(
  	}
  
  	ml_map_cpu_pio();
@@ -132,7 +148,7 @@ index e26a1d7..16f6b5f 100644
  
  #if APPLE_ARM64_ARCH_FAMILY
  	configure_late_apple_regs();
-@@ -598,6 +636,7 @@ arm_init(
+@@ -598,6 +652,7 @@ arm_init(
  #endif
  
  	cpu_timebase_init(TRUE);
@@ -140,7 +156,7 @@ index e26a1d7..16f6b5f 100644
  
  #if KPERF
  	/* kptimer_curcpu_up() must be called after cpu_timebase_init */
-@@ -605,7 +644,9 @@ arm_init(
+@@ -605,7 +660,9 @@ arm_init(
  #endif /* KPERF */
  
  	PE_init_cpu();
@@ -150,7 +166,7 @@ index e26a1d7..16f6b5f 100644
  
  
  #if HIBERNATION
-@@ -634,6 +675,7 @@ arm_init(
+@@ -634,6 +691,7 @@ arm_init(
  
  	gDramBase = *dram_base;
  	gDramSize = *dram_size;
@@ -429,10 +445,10 @@ index 0a00656..aa4c197 100644
  	iotrace_disable();
  
 diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
-index e44008f..5c055ed 100644
+index e44008f..c3e60e7 100644
 --- a/osfmk/kern/printf.c
 +++ b/osfmk/kern/printf.c
-@@ -908,6 +908,297 @@ vprintf(const char *fmt, va_list ap)
+@@ -908,6 +908,288 @@ vprintf(const char *fmt, va_list ap)
  	return vprintf_internal(fmt, ap, __builtin_return_address(0));
  }
  
@@ -709,15 +725,6 @@ index e44008f..5c055ed 100644
 +void
 +dandelion_trace_mark(const char *s)
 +{
-+	/* Diagnostic: test framebuffer access before any other operations */
-+	static volatile unsigned int *dandelion_fb_diag =
-+	    (volatile unsigned int *)DANDELION_FB_PA;
-+
-+	/* Write a single red pixel to test FB access */
-+	dandelion_fb_diag[0] = 0xffff0000U;
-+	__asm__ volatile("dc cvac, %0" :: "r"((unsigned long)dandelion_fb_diag & ~63UL) : "memory");
-+	__asm__ volatile("dsb sy" ::: "memory");
-+
 +	while (*s != '\0') {
 +		char c = *s++;
 +
