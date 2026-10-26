@@ -62,7 +62,7 @@ static int covered(uint64_t start, uint64_t size, const struct fdt_info *fdt)
  * A hang before XNU's own framebuffer console exists leaves no other
  * evidence, so print it here, before we jump again.
  */
-#define XNU_TRACE_PA    0x5ffc0000UL
+#define XNU_TRACE_PA    0x5fc00000UL
 #define XNU_TRACE_SIZE  0x40000UL
 #define XNU_TRACE_MAGIC 0x58545831U
 #define XNU_TRACE_HDR   8

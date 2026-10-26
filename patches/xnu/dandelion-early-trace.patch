@@ -236,10 +236,10 @@ index e5b23f2..25427f0 100644
  }
  
 diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
-index e44008f..bb4dfb3 100644
+index e44008f..7a51ff2 100644
 --- a/osfmk/kern/printf.c
 +++ b/osfmk/kern/printf.c
-@@ -908,6 +908,113 @@ vprintf(const char *fmt, va_list ap)
+@@ -908,6 +908,117 @@ vprintf(const char *fmt, va_list ap)
  	return vprintf_internal(fmt, ap, __builtin_return_address(0));
  }
  
@@ -260,29 +260,29 @@ index e44008f..bb4dfb3 100644
 + * startup.c additionally append plain checkpoints with dandelion_trace_mark()
 + * so progress is visible even where nothing prints.
 + *
-+ * The buffer sits at the very top of the window, far above topOfKernelData
-+ * and therefore not handed out by the VM during early boot.
++ * The buffer sits near the top of the window, far above topOfKernelData and
++ * therefore not handed out by the VM during early boot.  It cannot sit at
++ * the very top: the bootstrap V=P mapping that start.s builds stops at the
++ * last whole 2 MiB block below gPhysBase + memSize (0x5fe00000 for this
++ * 384 MiB window), and everything above that is unmapped until arm_vm_init()
++ * installs the physmap.
 + *
-+ * Until arm_vm_init() replaces the bootstrap translation tables the window is
-+ * reachable through the identity map that start.s installs, so the physical
-+ * address works as-is.  arm_vm_init() calls dandelion_trace_attach() right
-+ * after the switch, which repoints the buffer at the physmap; the two lines
-+ * in between are the only blind spot.
++ * Until then the window is reachable through that identity map, so the
++ * physical address works as-is.  arm_vm_init() calls dandelion_trace_attach()
++ * right after the switch, which repoints the buffer at the physmap; the few
++ * lines in between are the only blind spot.
 + *
 + * The mappings are cacheable, so every character is cleaned to the point of
 + * coherency: the interesting part of the trace is whatever was written last,
 + * which is exactly what would still be sitting dirty in a cache when the
 + * watchdog fires.
 + */
-+#define DANDELION_TRACE_PA      0x5ffc0000UL
++#define DANDELION_TRACE_PA      0x5fc00000UL
 +#define DANDELION_TRACE_SIZE    0x40000UL
 +/* "XTX1": lets the shim tell a real trace from leftovers in RAM. */
 +#define DANDELION_TRACE_MAGIC   0x58545831U
 +#define DANDELION_TRACE_HDR     8
 +#define DANDELION_TRACE_TEXT    (DANDELION_TRACE_SIZE - DANDELION_TRACE_HDR)
-+
-+extern unsigned long gPhysBase;
-+extern unsigned long physmap_base;
 +
 +static volatile unsigned char *dandelion_trace_base =
 +    (volatile unsigned char *)DANDELION_TRACE_PA;
@@ -291,10 +291,14 @@ index e44008f..bb4dfb3 100644
 +void
 +dandelion_trace_attach(void)
 +{
-+	if (physmap_base != 0) {
-+		dandelion_trace_base = (volatile unsigned char *)
-+		    (physmap_base + (DANDELION_TRACE_PA - gPhysBase));
-+	}
++	/*
++	 * The physmap is not a flat gPhysBase-relative window: arm_vm_init()
++	 * lays its segments out through ptov_table with per-segment block
++	 * alignment, so ask the kernel where the page landed rather than
++	 * computing it.
++	 */
++	dandelion_trace_base =
++	    (volatile unsigned char *)phystokv(DANDELION_TRACE_PA);
 +}
 +
 +void
