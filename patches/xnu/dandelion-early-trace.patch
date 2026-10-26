@@ -405,7 +405,7 @@ index d89b0f1..626d02c 100644
  
  /*
 diff --git a/osfmk/console/serial_console.c b/osfmk/console/serial_console.c
-index e5b23f2..25427f0 100644
+index e5b23f2..a9e9be2 100644
 --- a/osfmk/console/serial_console.c
 +++ b/osfmk/console/serial_console.c
 @@ -254,6 +254,13 @@ _cnputc(char c, bool poll)
@@ -414,8 +414,8 @@ index e5b23f2..25427f0 100644
  
 +#if defined(DANDELION)
 +	{
-+		extern void dandelion_trace_putc(char);
-+		dandelion_trace_putc(c);
++		extern void dandelion_console_putc(char);
++		dandelion_console_putc(c);
 +	}
 +#endif
 +
@@ -448,10 +448,10 @@ index 0a00656..aa4c197 100644
  	iotrace_disable();
  
 diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
-index e44008f..e9b1c8d 100644
+index e44008f..cc19d13 100644
 --- a/osfmk/kern/printf.c
 +++ b/osfmk/kern/printf.c
-@@ -908,6 +908,328 @@ vprintf(const char *fmt, va_list ap)
+@@ -908,6 +908,397 @@ vprintf(const char *fmt, va_list ap)
  	return vprintf_internal(fmt, ap, __builtin_return_address(0));
  }
  
@@ -632,6 +632,61 @@ index e44008f..e9b1c8d 100644
 +	{0x00,0x76,0xdc,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
 +};
 +
++/*
++ * Scroll the text region up by one line.  Only the left-hand text columns
++ * are moved, so the probe bars on the right survive.  Each moved row is
++ * cleaned from the D-cache as we go: the framebuffer is normal cacheable
++ * memory, and nothing would otherwise reach the display controller.
++ */
++static void
++dandelion_fb_scroll(void)
++{
++	unsigned int y;
++	const unsigned int xmax = DANDELION_PROBE_X - 8;
++
++	for (y = DANDELION_FB_Y0; y + 16 < DANDELION_FB_YMAX; y++) {
++		volatile unsigned int *dst = (volatile unsigned int *)
++		    (DANDELION_FB_PA + (unsigned long)y * DANDELION_FB_STRIDE);
++		volatile unsigned int *src = (volatile unsigned int *)
++		    (DANDELION_FB_PA + (unsigned long)(y + 16) * DANDELION_FB_STRIDE);
++
++		for (unsigned int x = 0; x < xmax; x++) {
++			dst[x] = src[x];
++		}
++	}
++	for (; y < DANDELION_FB_YMAX; y++) {
++		volatile unsigned int *dst = (volatile unsigned int *)
++		    (DANDELION_FB_PA + (unsigned long)y * DANDELION_FB_STRIDE);
++
++		for (unsigned int x = 0; x < xmax; x++) {
++			dst[x] = DANDELION_FB_BG;
++		}
++	}
++
++	for (y = DANDELION_FB_Y0; y < DANDELION_FB_YMAX; y++) {
++		unsigned long a = (unsigned long)(DANDELION_FB_PA +
++		    (unsigned long)y * DANDELION_FB_STRIDE);
++		unsigned long end = a + (unsigned long)xmax * 4;
++
++		for (; a < end; a += 64) {
++			__asm__ volatile("dc cvac, %0" :: "r"(a) : "memory");
++		}
++	}
++	__asm__ volatile("dsb sy" ::: "memory");
++}
++
++/* Advance to the next text line, scrolling once the region is full. */
++static void
++dandelion_fb_newline(void)
++{
++	dandelion_fb_x = DANDELION_FB_X0;
++	dandelion_fb_y += 16;
++	if (dandelion_fb_y + 16 > DANDELION_FB_YMAX) {
++		dandelion_fb_scroll();
++		dandelion_fb_y = DANDELION_FB_YMAX - 16;
++	}
++}
++
 +static void
 +dandelion_fb_putc(char c)
 +{
@@ -639,16 +694,18 @@ index e44008f..e9b1c8d 100644
 +		return;
 +	}
 +	if (c == '\n') {
++		dandelion_fb_newline();
++		return;
++	}
++	if (c == '\r') {
 +		dandelion_fb_x = DANDELION_FB_X0;
-+		dandelion_fb_y += 16;
 +		return;
 +	}
 +	if (c < 0x20 || c > 0x7e) {
 +		c = '?';
 +	}
 +	if (dandelion_fb_x + 8 > DANDELION_FB_VISW) {
-+		dandelion_fb_x = DANDELION_FB_X0;
-+		dandelion_fb_y += 16;
++		dandelion_fb_newline();
 +	}
 +	if (dandelion_fb_y + 16 > DANDELION_FB_YMAX) {
 +		return;
@@ -774,6 +831,18 @@ index e44008f..e9b1c8d 100644
 +		dandelion_trace_putc(c);
 +		dandelion_fb_putc(c);
 +	}
++}
++
++/*
++ * Console mirror: every character the kernel console emits is appended to
++ * the readback buffer and painted into the scrolling trace area, so the
++ * panel shows the real kprintf stream and not just the checkpoints.
++ */
++void
++dandelion_console_putc(char c)
++{
++	dandelion_trace_putc(c);
++	dandelion_fb_putc(c);
 +}
 +#endif /* DANDELION */
 +
