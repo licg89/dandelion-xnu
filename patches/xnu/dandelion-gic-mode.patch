@@ -1,5 +1,5 @@
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
-index 3ad743f..4fc7a0d 100644
+index 3ad743f..f7c62e0 100644
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
 @@ -1,5 +1,23 @@
@@ -26,7 +26,7 @@ index 3ad743f..4fc7a0d 100644
   */
  
  #include <stdint.h>
-@@ -9,169 +27,224 @@
+@@ -9,169 +27,234 @@
  #include <machine/atomic.h>
  #include <machine/machine_routines.h>
  #include <pexpert/device_tree.h>
@@ -255,8 +255,18 @@ index 3ad743f..4fc7a0d 100644
 -
 -	// Find the redistributor for this processor
 -	vm_offset_t gicr_pe_base = find_gicr_pe_base();
-+		/* Distributor, this PE's redistributor and the CPU interface. */
-+		error = dgic_cpu_init(&dandelion_gic);
++		/*
++		 * This PE's redistributor and the CPU interface only.
++		 *
++		 * The distributor's group-control registers (GICD_CTLR,
++		 * GICD_IGROUPR) and the redistributor's group register belong to
++		 * EL3 on this SoC.  Writing them from the shim (MMU off) is
++		 * silently dropped; writing them here, with the MMU on, stalls
++		 * the bus and the boot stops at cpu_timabase_init.  So the
++		 * distributor is left entirely to the secure firmware, and only
++		 * the parts that non-secure code genuinely owns are programmed.
++		 */
++		error = dgic_cpu_init(&dandelion_gic, 0);
 +		if (error != DGIC_OK) {
 +			kprintf("DANDELION: gic cpu init failed (%d); "
 +			    "no interrupts will be delivered\n", error);
@@ -323,7 +333,7 @@ index 3ad743f..4fc7a0d 100644
 -	__builtin_arm_isb(ISB_SY);
 +	/* Secondary CPU: only its own redistributor and CPU interface. */
 +	if (dandelion_gic.mode == DGIC_MODE_V3) {
-+		error = dgic_redist_init(&dandelion_gic);
++		error = dgic_redist_init(&dandelion_gic, 0);
 +		if (error != DGIC_OK) {
 +			kprintf("DANDELION: cpu%u redistributor init failed (%d)\n",
 +			    ml_get_cpu_number_local(), error);

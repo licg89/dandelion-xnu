@@ -467,7 +467,7 @@ gic_probe_run(const struct fdt_platform *platform, struct gic_probe_result *r)
 
 	if (r->gic.mode == DGIC_MODE_V3) {
 		out("  redistributor", CLR_CYAN);
-		r->cpu_init = dgic_redist_init(&r->gic);
+		r->cpu_init = dgic_redist_init(&r->gic, 1);
 		fb_puts(r->cpu_init == DGIC_OK ? " ok" : " failed", CLR_WHITE);
 		fb_newline();
 	}

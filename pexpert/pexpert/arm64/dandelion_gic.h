@@ -564,9 +564,18 @@ dgic_distributor_init(struct dgic *g)
 	dgic_write32(gicd, DGICD_CTLR, DGICV2_CTLR_ENABLE_GRP1);
 }
 
-/* Wake this PE's redistributor and put the SGI/PPI frame into Group 1. */
+/*
+ * Wake this PE's redistributor.
+ *
+ * `program_group` controls whether the SGI/PPI group register is written.
+ * MediaTek's GIC-500 runs with both security states implemented, so
+ * GICR_IGROUPR0 belongs to EL3: writing it from the boot shim (MMU off) is
+ * silently dropped, and writing it from kernel context (MMU on) stalls the
+ * bus and hangs the machine.  Callers that run after the MMU is on must pass
+ * 0 and let the secure firmware keep ownership of the group registers.
+ */
 static inline int
-dgic_redist_init(struct dgic *g)
+dgic_redist_init(struct dgic *g, int program_group)
 {
 	unsigned long redist = dgic_find_redist(g);
 	unsigned int waker;
@@ -592,7 +601,9 @@ dgic_redist_init(struct dgic *g)
 	}
 
 	/* SGIs and PPIs: selected group, equal priorities, no group modifier. */
-	dgic_set_group(g, g->group);
+	if (program_group) {
+		dgic_set_group(g, g->group);
+	}
 	dgic_fill_priorities(redist, DGICR_IPRIORITYR, 8, DGIC_PRIORITY_DEFAULT);
 	/* SGIs edge triggered; PPIs (including the timer) level sensitive. */
 	dgic_write32(redist, DGICR_ICFGR0, 0u);
@@ -763,17 +774,25 @@ dgic_hppir(struct dgic *g)
 }
 
 /*
- * Full bring-up for the boot CPU: distributor, this PE's redistributor and
- * the CPU interface.  Returns DGIC_OK or a negative DGIC_ERR_*.
+ * Bring up this PE: distributor (optional), redistributor and CPU interface.
+ * Returns DGIC_OK or a negative DGIC_ERR_*.
+ *
+ * `program_distributor` must be 0 for callers that run with the MMU on: the
+ * distributor's group-control registers (GICD_CTLR, GICD_IGROUPR) belong to
+ * EL3 on this SoC and writing them from non-secure kernel context stalls the
+ * bus.  The shim passes 1 (with the MMU off the same writes are harmlessly
+ * dropped), the kernel passes 0.
  */
 static inline int
-dgic_cpu_init(struct dgic *g)
+dgic_cpu_init(struct dgic *g, int program_distributor)
 {
 	int error;
 
-	dgic_distributor_init(g);
+	if (program_distributor) {
+		dgic_distributor_init(g);
+	}
 	if (g->mode == DGIC_MODE_V3) {
-		error = dgic_redist_init(g);
+		error = dgic_redist_init(g, program_distributor);
 		if (error != DGIC_OK) {
 			return error;
 		}
