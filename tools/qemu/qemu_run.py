@@ -7,20 +7,16 @@ their diagnostics into memory:
   * the shim mirrors its framebuffer console to QEMU's PL011 when it is built
     with -DQEMU_VIRT (build.sh xnu-qemu), so its log arrives on the serial
     line;
-  * XNU appends everything it prints to the trace buffer at 0x5fc00000 (see
-    osfmk/kern/printf.c); this tool pulls that buffer out of guest RAM with
-    the QEMU monitor and prints it as text.
+  * XNU appends everything it prints to the trace ring at 0x5fc00000 (see
+    osfmk/kern/printf.c); this tool asks the QEMU monitor to dump that buffer
+    and prints it as text, and --fb can dump 0x7ec50000 and decode the text
+    the kernel painted on the framebuffer.
 
-That makes a full boot observable without the hardware:
-
-    python3 tools/qemu/qemu_run.py --gic 3 --seconds 45
-    python3 tools/qemu/qemu_run.py --gic 2 --seconds 20
-
-Both GIC models are exercised: 'gic-version=3' is a GIC-500 (single security
-state, so Group 0/FIQ is usable), 'gic-version=2' is a GIC-400 with the CPU
-interface at 0x08010000.  Neither is the phone, but the register offsets,
-security-state handling and timer delivery logic are the same code the kernel
-uses (pexpert/pexpert/arm64/dandelion_gic.h).
+Known limitation (2026-10-26): the QEMU build on this workstation rejects the
+filename argument of `pmemsave` ("invalid char ... in expression"), so both
+dumps come back empty even though the guest runs.  The fix in progress is a
+kernel-side mirror to the PL011, gated on a boot argument, so `-serial file:`
+carries kprintf directly; until then only the shim log is reliable.
 """
 
 import argparse
