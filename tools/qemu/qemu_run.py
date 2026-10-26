@@ -36,6 +36,16 @@ TRACE_PA = 0x5FC00000
 TRACE_SIZE = 0x40000
 TRACE_MAGIC = 0x58545831
 
+# Framebuffer console (osfmk/kern/printf.c): 736x1600, stride 2944, text area
+# starts at y=860, x=8, 8x16 cells, foreground 0xFFFFFF00 on black.
+FB_PA = 0x7EC50000
+FB_STRIDE = 2944
+FB_TEXT_Y = 860
+FB_TEXT_X = 8
+FB_TEXT_YMAX = 1580
+FB_VISIBLE_W = 720
+FB_FG = 0xFFFFFF00
+
 QEMU = "qemu-system-aarch64"
 
 
@@ -92,6 +102,19 @@ def monitor(path, commands, wait=10.0):
     return "".join(replies)
 
 
+def wait_for_file(path, size, timeout=20.0):
+    """The monitor's pmemsave writes asynchronously; wait for the whole file."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            if os.path.getsize(path) >= size:
+                return True
+        except OSError:
+            pass
+        time.sleep(0.3)
+    return False
+
+
 def read_trace(path):
     with open(path, "rb") as handle:
         data = handle.read()
@@ -102,6 +125,46 @@ def read_trace(path):
         return None
     text = data[8:8 + min(length, len(data) - 8)]
     return text.split(b"\0", 1)[0].decode("utf-8", "replace")
+
+
+def decode_framebuffer(path):
+    """Turn a raw framebuffer dump back into the text the console painted."""
+    try:
+        from . import font8x16
+    except ImportError:
+        import font8x16
+
+    with open(path, "rb") as handle:
+        data = handle.read()
+    height = len(data) // FB_STRIDE
+    rows = []
+    for y in range(FB_TEXT_Y, min(FB_TEXT_YMAX, height - 16), 16):
+        line = []
+        blank = True
+        for x in range(FB_TEXT_X, FB_VISIBLE_W - 8, 8):
+            glyph = []
+            for gy in range(16):
+                bits = 0
+                base = (y + gy) * FB_STRIDE + x * 4
+                for gx in range(8):
+                    pixel = int.from_bytes(data[base + gx * 4:base + gx * 4 + 4],
+                                           "little")
+                    if pixel == FB_FG:
+                        bits |= 0x80 >> gx
+                glyph.append(bits)
+            glyph = bytes(glyph)
+            match = "?"
+            for index, candidate in enumerate(font8x16.FONT):
+                if candidate == glyph:
+                    match = chr(font8x16.FIRST_CHAR + index)
+                    break
+            line.append(match)
+            if match != " ":
+                blank = False
+        text = "".join(line).rstrip()
+        if not blank and text:
+            rows.append(text)
+    return rows
 
 
 def main():
@@ -124,6 +187,12 @@ def main():
                         help="where to keep the raw trace buffer")
     parser.add_argument("--quiet", action="store_true",
                         help="only print the XNU trace")
+    parser.add_argument("--registers", action="store_true",
+                        help="also dump the CPU registers (where did it stop?)")
+    parser.add_argument("--fb", action="store_true",
+                        help="also dump the framebuffer and decode its text")
+    parser.add_argument("--fb-out", default=None,
+                        help="where to keep the raw framebuffer dump")
     parser.add_argument("qemu_args", nargs="*", help="extra QEMU arguments")
     args = parser.parse_args()
 
@@ -131,6 +200,7 @@ def main():
     monitor_sock = os.path.join(tmpdir, "mon.sock")
     serial_log = args.serial_out or os.path.join(tmpdir, "serial.log")
     trace_bin = args.trace_out or os.path.join(tmpdir, "trace.bin")
+    fb_bin = args.fb_out or os.path.join(tmpdir, "framebuffer.bin")
 
     process = start_qemu(args.image, args.initrd, args.gic, args.memory,
                          args.cpus, monitor_sock, serial_log, args.qemu_args)
@@ -143,6 +213,11 @@ def main():
         else:
             commands = ["pmemsave 0x%x 0x%x %s"
                         % (TRACE_PA, TRACE_SIZE, trace_bin)]
+            if args.fb:
+                commands.append("pmemsave 0x%x 0x%x %s"
+                                % (FB_PA, FB_STRIDE * 1600, fb_bin))
+            if args.registers:
+                commands.append("info registers")
             try:
                 reply = monitor(monitor_sock, commands)
             except SystemExit as error:
@@ -150,6 +225,16 @@ def main():
                 reply = ""
             if "could not" in reply or "unknown" in reply.lower():
                 sys.stderr.write("qemu_run: monitor said: %s\n" % reply.strip())
+            wait_for_file(trace_bin, min(4096, TRACE_SIZE), timeout=5.0)
+            if args.fb:
+                if not wait_for_file(fb_bin, FB_STRIDE * 1600, timeout=25.0):
+                    sys.stderr.write("qemu_run: framebuffer dump incomplete\n")
+            if args.registers:
+                wanted = [line for line in reply.splitlines()
+                          if any(key in line for key in
+                                 ("PC=", "PSTATE=", "X30=", "ESR", "SPSR"))]
+                sys.stderr.write("=== cpu state ===\n%s\n"
+                                 % "\n".join(wanted))
     finally:
         process.terminate()
         try:
@@ -174,6 +259,17 @@ def main():
     else:
         print("(no trace: the kernel did not run, or it did not print)")
     print()
+    if args.fb:
+        print("=== framebuffer text (0x%x) ===" % FB_PA)
+        if os.path.exists(fb_bin):
+            try:
+                for line in decode_framebuffer(fb_bin):
+                    print(line)
+            except Exception as error:              # noqa: BLE001 - report it
+                print("(decode failed: %s)" % error)
+        else:
+            print("(no framebuffer dump)")
+        print()
     print("=== files ===")
     print("serial: %s" % serial_log)
     print("trace:  %s" % trace_bin)
