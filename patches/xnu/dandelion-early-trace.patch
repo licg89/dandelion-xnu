@@ -1,8 +1,8 @@
 diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
-index e26a1d7..9c9a19c 100644
+index e26a1d7..5d26625 100644
 --- a/osfmk/arm/arm_init.c
 +++ b/osfmk/arm/arm_init.c
-@@ -76,6 +76,21 @@
+@@ -76,6 +76,24 @@
  
  #include <console/serial_protos.h>
  
@@ -14,17 +14,20 @@ index e26a1d7..9c9a19c 100644
 + */
 +extern void dandelion_trace_mark(const char *);
 +extern void dandelion_trace_attach(void);
++extern void dandelion_probe_bar(unsigned int, unsigned int);
 +#define DANDELION_TRACE(s)       dandelion_trace_mark(s)
 +#define DANDELION_TRACE_ATTACH() dandelion_trace_attach()
++#define DANDELION_PROBE(row, color) dandelion_probe_bar((row), (color))
 +#else
 +#define DANDELION_TRACE(s)       do { } while (0)
 +#define DANDELION_TRACE_ATTACH() do { } while (0)
++#define DANDELION_PROBE(row, color) do { } while (0)
 +#endif
 +
  #if CONFIG_TELEMETRY
  #include <kern/telemetry.h>
  #endif
-@@ -346,6 +361,8 @@ arm_init(
+@@ -346,6 +364,8 @@ arm_init(
  	DTEntry chosen = NULL;
  	unsigned int dt_entry_size = 0;
  
@@ -33,7 +36,7 @@ index e26a1d7..9c9a19c 100644
  	arm_setup_pre_sign();
  
  	arm_slide_rebase_and_sign_image();
-@@ -362,6 +379,7 @@ arm_init(
+@@ -362,6 +382,7 @@ arm_init(
  #endif /* defined(HAS_APPLE_PAC) */
  
  	PE_init_platform(FALSE, args); /* Get platform expert set up */
@@ -41,7 +44,7 @@ index e26a1d7..9c9a19c 100644
  
  #if __arm64__
  	configure_timer_apple_regs();
-@@ -424,6 +442,8 @@ arm_init(
+@@ -424,6 +445,8 @@ arm_init(
  
  	ml_parse_cpu_topology();
  
@@ -50,7 +53,7 @@ index e26a1d7..9c9a19c 100644
  
  	master_cpu = ml_get_boot_cpu_number();
  	assert(master_cpu >= 0 && master_cpu <= ml_get_max_cpu_number());
-@@ -453,20 +473,26 @@ arm_init(
+@@ -453,20 +476,26 @@ arm_init(
  	 */
  	thread->machine.preemption_count = 0;
  	cpu_bootstrap();
@@ -77,7 +80,7 @@ index e26a1d7..9c9a19c 100644
  
  	if (PE_parse_boot_argn("maxmem", &maxmem, sizeof(maxmem))) {
  		xmaxmem = (uint64_t) maxmem * (1024 * 1024);
-@@ -513,7 +539,29 @@ arm_init(
+@@ -513,7 +542,21 @@ arm_init(
  	__builtin_arm_wsr("pan", 1);
  #endif  /* __ARM_PAN_AVAILABLE__ */
  
@@ -86,28 +89,20 @@ index e26a1d7..9c9a19c 100644
 +	 * arm_vm_init() swaps the bootstrap tables for the physmap and calls
 +	 * dandelion_trace_attach() itself right after the switch.
 +	 */
- 	arm_vm_init(xmaxmem, args);
 +	/*
-+	 * Bring-up probe: paint a green bar straight onto the panel with no
-+	 * function call, no kernel data and no trace-buffer access.  If it
-+	 * shows up, arm_vm_init() really did return here and the failure is
-+	 * inside the tracing path; if it does not, the return itself is
-+	 * broken (stack/LR corruption on the 16KB INTSTACK).
++	 * Bring-up probe: one bar before the call, one after.  Both are
++	 * painted with an explicit cache clean so the pixels really reach
++	 * the panel.  Blue without green means arm_vm_init() never returned
++	 * to this point; both means it did and the failure is further on.
 +	 */
-+	{
-+		volatile unsigned int *bar = (volatile unsigned int *)
-+		    (0x7ec50000UL + (unsigned long)1540 * 2944UL);
-+
-+		for (int i = 0; i < 240; i++) {
-+			bar[i] = 0xff00ff00U;
-+		}
-+		__asm__ volatile("dsb sy" ::: "memory");
-+	}
++	DANDELION_PROBE(1000, 0xff0000ffU);     /* blue: before the call */
+ 	arm_vm_init(xmaxmem, args);
++	DANDELION_PROBE(1020, 0xff00ff00U);     /* green: after the call */
 +	DANDELION_TRACE("arm_init: arm_vm_init done\n");
  
  	if (debug_boot_arg) {
  		patch_low_glo();
-@@ -524,10 +572,12 @@ arm_init(
+@@ -524,10 +567,12 @@ arm_init(
  #endif
  
  	PE_consistent_debug_inherit();
@@ -120,7 +115,7 @@ index e26a1d7..9c9a19c 100644
  	kprintf("kprintf initialized\n");
  
  	serialmode = 0;
-@@ -569,9 +619,11 @@ arm_init(
+@@ -569,9 +614,11 @@ arm_init(
  		disableConsoleOutput = FALSE;     /* Allow printfs to happen */
  	}
  	PE_create_console();
@@ -132,7 +127,7 @@ index e26a1d7..9c9a19c 100644
  
  #if __arm64__
  #if DEBUG
-@@ -582,6 +634,7 @@ arm_init(
+@@ -582,6 +629,7 @@ arm_init(
  	cpu_machine_idle_init(TRUE);
  
  	PE_init_platform(TRUE, &BootCpuData);
@@ -140,7 +135,7 @@ index e26a1d7..9c9a19c 100644
  
  #if __arm64__
  	extern bool cpu_config_correct;
-@@ -590,6 +643,7 @@ arm_init(
+@@ -590,6 +638,7 @@ arm_init(
  	}
  
  	ml_map_cpu_pio();
@@ -148,7 +143,7 @@ index e26a1d7..9c9a19c 100644
  
  #if APPLE_ARM64_ARCH_FAMILY
  	configure_late_apple_regs();
-@@ -598,6 +652,7 @@ arm_init(
+@@ -598,6 +647,7 @@ arm_init(
  #endif
  
  	cpu_timebase_init(TRUE);
@@ -156,7 +151,7 @@ index e26a1d7..9c9a19c 100644
  
  #if KPERF
  	/* kptimer_curcpu_up() must be called after cpu_timebase_init */
-@@ -605,7 +660,9 @@ arm_init(
+@@ -605,7 +655,9 @@ arm_init(
  #endif /* KPERF */
  
  	PE_init_cpu();
@@ -166,7 +161,7 @@ index e26a1d7..9c9a19c 100644
  
  
  #if HIBERNATION
-@@ -634,6 +691,7 @@ arm_init(
+@@ -634,6 +686,7 @@ arm_init(
  
  	gDramBase = *dram_base;
  	gDramSize = *dram_size;
@@ -175,10 +170,10 @@ index e26a1d7..9c9a19c 100644
  	/*
  	 * Initialize the stack protector for all future calls
 diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
-index d89b0f1..6912016 100644
+index d89b0f1..626d02c 100644
 --- a/osfmk/arm64/arm_vm_init.c
 +++ b/osfmk/arm64/arm_vm_init.c
-@@ -51,6 +51,18 @@
+@@ -51,6 +51,21 @@
  
  #include <san/kasan.h>
  
@@ -186,18 +181,21 @@ index d89b0f1..6912016 100644
 +/* Early boot trace, see osfmk/kern/printf.c. */
 +extern void dandelion_trace_mark(const char *);
 +extern void dandelion_trace_attach(void);
++extern void dandelion_probe_bar(unsigned int, unsigned int);
 +#define DANDELION_TRACE(s)        dandelion_trace_mark(s)
 +#define DANDELION_KEEP_IDENTITY_MAP 1
 +#define DANDELION_TRACE_ATTACH()  dandelion_trace_attach()
++#define DANDELION_PROBE(row, color) dandelion_probe_bar((row), (color))
 +#else
 +#define DANDELION_TRACE(s)        do { } while (0)
 +#define DANDELION_TRACE_ATTACH()  do { } while (0)
++#define DANDELION_PROBE(row, color) do { } while (0)
 +#endif
 +
  #if __ARM_KERNEL_PROTECT__
  /*
   * If we want to support __ARM_KERNEL_PROTECT__, we need a sufficient amount of
-@@ -1825,6 +1837,8 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -1825,6 +1840,8 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	vm_offset_t      ptpage_vaddr;
  	vm_map_address_t dynamic_memory_begin;
  
@@ -206,7 +204,7 @@ index d89b0f1..6912016 100644
  	/*
  	 * Get the virtual and physical kernel-managed memory base from boot_args.
  	 */
-@@ -1846,6 +1860,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -1846,6 +1863,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	 */
  	gPhysSize = mem_size = ((gPhysBase + args->memSize) & ~PAGE_MASK) - gPhysBase;
  
@@ -214,7 +212,7 @@ index d89b0f1..6912016 100644
  	mem_actual = args->memSizeActual ? args->memSizeActual : mem_size;
  
  	if ((memory_size != 0) && (mem_size > memory_size)) {
-@@ -1854,6 +1869,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -1854,6 +1872,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	} else {
  		max_mem_actual = mem_actual;
  	}
@@ -222,7 +220,7 @@ index d89b0f1..6912016 100644
  	if (mem_size >= ((VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS) / 2)) {
  		panic("Unsupported memory configuration %lx", mem_size);
  	}
-@@ -1865,11 +1881,14 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -1865,11 +1884,14 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	physmap_base = phystokv(args->topOfKernelData);
  #endif
  
@@ -237,7 +235,7 @@ index d89b0f1..6912016 100644
  
  #if XNU_MONITOR
  	physmap_base = ROUND_TWIG(physmap_base);
-@@ -1907,11 +1926,13 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -1907,11 +1929,13 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
      iofilter_stacks_end = (void*)dynamic_memory_begin;
  #endif
  #endif
@@ -251,7 +249,7 @@ index d89b0f1..6912016 100644
  	boot_ttep = kvtophys((vm_offset_t)boot_tte);
  
  #if DEVELOPMENT || DEBUG
-@@ -1938,12 +1959,15 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -1938,12 +1962,15 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	 * to trampoline to KVA. this requires only 3 pages to stay resident.
  	 */
  	avail_start = args->topOfKernelData;
@@ -267,7 +265,7 @@ index d89b0f1..6912016 100644
  	invalid_tte = (tt_entry_t *)alloc_ptpage(TRUE);
  	invalid_ttep = kvtophys((vm_offset_t)invalid_tte);
  	bzero(invalid_tte, ARM_PGBYTES);
-@@ -1951,9 +1975,11 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -1951,9 +1978,11 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	/*
  	 * Initialize l1 page table page
  	 */
@@ -279,7 +277,7 @@ index d89b0f1..6912016 100644
  	avail_end = gPhysBase + mem_size;
  	assert(!(avail_end & PAGE_MASK));
  
-@@ -1971,6 +1997,8 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -1971,6 +2000,8 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	 *   the so called physical aperture should be statically mapped
  	 */
  	init_ptpages(cpu_tte, gVirtBase, dynamic_memory_begin, TRUE, ARM_TTE_TABLE_AP(ARM_TTE_TABLE_AP_USER_NA));
@@ -288,7 +286,7 @@ index d89b0f1..6912016 100644
  
  #if defined(ARM_LARGE_MEMORY)
  	/*
-@@ -2060,6 +2088,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2060,6 +2091,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  		segLINKB        = (vm_offset_t) getsegdatafromheader(kc_mh,            "__LINKEDIT", &segSizeLINK);
  	}
  
@@ -296,7 +294,7 @@ index d89b0f1..6912016 100644
  	(void) PE_parse_boot_argn("use_contiguous_hint", &use_contiguous_hint, sizeof(use_contiguous_hint));
  	assert(segSizePRELINKTEXT < 0x03000000); /* 23355738 */
  
-@@ -2068,12 +2097,15 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2068,12 +2100,15 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  		assert(segSizePLKDATACONST && segSizePLKTEXTEXEC);
  	}
  
@@ -312,7 +310,7 @@ index d89b0f1..6912016 100644
  
  	vm_kernel_base = segTEXTB;
  	vm_kernel_top = (vm_offset_t) &last_kernel_symbol;
-@@ -2094,6 +2126,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2094,6 +2129,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	vm_prelink_sdata = segPRELINKDATAB;
  	vm_prelink_edata = segPRELINKDATAB + segSizePRELINKDATA;
  
@@ -320,7 +318,7 @@ index d89b0f1..6912016 100644
  	arm_vm_prot_init(args);
  
  	/*
-@@ -2101,6 +2134,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2101,6 +2137,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	 *   cover this address range:
  	 *     LOW_GLOBAL_BASE_ADDRESS + 2MB
  	 */
@@ -328,7 +326,7 @@ index d89b0f1..6912016 100644
  	va_l1 = va_l2 = LOW_GLOBAL_BASE_ADDRESS;
  	cpu_l1_tte = cpu_tte + ((va_l1 & ARM_TT_L1_INDEX_MASK) >> ARM_TT_L1_SHIFT);
  	cpu_l2_tte = ((tt_entry_t *) phystokv(((*cpu_l1_tte) & ARM_TTE_TABLE_MASK))) + ((va_l2 & ARM_TT_L2_INDEX_MASK) >> ARM_TT_L2_SHIFT);
-@@ -2125,6 +2159,8 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2125,6 +2162,8 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	 * With legacy 3 level table systems we never mapped more than a single L1 entry so this may be dead code
  	 */
  	init_ptpages(cpu_tte, dynamic_memory_begin, VM_MAX_KERNEL_ADDRESS, TRUE, ARM_DYNAMIC_TABLE_XN | ARM_TTE_TABLE_AP(ARM_TTE_TABLE_AP_USER_NA));
@@ -337,7 +335,7 @@ index d89b0f1..6912016 100644
  #endif
  
  #if KASAN
-@@ -2135,20 +2171,45 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2135,20 +2174,45 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  #endif /* KASAN */
  
  #if MONOTONIC
@@ -383,7 +381,7 @@ index d89b0f1..6912016 100644
  	// global table pointers may need to be different due to physical aperture remapping
  	cpu_tte = (tt_entry_t*)(phystokv(cpu_ttep));
  	invalid_tte = (tt_entry_t*)(phystokv(invalid_ttep));
-@@ -2244,7 +2305,9 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2244,7 +2308,9 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
      }
  #endif
  #endif
@@ -393,11 +391,13 @@ index d89b0f1..6912016 100644
  
  	disable_preemption();
  
-@@ -2371,6 +2434,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2371,6 +2437,9 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	first_avail = avail_start;
  	patch_low_glo_static_region(args->topOfKernelData, avail_start - args->topOfKernelData);
  	enable_preemption();
 +	DANDELION_TRACE("arm_vm_init: return\n");
++	/* White bar: we are past everything and about to hit the epilogue. */
++	DANDELION_PROBE(990, 0xffffffffU);
  }
  
  /*
@@ -445,10 +445,10 @@ index 0a00656..aa4c197 100644
  	iotrace_disable();
  
 diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
-index e44008f..c3e60e7 100644
+index e44008f..78b3d49 100644
 --- a/osfmk/kern/printf.c
 +++ b/osfmk/kern/printf.c
-@@ -908,6 +908,288 @@ vprintf(const char *fmt, va_list ap)
+@@ -908,6 +908,321 @@ vprintf(const char *fmt, va_list ap)
  	return vprintf_internal(fmt, ap, __builtin_return_address(0));
  }
  
@@ -510,6 +510,15 @@ index e44008f..c3e60e7 100644
 +#define DANDELION_FB_X0         8
 +#define DANDELION_FB_FG         0xffffff00U
 +#define DANDELION_FB_BG         0xff000000U
++
++/*
++ * Bring-up probe bars.  Painted into the blank right-hand side of the
++ * panel (all trace text stays left of about x=300) so they never cover a
++ * checkpoint, and cleaned from the D-cache because the framebuffer is
++ * mapped as normal cacheable memory.
++ */
++#define DANDELION_PROBE_X       480
++#define DANDELION_PROBE_W       240
 +
 +static int dandelion_fb_live = 1;
 +static unsigned int dandelion_fb_x = DANDELION_FB_X0;
@@ -653,6 +662,30 @@ index e44008f..c3e60e7 100644
 +	__asm__ volatile("dsb sy" ::: "memory");
 +
 +	dandelion_fb_x += 8;
++}
++
++/*
++ * Paint a solid probe bar.  Used to bracket the arm_vm_init() call: the
++ * bar is written straight into the panel's own pixel rows, independent of
++ * the text cursor and of the trace buffer, and the D-cache lines are
++ * cleaned afterwards so the display controller actually sees the pixels.
++ */
++void
++dandelion_probe_bar(unsigned int row, unsigned int color)
++{
++	volatile unsigned int *p = (volatile unsigned int *)
++	    (DANDELION_FB_PA + (unsigned long)row * DANDELION_FB_STRIDE +
++	    (unsigned long)DANDELION_PROBE_X * 4);
++	unsigned long base = (unsigned long)p & ~63UL;
++	unsigned long bytes = ((unsigned long)DANDELION_PROBE_W * 4 + 63UL) & ~63UL;
++
++	for (unsigned int i = 0; i < DANDELION_PROBE_W; i++) {
++		p[i] = color;
++	}
++	for (unsigned long i = 0; i < bytes; i += 64) {
++		__asm__ volatile("dc cvac, %0" :: "r"(base + i) : "memory");
++	}
++	__asm__ volatile("dsb sy" ::: "memory");
 +}
 +
 +static volatile unsigned char *dandelion_trace_base =
