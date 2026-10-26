@@ -92,12 +92,28 @@ __attribute__((noreturn)) void exception_report(uint64_t slot)
 
 static void show_cpu_info(void)
 {
+	uint64_t sre2_in, sre2_out;
+
 	fb_puts("--- CPU ---\n", CLR_YELLOW);
 	fb_puthex("CurrentEL  ", READ_SYSREG(CurrentEL), CLR_CYAN);
 	fb_puthex("MIDR_EL1   ", READ_SYSREG(MIDR_EL1), CLR_CYAN);
 	fb_puthex("MPIDR_EL1  ", READ_SYSREG(MPIDR_EL1), CLR_CYAN);
 	fb_puthex("SCTLR_EL1  ", READ_SYSREG(SCTLR_EL1), CLR_CYAN);
 	fb_puthex("CNTFRQ_EL0 ", READ_SYSREG(CNTFRQ_EL0), CLR_CYAN);
+
+	/*
+	 * GICv3 system register interface.  EL1 may only touch ICC_* once
+	 * ICC_SRE_EL2.Enable (bit 3) is set; if EL3 has made that bit
+	 * read-only zero this write will not stick and every ICC_* access
+	 * from EL1 is UNDEFINED.
+	 */
+	__asm__ volatile("mrs %0, icc_sre_el2" : "=r"(sre2_in));
+	__asm__ volatile("msr icc_sre_el2, %0" :: "r"((uint64_t)0xf));
+	__asm__ volatile("isb");
+	__asm__ volatile("mrs %0, icc_sre_el2" : "=r"(sre2_out));
+	fb_puthex("SRE_EL2 in ", sre2_in, CLR_CYAN);
+	fb_puthex("SRE_EL2 out", sre2_out,
+		  (sre2_out & 8) ? CLR_GREEN : CLR_RED);
 }
 
 static void show_fdt_info(uint64_t dtb)

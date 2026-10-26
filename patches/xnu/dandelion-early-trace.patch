@@ -894,7 +894,7 @@ index bec97fb..a76cd99 100644
  
  	/* Initialize the runtime for the trust cache interface */
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
-index 3ad743f..3d889a1 100644
+index 3ad743f..df09389 100644
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
 @@ -9,6 +9,7 @@
@@ -957,8 +957,29 @@ index 3ad743f..3d889a1 100644
  
  		if (!gicr_base) {
  			panic("%s: cannot map GICR region", __func__);
-@@ -122,9 +134,11 @@ pe_init_fiq()
+@@ -120,11 +132,32 @@ pe_init_fiq()
+ 		gicr_size = gicr_size_prop;
+ 	}
  
++	/*
++	 * Identify the controller before touching any ICC_* system register:
++	 * GICD_PIDR2.ArchRev is 2 for GICv2 (GIC-400) and 3 for GICv3.  On a
++	 * GICv2 the ICC_* accesses below are UNDEFINED and the CPU ends up
++	 * spinning in the early exception vector with no output.
++	 */
++	kprintf("pe_init_fiq: GICD_TYPER = %x IIDR = %x PIDR2 = %x\n",
++	    gicd_read32(0x4), gicd_read32(0x8), gicd_read32(0xFE8));
++	kprintf("pe_init_fiq: GICR_TYPER = %lx WAKER = %x\n",
++	    (unsigned long)_gic_read64(gicr_base + GICR_TYPER),
++	    _gic_read32(gicr_base + GICR_WAKER));
++
++	uint32_t gic_arch = (gicd_read32(0xFE8) >> 4) & 0xf;
++	kprintf("pe_init_fiq: arch rev = %u\n", gic_arch);
++	if (gic_arch < 3) {
++		kprintf("pe_init_fiq: not GICv3, skipping ICC_* setup\n");
++		return;
++	}
++
  	// Find the redistributor for this processor
  	vm_offset_t gicr_pe_base = find_gicr_pe_base();
 +	kprintf("pe_init_fiq: pe base = %lx\n", (unsigned long)gicr_pe_base);
@@ -969,7 +990,7 @@ index 3ad743f..3d889a1 100644
  	if (gicr_waker & GICR_WAKER_CHILDRENASLEEP) {
  		gicr_waker &= ~GICR_WAKER_PROCESSORSLEEP;
  
-@@ -140,34 +154,48 @@ pe_init_fiq()
+@@ -140,34 +173,48 @@ pe_init_fiq()
  			}
  		}
  	}
