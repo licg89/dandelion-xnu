@@ -65,6 +65,18 @@ enter_el1:
 	msr	cptr_el2, x1
 	msr	hstr_el2, xzr
 	msr	vttbr_el2, xzr
+	/*
+	 * GICv3: enable the ICC_* system register interface for EL1.
+	 *
+	 * With EL2 implemented, EL1 may only touch the ICC_* registers once
+	 * ICC_SRE_EL1.SRE is writable, and ICC_SRE_EL2.Enable gates that.
+	 * Without this the ICC_SRE_EL1 write silently reads back 0 and the
+	 * first ICC_BPR0_EL1 access is UNDEFINED, which lands the kernel in
+	 * its early spin vector with no output at all.
+	 */
+	mov	x1, #0xf			/* SRE | DFB | DIB | Enable */
+	msr	icc_sre_el2, x1
+	isb
 	/* SCTLR_EL1: reserved bits, little-endian */
 	mov	x1, #0x0800
 	movk	x1, #0x30d0, lsl #16
