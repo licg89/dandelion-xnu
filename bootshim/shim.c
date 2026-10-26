@@ -303,10 +303,62 @@ __attribute__((noreturn)) void shim_el1(uint64_t dtb)
 #endif
 }
 
+#ifdef FB_PROBE
+/*
+ * Framebuffer address probe.
+ *
+ * The console has never been confirmed on the phone and the device tree
+ * carries two candidates: atag,videolfb-fb_base_l (0x5e605000, the buffer the
+ * LK splash lives in) and the packed atag,videolfb blob (0x7ec50000, what the
+ * Android display HAL allocates later).  Paint each one a different colour and
+ * then power the phone off, so the observer can tell which buffer the panel
+ * actually scans out - and, if neither shows, that the shim ran anyway.
+ */
+static void fb_probe(void)
+{
+	/*
+	 * 0x7ec50000 is the reserved-memory framebuffer (mediatek,framebuffer,
+	 * 0xfb0000 bytes).  Stop exactly at its end: the TEE secure region
+	 * starts right behind it and a non-secure write there takes a data
+	 * abort, which would blank the screen through exception_report().
+	 */
+	volatile uint64_t *p = (volatile uint64_t *)(uintptr_t)0x7ec50000UL;
+	for (uint64_t n = 0; n < 0xfb0000ULL / 8; n++)
+		p[n] = 0x0000ff000000ff00ULL;	/* green */
+
+	/* Ten seconds to look at the screen, then PSCI SYSTEM_OFF: a phone that
+	 * switches itself off proves the shim executed even if nothing is
+	 * visible. */
+	uint64_t freq = READ_SYSREG(CNTFRQ_EL0);
+	if (!freq)
+		freq = 13000000;
+	uint64_t start = READ_SYSREG(CNTPCT_EL0);
+	while (READ_SYSREG(CNTPCT_EL0) - start < freq * 10)
+		;
+
+	__asm__ volatile("ldr w0, =0x84000008\n\tsmc #0" ::: "x0");
+
+	for (;;)
+		__asm__ volatile("wfe");
+}
+#endif
+
 __attribute__((noreturn)) void shim_main(uint64_t x0, uint64_t x1,
 					 uint64_t x2, uint64_t x3, uint64_t old_sp)
 {
 	(void)x1; (void)x2; (void)x3; (void)old_sp;
+#ifdef FB_PROBE
+	fb_probe();
+#endif
+	/*
+	 * Get the log out before touching anything else: if the framebuffer or
+	 * the device tree handling faults, these first lines are already in the
+	 * ramoops console zone for the next boot to pick up.
+	 */
+	ps_reset();
+	ps_puts("DANDELION BOOTSHIM v2 entered\n");
+	ps_puthex("dtb", x0);
+	ps_puthex("CurrentEL", READ_SYSREG(CurrentEL));
 	fb_init();
 	fb_clear(CLR_BLACK);
 

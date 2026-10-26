@@ -1,0 +1,383 @@
+diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
+index e26a1d7..16f6b5f 100644
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -76,6 +76,21 @@
+ 
+ #include <console/serial_protos.h>
+ 
++#if defined(DANDELION)
++/*
++ * Early boot trace, see osfmk/kern/printf.c.  Every checkpoint is also
++ * appended to the buffer the boot shim prints out on the next boot, so a hang
++ * that happens before the framebuffer console exists is still visible.
++ */
++extern void dandelion_trace_mark(const char *);
++extern void dandelion_trace_attach(void);
++#define DANDELION_TRACE(s)       dandelion_trace_mark(s)
++#define DANDELION_TRACE_ATTACH() dandelion_trace_attach()
++#else
++#define DANDELION_TRACE(s)       do { } while (0)
++#define DANDELION_TRACE_ATTACH() do { } while (0)
++#endif
++
+ #if CONFIG_TELEMETRY
+ #include <kern/telemetry.h>
+ #endif
+@@ -346,6 +361,8 @@ arm_init(
+ 	DTEntry chosen = NULL;
+ 	unsigned int dt_entry_size = 0;
+ 
++	DANDELION_TRACE("\n=== xnu: arm_init ===\n");
++
+ 	arm_setup_pre_sign();
+ 
+ 	arm_slide_rebase_and_sign_image();
+@@ -362,6 +379,7 @@ arm_init(
+ #endif /* defined(HAS_APPLE_PAC) */
+ 
+ 	PE_init_platform(FALSE, args); /* Get platform expert set up */
++	DANDELION_TRACE("arm_init: PE_init_platform(FALSE)\n");
+ 
+ #if __arm64__
+ 	configure_timer_apple_regs();
+@@ -424,6 +442,8 @@ arm_init(
+ 
+ 	ml_parse_cpu_topology();
+ 
++	DANDELION_TRACE("arm_init: cpu topology\n");
++
+ 
+ 	master_cpu = ml_get_boot_cpu_number();
+ 	assert(master_cpu >= 0 && master_cpu <= ml_get_max_cpu_number());
+@@ -453,20 +473,26 @@ arm_init(
+ 	 */
+ 	thread->machine.preemption_count = 0;
+ 	cpu_bootstrap();
++	DANDELION_TRACE("arm_init: cpu_bootstrap\n");
+ 
+ 	rtclock_early_init();
++	DANDELION_TRACE("arm_init: rtclock_early_init\n");
+ 
+ 	kernel_debug_string_early("kernel_startup_bootstrap");
+ 	kernel_startup_bootstrap();
++	DANDELION_TRACE("arm_init: kernel_startup_bootstrap\n");
+ 
+ 	/*
+ 	 * Initialize the timer callout world
+ 	 */
+ 	timer_call_init();
++	DANDELION_TRACE("arm_init: timer_call_init\n");
+ 
+ 	cpu_init();
++	DANDELION_TRACE("arm_init: cpu_init\n");
+ 
+ 	processor_bootstrap();
++	DANDELION_TRACE("arm_init: processor_bootstrap\n");
+ 
+ 	if (PE_parse_boot_argn("maxmem", &maxmem, sizeof(maxmem))) {
+ 		xmaxmem = (uint64_t) maxmem * (1024 * 1024);
+@@ -513,7 +539,13 @@ arm_init(
+ 	__builtin_arm_wsr("pan", 1);
+ #endif  /* __ARM_PAN_AVAILABLE__ */
+ 
++	DANDELION_TRACE("arm_init: arm_vm_init ...\n");
++	/*
++	 * arm_vm_init() swaps the bootstrap tables for the physmap and calls
++	 * dandelion_trace_attach() itself right after the switch.
++	 */
+ 	arm_vm_init(xmaxmem, args);
++	DANDELION_TRACE("arm_init: arm_vm_init done\n");
+ 
+ 	if (debug_boot_arg) {
+ 		patch_low_glo();
+@@ -524,10 +556,12 @@ arm_init(
+ #endif
+ 
+ 	PE_consistent_debug_inherit();
++	DANDELION_TRACE("arm_init: PE_consistent_debug_inherit\n");
+ 
+ 	/* Setup debugging output. */
+ 	const unsigned int serial_exists = serial_init();
+ 	kernel_startup_initialize_upto(STARTUP_SUB_KPRINTF);
++	DANDELION_TRACE("arm_init: startup upto KPRINTF\n");
+ 	kprintf("kprintf initialized\n");
+ 
+ 	serialmode = 0;
+@@ -569,9 +603,11 @@ arm_init(
+ 		disableConsoleOutput = FALSE;     /* Allow printfs to happen */
+ 	}
+ 	PE_create_console();
++	DANDELION_TRACE("arm_init: PE_create_console\n");
+ 
+ 	/* setup console output */
+ 	PE_init_printf(FALSE);
++	DANDELION_TRACE("arm_init: PE_init_printf\n");
+ 
+ #if __arm64__
+ #if DEBUG
+@@ -582,6 +618,7 @@ arm_init(
+ 	cpu_machine_idle_init(TRUE);
+ 
+ 	PE_init_platform(TRUE, &BootCpuData);
++	DANDELION_TRACE("arm_init: PE_init_platform(TRUE)\n");
+ 
+ #if __arm64__
+ 	extern bool cpu_config_correct;
+@@ -590,6 +627,7 @@ arm_init(
+ 	}
+ 
+ 	ml_map_cpu_pio();
++	DANDELION_TRACE("arm_init: ml_map_cpu_pio\n");
+ 
+ #if APPLE_ARM64_ARCH_FAMILY
+ 	configure_late_apple_regs();
+@@ -598,6 +636,7 @@ arm_init(
+ #endif
+ 
+ 	cpu_timebase_init(TRUE);
++	DANDELION_TRACE("arm_init: cpu_timebase_init\n");
+ 
+ #if KPERF
+ 	/* kptimer_curcpu_up() must be called after cpu_timebase_init */
+@@ -605,7 +644,9 @@ arm_init(
+ #endif /* KPERF */
+ 
+ 	PE_init_cpu();
++	DANDELION_TRACE("arm_init: PE_init_cpu\n");
+ 	fiq_context_init(TRUE);
++	DANDELION_TRACE("arm_init: fiq_context_init\n");
+ 
+ 
+ #if HIBERNATION
+@@ -634,6 +675,7 @@ arm_init(
+ 
+ 	gDramBase = *dram_base;
+ 	gDramSize = *dram_size;
++	DANDELION_TRACE("arm_init: dram-base/size\n");
+ 
+ 	/*
+ 	 * Initialize the stack protector for all future calls
+diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
+index e2e525a..0af8865 100644
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -51,6 +51,15 @@
+ 
+ #include <san/kasan.h>
+ 
++#if defined(DANDELION)
++/* Early boot trace, see osfmk/kern/printf.c. */
++extern void dandelion_trace_mark(const char *);
++extern void dandelion_trace_attach(void);
++#define DANDELION_TRACE(s)       dandelion_trace_mark(s)
++#else
++#define DANDELION_TRACE(s)       do { } while (0)
++#endif
++
+ #if __ARM_KERNEL_PROTECT__
+ /*
+  * If we want to support __ARM_KERNEL_PROTECT__, we need a sufficient amount of
+@@ -1825,6 +1834,8 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 	vm_offset_t      ptpage_vaddr;
+ 	vm_map_address_t dynamic_memory_begin;
+ 
++	DANDELION_TRACE("arm_vm_init: enter\n");
++
+ 	/*
+ 	 * Get the virtual and physical kernel-managed memory base from boot_args.
+ 	 */
+@@ -2155,6 +2166,9 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 
+ 	flush_mmu_tlb();
+ 	kva_active = TRUE;
++	/* The identity map is gone; the physmap covers the trace buffer. */
++	dandelion_trace_attach();
++	DANDELION_TRACE("arm_vm_init: kva_active\n");
+ 	// global table pointers may need to be different due to physical aperture remapping
+ 	cpu_tte = (tt_entry_t*)(phystokv(cpu_ttep));
+ 	invalid_tte = (tt_entry_t*)(phystokv(invalid_ttep));
+@@ -2250,7 +2264,9 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+     }
+ #endif
+ #endif
++	DANDELION_TRACE("arm_vm_init: pmap_bootstrap\n");
+ 	pmap_bootstrap(dynamic_memory_begin);
++	DANDELION_TRACE("arm_vm_init: pmap_bootstrap done\n");
+ 
+ 	disable_preemption();
+ 
+@@ -2377,6 +2393,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 	first_avail = avail_start;
+ 	patch_low_glo_static_region(args->topOfKernelData, avail_start - args->topOfKernelData);
+ 	enable_preemption();
++	DANDELION_TRACE("arm_vm_init: return\n");
+ }
+ 
+ /*
+diff --git a/osfmk/console/serial_console.c b/osfmk/console/serial_console.c
+index e5b23f2..25427f0 100644
+--- a/osfmk/console/serial_console.c
++++ b/osfmk/console/serial_console.c
+@@ -254,6 +254,13 @@ _cnputc(char c, bool poll)
+ 		_cnputc('\r', poll);
+ 	}
+ 
++#if defined(DANDELION)
++	{
++		extern void dandelion_trace_putc(char);
++		dandelion_trace_putc(c);
++	}
++#endif
++
+ 	cons_ops[idx].putc(c, poll);
+ }
+ 
+diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
+index e44008f..bb4dfb3 100644
+--- a/osfmk/kern/printf.c
++++ b/osfmk/kern/printf.c
+@@ -908,6 +908,113 @@ vprintf(const char *fmt, va_list ap)
+ 	return vprintf_internal(fmt, ap, __builtin_return_address(0));
+ }
+ 
++#if defined(DANDELION)
++/*
++ * Dandelion early boot trace.
++ *
++ * This board has no serial port, and the framebuffer text console does not
++ * exist until PE_create_console() runs in arm_init(), so a hang in the first
++ * few thousand instructions leaves no evidence at all.  Every character that
++ * reaches the console is therefore also appended to a fixed buffer inside the
++ * kernel's physical window; the boot shim reads that buffer back on the next
++ * boot (after the watchdog resets the phone) and prints it on the panel.
++ *
++ * The hook lives in _cnputc(), which every console write funnels through:
++ * kprintf() (via PE_kputc/console_write_unbuffered), printf() (via
++ * console_write), and the panic path (consdebug_putc*).  arm_init.c and
++ * startup.c additionally append plain checkpoints with dandelion_trace_mark()
++ * so progress is visible even where nothing prints.
++ *
++ * The buffer sits at the very top of the window, far above topOfKernelData
++ * and therefore not handed out by the VM during early boot.
++ *
++ * Until arm_vm_init() replaces the bootstrap translation tables the window is
++ * reachable through the identity map that start.s installs, so the physical
++ * address works as-is.  arm_vm_init() calls dandelion_trace_attach() right
++ * after the switch, which repoints the buffer at the physmap; the two lines
++ * in between are the only blind spot.
++ *
++ * The mappings are cacheable, so every character is cleaned to the point of
++ * coherency: the interesting part of the trace is whatever was written last,
++ * which is exactly what would still be sitting dirty in a cache when the
++ * watchdog fires.
++ */
++#define DANDELION_TRACE_PA      0x5ffc0000UL
++#define DANDELION_TRACE_SIZE    0x40000UL
++/* "XTX1": lets the shim tell a real trace from leftovers in RAM. */
++#define DANDELION_TRACE_MAGIC   0x58545831U
++#define DANDELION_TRACE_HDR     8
++#define DANDELION_TRACE_TEXT    (DANDELION_TRACE_SIZE - DANDELION_TRACE_HDR)
++
++extern unsigned long gPhysBase;
++extern unsigned long physmap_base;
++
++static volatile unsigned char *dandelion_trace_base =
++    (volatile unsigned char *)DANDELION_TRACE_PA;
++static volatile unsigned int dandelion_trace_len;
++
++void
++dandelion_trace_attach(void)
++{
++	if (physmap_base != 0) {
++		dandelion_trace_base = (volatile unsigned char *)
++		    (physmap_base + (DANDELION_TRACE_PA - gPhysBase));
++	}
++}
++
++void
++dandelion_trace_putc(char c)
++{
++	volatile unsigned char *base = dandelion_trace_base;
++	volatile unsigned int *hdr;
++	unsigned int off = dandelion_trace_len;
++
++	if (base == NULL) {
++		return;
++	}
++	hdr = (volatile unsigned int *)base;
++	if (hdr[0] != DANDELION_TRACE_MAGIC) {
++		hdr[0] = DANDELION_TRACE_MAGIC;
++		off = 0;
++	}
++	if (off >= (DANDELION_TRACE_TEXT - 2)) {
++		/*
++		 * Full.  Drop the oldest half instead of the newest: the text
++		 * that describes the hang is the text written last.
++		 */
++		unsigned int half = DANDELION_TRACE_TEXT / 2;
++		unsigned int i;
++
++		for (i = 0; i < half; i++) {
++			base[DANDELION_TRACE_HDR + i] =
++			    base[DANDELION_TRACE_HDR + i + half];
++		}
++		off -= half;
++
++		/* The shifted copy is dirty in the cache; push it all out. */
++		for (i = 0; i < DANDELION_TRACE_SIZE; i += 64) {
++			__asm__ volatile("dc cvac, %0" :: "r"((unsigned long)(base + i)) : "memory");
++		}
++		__asm__ volatile("dsb sy" ::: "memory");
++	}
++	base[DANDELION_TRACE_HDR + off] = (unsigned char)c;
++	base[DANDELION_TRACE_HDR + off + 1] = 0;
++	hdr[1] = off + 1;
++	dandelion_trace_len = off + 1;
++
++	__asm__ volatile("dc cvac, %0" :: "r"((unsigned long)(base + DANDELION_TRACE_HDR + off) & ~63UL) : "memory");
++	__asm__ volatile("dsb sy" ::: "memory");
++}
++
++void
++dandelion_trace_mark(const char *s)
++{
++	while (*s != '\0') {
++		dandelion_trace_putc(*s++);
++	}
++}
++#endif /* DANDELION */
++
+ void
+ consdebug_putc(char c)
+ {
+diff --git a/osfmk/kern/startup.c b/osfmk/kern/startup.c
+index c4de886..a76cd99 100644
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -221,6 +221,12 @@ TUNABLE(startup_debug_t, startup_debug, "startup_debug", 0);
+ static inline void
+ kernel_bootstrap_log(const char *message)
+ {
++#if defined(DANDELION)
++	extern void dandelion_trace_mark(const char *);
++	dandelion_trace_mark("> ");
++	dandelion_trace_mark(message);
++	dandelion_trace_mark("\n");
++#endif
+ 	if ((startup_debug & STARTUP_DEBUG_VERBOSE) &&
+ 	    startup_phase >= STARTUP_SUB_KPRINTF) {
+ 		kprintf("kernel_bootstrap: %s\n", message);
+@@ -231,6 +237,12 @@ kernel_bootstrap_log(const char *message)
+ static inline void
+ kernel_bootstrap_thread_log(const char *message)
+ {
++#if defined(DANDELION)
++	extern void dandelion_trace_mark(const char *);
++	dandelion_trace_mark(">> ");
++	dandelion_trace_mark(message);
++	dandelion_trace_mark("\n");
++#endif
+ 	if ((startup_debug & STARTUP_DEBUG_VERBOSE) &&
+ 	    startup_phase >= STARTUP_SUB_KPRINTF) {
+ 		kprintf("kernel_bootstrap_thread: %s\n", message);

@@ -21,6 +21,7 @@
 
 void fb_init(void);
 void fb_clear(uint32_t color);
+void fb_scroll(void);
 void fb_putc(char ch, uint32_t fg);
 void fb_puts(const char *s, uint32_t fg);
 void fb_puthex(const char *label, uint64_t val, uint32_t fg);

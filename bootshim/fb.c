@@ -54,10 +54,39 @@ void fb_clear(uint32_t color)
 #endif
 }
 
+void fb_scroll(void)
+{
+#ifdef QEMU_VIRT
+	return;
+#else
+	const int shift = 18;
+
+	for (int y = 0; y < FB_H - shift; y++) {
+		volatile uint32_t *dst = (volatile uint32_t *)(FB_BASE + (uint64_t)y * FB_STRIDE);
+		volatile uint32_t *src = (volatile uint32_t *)(FB_BASE + (uint64_t)(y + shift) * FB_STRIDE);
+		for (int x = 0; x < FB_W; x++)
+			dst[x] = src[x];
+	}
+	for (int y = FB_H - shift; y < FB_H; y++) {
+		volatile uint32_t *row = (volatile uint32_t *)(FB_BASE + (uint64_t)y * FB_STRIDE);
+		for (int x = 0; x < FB_W; x++)
+			row[x] = CLR_BLACK;
+	}
+#endif
+}
+
 void fb_newline(void)
 {
 	cursor_x = 0;
 	cursor_y += 18;
+#ifdef QEMU_VIRT
+	/* The UART is the "screen"; there is nothing to scroll. */
+#else
+	if (cursor_y + 18 > FB_H) {
+		fb_scroll();
+		cursor_y = FB_H - 18;
+	}
+#endif
 }
 
 void fb_putc(char ch, uint32_t fg)

@@ -15,9 +15,9 @@ cd "$(dirname "$0")"
 MODE=${1:-shim}
 
 case "$MODE" in
-shim|platform-test|trap-test|xnu|xnu-qemu) ;;
+shim|platform-test|trap-test|xnu|xnu-qemu|fbprobe) ;;
 *)
-	echo "usage: $0 [shim|platform-test|trap-test|xnu|xnu-qemu]" >&2
+	echo "usage: $0 [shim|platform-test|trap-test|xnu|xnu-qemu|fbprobe]" >&2
 	exit 2
 	;;
 esac
@@ -115,6 +115,11 @@ trap-test)
 	build_payload trap_test.c trap_test_main trap.S
 	EXTRA_CFLAGS="-DPLATFORM_TEST_BLOB"
 	EXTRA_OBJS="out/payload_blob.o"
+	;;
+fbprobe)
+	# Framebuffer address probe: paints both candidate buffers and powers
+	# the phone off.  Nothing else runs, so no payload is needed.
+	EXTRA_CFLAGS="-DFB_PROBE"
 	;;
 xnu)
 	# Real kernel: the payload travels in the boot image's ramdisk section

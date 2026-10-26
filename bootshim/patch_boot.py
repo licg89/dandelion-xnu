@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """Replace the kernel and/or ramdisk of an Android boot image in place.
 
-The Dandelion boot partition holds a normal (non-MTK-header) boot image whose
-kernel section is gzip(kernel).  LK computes the ramdisk offset from
-kernel_size, so instead of rebuilding the image we keep kernel_size and the
-header byte-for-byte and only overwrite the kernel section with
+The Dandelion boot partition holds a normal (non-MTK-header) Android boot
+image v2 whose kernel section is gzip(kernel) and whose device tree blob sits
+*after* the ramdisk:
 
-    gzip(shim) + zero padding to 512 + device DTB
+    [header][gzip(kernel)][ramdisk][dtb]
 
-Everything the bootloader saw in the stock image stays where it was.
+LK derives the ramdisk offset from kernel_size and finds the DTB right behind
+the ramdisk, so we keep kernel_size and the header byte-for-byte and rebuild
+the sections in the same order:
+
+    [header][gzip(shim) + zero padding][ramdisk + zero padding][dtb]
 
 The XNU payload is far larger than the stock Android ramdisk, so the ramdisk
-section can also be replaced.  That changes ramdisk_size in the header, which
-is fine: the sections after it are laid out again and LK loads the ramdisk at
+section is replaced too.  That changes ramdisk_size in the header, which is
+fine: everything after it is laid out again and LK still loads the ramdisk at
 the unchanged ramdisk_addr.
 
 Usage:
@@ -66,16 +69,20 @@ def main():
     if kaddr == 0:
         sys.exit("stock image has kernel_addr 0")
 
-    # Sections appended after second_size: recovery_dtbo in a v2 image, the
-    # device tree blob in a v1 image.
-    extra_size = struct.unpack_from("<I", stock, 1632)[0] if header_version >= 1 else 0
-
-    kernel = gz(shim)
-    kernel += b"\0" * (-len(kernel) % PAGE_ALIGN)
-    kernel += dtb
+    kernel_off = page
+    ramdisk_off = kernel_off + round_up(ksize, page)
+    second_off = ramdisk_off + round_up(rsize, page)
+    dtb_off = second_off + round_up(ssize, page)
 
     print("stock: page=%d ksize=%d rsize=%d header=v%d" %
           (page, ksize, rsize, header_version))
+    print("  kernel@%d ramdisk@%d second@%d dtb@%d (%s)" %
+          (kernel_off, ramdisk_off, second_off, dtb_off,
+           "present" if stock[dtb_off:dtb_off + 4] == b"\xd0\x0d\xfe\xed" else "absent"))
+
+    kernel = gz(shim)
+    kernel += b"\0" * (-len(kernel) % PAGE_ALIGN)
+
     print("shim : %d bytes -> gzip %d" % (len(shim), len(gz(shim))))
     print("dtb  : %d bytes" % len(dtb))
     print("kernel payload: %d bytes (limit %d)" % (len(kernel), ksize))
@@ -90,23 +97,17 @@ def main():
         rsize = len(payload)
         struct.pack_into("<I", stock, 16, rsize)
 
-    # Lay the image out again: header, kernel, ramdisk, second, extra.
+    # Lay the image out again: header, kernel, ramdisk, second, dtb.  The DTB
+    # keeps the place it has in the stock image, i.e. behind the ramdisk.
     out = bytearray()
     out += stock[:page]
     out += kernel + b"\0" * (round_up(ksize, page) - len(kernel))
     if payload is not None:
-        out += payload
+        out += payload + b"\0" * (-len(payload) % page)
     else:
-        start = page + round_up(ksize, page)
-        out += stock[start:start + round_up(rsize, page)]
-    out += stock[page + round_up(ksize, page) + round_up(rsize, page):
-                 page + round_up(ksize, page) + round_up(rsize, page) +
-                 round_up(ssize, page)]
-    if extra_size:
-        # In a v2 image the extra section moved; copy it from the stock image
-        # by its recorded offset instead of recomputing the layout.
-        offset = struct.unpack_from("<Q", stock, 1636)[0]
-        out += stock[offset:offset + round_up(extra_size, page)]
+        out += stock[ramdisk_off:ramdisk_off + round_up(rsize, page)]
+    out += stock[second_off:second_off + round_up(ssize, page)]
+    out += dtb + b"\0" * (-len(dtb) % page)
 
     with open(out_path, "wb") as f:
         f.write(out)

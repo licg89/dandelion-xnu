@@ -54,6 +54,64 @@ static int covered(uint64_t start, uint64_t size, const struct fdt_info *fdt)
 	return 0;
 }
 
+/*
+ * XNU early boot trace.
+ *
+ * osfmk/kern/printf.c appends every character XNU sends to its console to a
+ * buffer at the top of the kernel's physical window (see the comment there).
+ * A hang before XNU's own framebuffer console exists leaves no other
+ * evidence, so print it here, before we jump again.
+ */
+#define XNU_TRACE_PA    0x5ffc0000UL
+#define XNU_TRACE_SIZE  0x40000UL
+#define XNU_TRACE_MAGIC 0x58545831U
+#define XNU_TRACE_HDR   8
+#define XNU_TRACE_LINES 80
+
+static void xnu_trace_show(void)
+{
+	volatile const unsigned char *base = (volatile const unsigned char *)XNU_TRACE_PA;
+	volatile uint32_t *hdr = (volatile uint32_t *)(uintptr_t)base;
+	const char *text = (const char *)(base + XNU_TRACE_HDR);
+	uint32_t len, start, i;
+	int lines = 0;
+
+	if (hdr[0] != XNU_TRACE_MAGIC) {
+		fb_puts("--- XNU TRACE (previous boot): none ---\n", 0xFFFF8000);
+		return;
+	}
+
+	len = hdr[1];
+	if (len > XNU_TRACE_SIZE - XNU_TRACE_HDR)
+		len = XNU_TRACE_SIZE - XNU_TRACE_HDR;
+	/* The kernel keeps it NUL terminated; trust the shorter of the two. */
+	for (i = 0; i < len; i++)
+		if (text[i] == 0)
+			break;
+	len = i;
+
+	/* Only the tail fits on the panel. */
+	start = len;
+	while (start > 0 && lines < XNU_TRACE_LINES) {
+		start--;
+		if (text[start] == '\n')
+			lines++;
+	}
+	if (start > 0)
+		start++;
+
+	fb_puts("--- XNU TRACE (previous boot) ---\n", 0xFFFF8000);
+	for (i = start; i < len; i++) {
+		if (text[i] == '\r')
+			continue;
+		fb_putc(text[i], 0xFFC0C0C0);
+	}
+	fb_puts("\n--- end trace ---\n", 0xFFFF8000);
+
+	/* Do not show it again if the kernel never gets as far as writing. */
+	hdr[0] = 0;
+}
+
 /* Validate payload and compute handoff plan */
 int handoff_validate(const void *payload, size_t length, uint64_t payload_pa,
 		     const struct fdt_info *fdt, uint64_t fdt_pa,
@@ -287,6 +345,7 @@ const char *handoff_boot(const struct fdt_info *fdt, uint64_t fdt_pa, uint64_t p
 	 * Leave a clear boundary so a hang before XNU's console exists is
 	 * distinguishable from a hang after it.
 	 */
+	xnu_trace_show();
 	fb_puts("\n--- XNU ---\n", 0xFFFFFF00);
 	fb_puthex("payload    ", pay_addr, 0xFFFFFF00);
 	fb_puthex("entry_pa   ", plan.entry_pa, 0xFFFFFF00);

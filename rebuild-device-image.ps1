@@ -9,7 +9,7 @@
 # working.
 param(
     [Parameter(Mandatory = $true)][string]$Kernel,
-    [string]$Cmdline = "-v serial=3 debug=0x14e keepsyms=1 cpus=1 -noprogress wdt=-1"
+    [string]$Cmdline = "-v serial=3 debug=0x14e keepsyms=1 cpus=1 -noprogress wdt=-1 -enable_kprintf_spam"
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,7 +39,7 @@ try {
     # header.  patch_boot.py keeps the stock header and kernel_size and only
     # replaces the sections, which is what the bootloader expects.
     Write-Host "== packing boot image =="
-    python patch_boot.py ../out/boot_backup.img out/Image.xnu ../out/dandelion.dtb `
+    python patch_boot.py ../out/boot_backup.img out/Image.xnu ../out/stock_boot.dtb `
         ../out/boot_xnu.img out/payload-dandelion.bin
     if ($LASTEXITCODE -ne 0) { throw "patch_boot failed" }
 } finally {
