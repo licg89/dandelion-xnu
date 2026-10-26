@@ -68,7 +68,10 @@ static int covered(uint64_t start, uint64_t size, const struct fdt_info *fdt)
 #define XNU_TRACE_HDR   8
 #define XNU_TRACE_LINES 80
 
-static void xnu_trace_show(void)
+#define XNU_BOOTMARK_PA  0x5fbf0000UL
+#define XNU_BOOTMARK_VAL 0x424f4f54U
+
+static void xnu_trace_show(uint64_t pay_pa, uint64_t pay_len)
 {
 	volatile const unsigned char *base = (volatile const unsigned char *)XNU_TRACE_PA;
 	volatile uint32_t *hdr = (volatile uint32_t *)(uintptr_t)base;
@@ -78,6 +81,12 @@ static void xnu_trace_show(void)
 
 	if (hdr[0] != XNU_TRACE_MAGIC) {
 		fb_puts("--- XNU TRACE (previous boot): none ---\n", 0xFFFF8000);
+		fb_puthex("trace[0]   ", hdr[0], 0xFFFF8000);
+		fb_puthex("trace[1]   ", hdr[1], 0xFFFF8000);
+		fb_puthex("trace[2]   ", hdr[2], 0xFFFF8000);
+		fb_puthex("trace[3]   ", hdr[3], 0xFFFF8000);
+		fb_puthex("pay_pa     ", pay_pa, 0xFFFF8000);
+		fb_puthex("pay_len    ", pay_len, 0xFFFF8000);
 		return;
 	}
 
@@ -345,7 +354,15 @@ const char *handoff_boot(const struct fdt_info *fdt, uint64_t fdt_pa, uint64_t p
 	 * Leave a clear boundary so a hang before XNU's console exists is
 	 * distinguishable from a hang after it.
 	 */
-	xnu_trace_show();
+	{
+		volatile uint32_t *mark = (volatile uint32_t *)(uintptr_t)XNU_BOOTMARK_PA;
+		uint32_t n = *mark + 1;
+		fb_puthex("boot#      ", n, 0xFFFF8000);
+		*mark = n;
+	}
+	fb_puthex("kstage     ", *(volatile const uint32_t *)(uintptr_t)0x5fbe0000UL,
+	    0xFFFF8000);
+	xnu_trace_show(pay_addr, pay_size);
 	fb_puts("\n--- XNU ---\n", 0xFFFFFF00);
 	fb_puthex("payload    ", pay_addr, 0xFFFFFF00);
 	fb_puthex("entry_pa   ", plan.entry_pa, 0xFFFFFF00);
