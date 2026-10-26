@@ -159,10 +159,10 @@ index e26a1d7..16f6b5f 100644
  	/*
  	 * Initialize the stack protector for all future calls
 diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
-index d89b0f1..4b44e79 100644
+index d89b0f1..6912016 100644
 --- a/osfmk/arm64/arm_vm_init.c
 +++ b/osfmk/arm64/arm_vm_init.c
-@@ -51,6 +51,17 @@
+@@ -51,6 +51,18 @@
  
  #include <san/kasan.h>
  
@@ -171,6 +171,7 @@ index d89b0f1..4b44e79 100644
 +extern void dandelion_trace_mark(const char *);
 +extern void dandelion_trace_attach(void);
 +#define DANDELION_TRACE(s)        dandelion_trace_mark(s)
++#define DANDELION_KEEP_IDENTITY_MAP 1
 +#define DANDELION_TRACE_ATTACH()  dandelion_trace_attach()
 +#else
 +#define DANDELION_TRACE(s)        do { } while (0)
@@ -180,7 +181,7 @@ index d89b0f1..4b44e79 100644
  #if __ARM_KERNEL_PROTECT__
  /*
   * If we want to support __ARM_KERNEL_PROTECT__, we need a sufficient amount of
-@@ -1825,6 +1836,8 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -1825,6 +1837,8 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	vm_offset_t      ptpage_vaddr;
  	vm_map_address_t dynamic_memory_begin;
  
@@ -189,10 +190,155 @@ index d89b0f1..4b44e79 100644
  	/*
  	 * Get the virtual and physical kernel-managed memory base from boot_args.
  	 */
-@@ -2143,12 +2156,21 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -1846,6 +1860,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 	 */
+ 	gPhysSize = mem_size = ((gPhysBase + args->memSize) & ~PAGE_MASK) - gPhysBase;
+ 
++	DANDELION_TRACE("vm: boot args\n");
+ 	mem_actual = args->memSizeActual ? args->memSizeActual : mem_size;
+ 
+ 	if ((memory_size != 0) && (mem_size > memory_size)) {
+@@ -1854,6 +1869,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 	} else {
+ 		max_mem_actual = mem_actual;
+ 	}
++	DANDELION_TRACE("vm: mem_size\n");
+ 	if (mem_size >= ((VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS) / 2)) {
+ 		panic("Unsupported memory configuration %lx", mem_size);
+ 	}
+@@ -1865,11 +1881,14 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 	physmap_base = phystokv(args->topOfKernelData);
+ #endif
+ 
++	DANDELION_TRACE("vm: physmap_base\n");
+ 	// Slide the physical aperture to a random page-aligned location within the slide range
+ 	uint64_t physmap_slide = early_random() & ARM64_PHYSMAP_SLIDE_MASK & ~((uint64_t)PAGE_MASK);
+ 	assert(physmap_slide < ARM64_PHYSMAP_SLIDE_RANGE);
+ 
+ 	physmap_base += physmap_slide;
++	DANDELION_TRACE("vm: physmap_slide\n");
++
+ 
+ #if XNU_MONITOR
+ 	physmap_base = ROUND_TWIG(physmap_base);
+@@ -1907,11 +1926,13 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+     iofilter_stacks_end = (void*)dynamic_memory_begin;
+ #endif
+ #endif
++	DANDELION_TRACE("vm: memory bounds\n");
+ 	if (dynamic_memory_begin > VM_MAX_KERNEL_ADDRESS) {
+ 		panic("Unsupported memory configuration %lx", mem_size);
+ 	}
+ 
+ 	boot_tte = (tt_entry_t *)&bootstrap_pagetables;
++	DANDELION_TRACE("vm: boot_tte\n");
+ 	boot_ttep = kvtophys((vm_offset_t)boot_tte);
+ 
+ #if DEVELOPMENT || DEBUG
+@@ -1938,12 +1959,15 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 	 * to trampoline to KVA. this requires only 3 pages to stay resident.
+ 	 */
+ 	avail_start = args->topOfKernelData;
++	DANDELION_TRACE("vm: bootstrap sanity\n");
++
+ 
+ #if defined(KERNEL_INTEGRITY_KTRR) || defined(KERNEL_INTEGRITY_CTRR)
+ 	arm_replace_identity_map();
+ #endif
+ 
+ 	/* Initialize invalid tte page */
++	DANDELION_TRACE("vm: avail_start\n");
+ 	invalid_tte = (tt_entry_t *)alloc_ptpage(TRUE);
+ 	invalid_ttep = kvtophys((vm_offset_t)invalid_tte);
+ 	bzero(invalid_tte, ARM_PGBYTES);
+@@ -1951,9 +1975,11 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 	/*
+ 	 * Initialize l1 page table page
+ 	 */
++	DANDELION_TRACE("vm: invalid_tte\n");
+ 	cpu_tte = (tt_entry_t *)alloc_ptpage(TRUE);
+ 	cpu_ttep = kvtophys((vm_offset_t)cpu_tte);
+ 	bzero(cpu_tte, ARM_PGBYTES);
++	DANDELION_TRACE("vm: cpu_tte\n");
+ 	avail_end = gPhysBase + mem_size;
+ 	assert(!(avail_end & PAGE_MASK));
+ 
+@@ -1971,6 +1997,8 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 	 *   the so called physical aperture should be statically mapped
+ 	 */
+ 	init_ptpages(cpu_tte, gVirtBase, dynamic_memory_begin, TRUE, ARM_TTE_TABLE_AP(ARM_TTE_TABLE_AP_USER_NA));
++	DANDELION_TRACE("vm: init_ptpages(virt)\n");
++
+ 
+ #if defined(ARM_LARGE_MEMORY)
+ 	/*
+@@ -2060,6 +2088,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 		segLINKB        = (vm_offset_t) getsegdatafromheader(kc_mh,            "__LINKEDIT", &segSizeLINK);
+ 	}
+ 
++	DANDELION_TRACE("vm: el0 mappings\n");
+ 	(void) PE_parse_boot_argn("use_contiguous_hint", &use_contiguous_hint, sizeof(use_contiguous_hint));
+ 	assert(segSizePRELINKTEXT < 0x03000000); /* 23355738 */
+ 
+@@ -2068,12 +2097,15 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 		assert(segSizePLKDATACONST && segSizePLKTEXTEXEC);
+ 	}
+ 
++	DANDELION_TRACE("vm: seg headers\n");
+ 	etext = (vm_offset_t) segTEXTB + segSizeTEXT;
+ 	sdata = (vm_offset_t) segDATAB;
+ 	edata = (vm_offset_t) segDATAB + segSizeDATA;
+ 	end_kern = round_page(segHIGHESTKC ? segHIGHESTKC : getlastkerneladdr()); /* Force end to next page */
+ 
+ 	vm_set_page_size();
++	DANDELION_TRACE("vm: page size\n");
++
+ 
+ 	vm_kernel_base = segTEXTB;
+ 	vm_kernel_top = (vm_offset_t) &last_kernel_symbol;
+@@ -2094,6 +2126,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 	vm_prelink_sdata = segPRELINKDATAB;
+ 	vm_prelink_edata = segPRELINKDATAB + segSizePRELINKDATA;
+ 
++	DANDELION_TRACE("vm: prot_init\n");
+ 	arm_vm_prot_init(args);
+ 
+ 	/*
+@@ -2101,6 +2134,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 	 *   cover this address range:
+ 	 *     LOW_GLOBAL_BASE_ADDRESS + 2MB
+ 	 */
++	DANDELION_TRACE("vm: prot done\n");
+ 	va_l1 = va_l2 = LOW_GLOBAL_BASE_ADDRESS;
+ 	cpu_l1_tte = cpu_tte + ((va_l1 & ARM_TT_L1_INDEX_MASK) >> ARM_TT_L1_SHIFT);
+ 	cpu_l2_tte = ((tt_entry_t *) phystokv(((*cpu_l1_tte) & ARM_TTE_TABLE_MASK))) + ((va_l2 & ARM_TT_L2_INDEX_MASK) >> ARM_TT_L2_SHIFT);
+@@ -2125,6 +2159,8 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 	 * With legacy 3 level table systems we never mapped more than a single L1 entry so this may be dead code
+ 	 */
+ 	init_ptpages(cpu_tte, dynamic_memory_begin, VM_MAX_KERNEL_ADDRESS, TRUE, ARM_DYNAMIC_TABLE_XN | ARM_TTE_TABLE_AP(ARM_TTE_TABLE_AP_USER_NA));
++	DANDELION_TRACE("vm: low globals done\n");
++
+ #endif
+ 
+ #if KASAN
+@@ -2135,20 +2171,45 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ #endif /* KASAN */
+ 
+ #if MONOTONIC
++	DANDELION_TRACE("vm: init_ptpages done\n");
+ 	mt_early_init();
+ #endif /* MONOTONIC */
+ 
+ 	arm_set_user_tbi();
++	DANDELION_TRACE("vm: tbi done\n");
++
+ 
++	DANDELION_TRACE("vm: physmap_init\n");
  	arm_vm_physmap_init(args);
  	set_mmu_ttb_alternate(cpu_ttep & TTBR_BADDR_MASK);
++	DANDELION_TRACE("vm: ttb alternate\n");
  
++
 +	/*
 +	 * The monitor (PPLE) is only present on Apple silicon; keep the call out
 +	 * of native builds where ml_enable_monitor() has no implementation.
@@ -201,7 +347,17 @@ index d89b0f1..4b44e79 100644
  	ml_enable_monitor();
 +#endif
  
++#if DANDELION_KEEP_IDENTITY_MAP
++	/*
++	 * Bring-up only: leave the bootstrap V=P map installed in TTBR0 instead
++	 * of switching to the invalid table.  Nothing in the kernel uses TTBR0
++	 * this early, and keeping it lets the framebuffer trace in printf.c keep
++	 * painting the panel after the physmap takes over.
++	 */
++	DANDELION_TRACE("vm: keep identity map\n");
++#else
  	set_mmu_ttb(invalid_ttep & TTBR_BADDR_MASK);
++#endif
  
  	flush_mmu_tlb();
  	kva_active = TRUE;
@@ -211,7 +367,7 @@ index d89b0f1..4b44e79 100644
  	// global table pointers may need to be different due to physical aperture remapping
  	cpu_tte = (tt_entry_t*)(phystokv(cpu_ttep));
  	invalid_tte = (tt_entry_t*)(phystokv(invalid_ttep));
-@@ -2244,7 +2266,9 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2244,7 +2305,9 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
      }
  #endif
  #endif
@@ -221,7 +377,7 @@ index d89b0f1..4b44e79 100644
  
  	disable_preemption();
  
-@@ -2371,6 +2395,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2371,6 +2434,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	first_avail = avail_start;
  	patch_low_glo_static_region(args->topOfKernelData, avail_start - args->topOfKernelData);
  	enable_preemption();
@@ -247,11 +403,36 @@ index e5b23f2..25427f0 100644
  	cons_ops[idx].putc(c, poll);
  }
  
+diff --git a/osfmk/kern/debug.c b/osfmk/kern/debug.c
+index 0a00656..aa4c197 100644
+--- a/osfmk/kern/debug.c
++++ b/osfmk/kern/debug.c
+@@ -1073,6 +1073,20 @@ panic_trap_to_debugger(const char *panic_format_str, va_list *panic_args, unsign
+ 	read_lbr();
+ #endif
+ 
++#if defined(DANDELION)
++	/*
++	 * There is no console yet when the early boot panics, so put the panic
++	 * format string on the panel through the framebuffer trace.
++	 */
++	{
++		extern void dandelion_trace_mark(const char *);
++
++		dandelion_trace_mark("\n!!! PANIC: ");
++		dandelion_trace_mark(panic_format_str);
++		dandelion_trace_mark("\n");
++	}
++#endif
++
+ 	/* Turn off I/O tracing once we've panicked */
+ 	iotrace_disable();
+ 
 diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
-index e44008f..eba5e83 100644
+index e44008f..c3e60e7 100644
 --- a/osfmk/kern/printf.c
 +++ b/osfmk/kern/printf.c
-@@ -908,6 +908,285 @@ vprintf(const char *fmt, va_list ap)
+@@ -908,6 +908,288 @@ vprintf(const char *fmt, va_list ap)
  	return vprintf_internal(fmt, ap, __builtin_return_address(0));
  }
  
@@ -309,7 +490,7 @@ index e44008f..eba5e83 100644
 +#define DANDELION_FB_PA         0x7ec50000UL
 +#define DANDELION_FB_STRIDE     2944
 +#define DANDELION_FB_VISW       720
-+#define DANDELION_FB_Y0         1000
++#define DANDELION_FB_Y0         860
 +#define DANDELION_FB_X0         8
 +#define DANDELION_FB_FG         0xffffff00U
 +#define DANDELION_FB_BG         0xff000000U
@@ -474,8 +655,11 @@ index e44008f..eba5e83 100644
 +	dandelion_trace_base =
 +	    (volatile unsigned char *)phystokv(DANDELION_TRACE_PA);
 +
-+	/* the low V=P mapping is gone; the panel is out of reach now */
-+	dandelion_fb_live = 0;
++	/*
++	 * arm_vm_init() keeps the bootstrap V=P map in TTBR0 for bring-up
++	 * (DANDELION_KEEP_IDENTITY_MAP), so the panel is still reachable at its
++	 * physical address and the trace keeps painting.
++	 */
 +}
 +
 +void
