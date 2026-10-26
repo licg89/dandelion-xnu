@@ -81,6 +81,7 @@ void fb_newline(void)
 	cursor_y += 18;
 #ifdef QEMU_VIRT
 	/* The UART is the "screen"; there is nothing to scroll. */
+	uart_putc('\n');
 #else
 	if (cursor_y + 18 > FB_H) {
 		fb_scroll();

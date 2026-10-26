@@ -131,8 +131,14 @@ fastboot flash boot D:\aios\dandelion-xnu\out\boot_backup.img
 
    | 补丁 | 负责的文件 |
    |---|---|
-   | `dandelion-early-trace.patch` | `osfmk/arm/arm_init.c`、`osfmk/arm64/arm_vm_init.c`、`osfmk/console/serial_console.c`、`osfmk/kern/{debug,printf,startup}.c`、`pexpert/arm/pe_fiq.c` |
+   | `dandelion-early-trace.patch` | `osfmk/arm/arm_init.c`、`osfmk/arm64/arm_vm_init.c`、`osfmk/console/serial_console.c`、`osfmk/kern/{debug,printf,startup}.c` |
+   | `dandelion-gic-mode.patch` | `pexpert/arm/pe_fiq.c` |
+   | `non-apple-gicv3-fiq-eoi.patch` | `osfmk/arm64/sleh.c`（FIQ/IRQ 的 ack+EOI，两安全态 GIC 与单安全态 GIC 都覆盖） |
    | `non-apple-platform-expert-fallback.patch` | `iokit/Kernel/IOPlatformExpert.cpp` |
+
+   `pe_fiq.c` 曾经属于 `dandelion-early-trace.patch`；把它拆出来是因为 GIC 模式改造
+   需要整段重写，混在两个补丁里会让上下文互相干扰（`dandelion-early-trace` 按文件名
+   排在前面，会先改掉同一段上下文）。拆开后两个补丁都只碰自己的文件，互不影响。
 
    把 `IOPlatformExpert.cpp` 塞进 `dandelion-early-trace.patch` 会让后者排在前、
    抢先改掉同一段上下文，导致 `non-apple-platform-expert-fallback.patch` 应用失败
@@ -164,35 +170,34 @@ DANDELION: configure: topLevel=0
 DANDELION: configure: done
 ```
 
-**更正**：`configure()` 并没有卡住，它正常返回了（`topLevel == 0`，循环未执行）。
-真正的停止点在 `IOPlatformExpert::start()` 返回之后。详见
-[docs/FINDINGS-2026-10-26.md](FINDINGS-2026-10-26.md)。
+**这段日志对应 commit `1137e5f`，其结论已经被推翻**：`pidr2=0` 是因为读错了偏移
+（GICv3 的 distributor 帧是 64 KiB，`PIDR2` 在 `0xFFE8`）。完整分析见
+[docs/ANALYSIS-2026-10-26.md](ANALYSIS-2026-10-26.md)。
 
-两个独立阻塞：
+当前状态（本次改动后）：
 
-1. ADT 根节点缺少 `top-level` 属性 → 一个设备节点都没创建 → 不会有任何 IOKit 驱动被匹配
-2. GIC 不是可用的 GICv3 系统寄存器模式（`PIDR2=0`、`GICR_TYPER=0`、`ICC_BPR0_EL1` UNDEFINED）
-   → 没有任何中断源 → 定时器不跳 → 任何阻塞等待永不返回
+- GIC 识别与初始化被重写成共享代码 `pexpert/pexpert/arm64/dandelion_gic.h`，
+  shim 与内核编译同一份；按 `GICD_TYPER.SecurityExtn` 自动选 Group0/FIQ 或 Group1/IRQ。
+- `pe_fiq.c` 重写（`dandelion-gic-mode.patch`），`sleh.c` 增加 IRQ 定时器路径。
+- shim 新增 `GIC INVENTORY` 探针（含「定时器 PPI 是否真的到达 CPU」测试），
+  **刷 boot.img 即可取证，不需要重编内核**。
+- 真机 `GICD_TYPER = 0x790414` → SecurityExtn=1 → 两安全态 → 定时器只能走 IRQ，
+  这正是旧实现（只开 Group0/FIQ）收不到 tick 的原因。
 
-已确认 / 强推断：
+两个阻塞的现状：
 
-- `arm_vm_init` 正常返回；之前「停在 arm_vm_init: return」是**文字被 Y 上限 1500 静默丢弃**，
-  不是崩溃。已改为 1580 + 滚动。
-- GIC：DTB 声明 `arm,gic-v3`，但 `ICC_BPR0_EL1` 在 EL1 触发 UNDEFINED。
-  `ICC_SRE_EL1` 读回 1、shim 也已设 `ICC_SRE_EL2=0xf`，仍复现。
-  加入「PIDR2.ArchRev < 3 就跳过 ICC 配置」后内核能一路跑到 bsd_init，
-  **说明这颗 SoC 实际不是 GICv3**（很可能是 GIC-400/GICv2），
-  `pe_fiq.c` 的 GICv3 路径对它不适用。
-- 因此**目前没有任何中断源**，定时器不跳，任何带超时的阻塞等待都会永远挂住。
+1. ~~ADT 缺 `top-level`~~ → 不是阻塞点：没有 kext 就没有 personality 可匹配，
+   `top-level` 也无法用 ADT 字节属性表达。等真接入 kext 再处理。
+2. **GIC 中断投递** → 本次已修（偏移、`GICD_CTLR` 位、组模型、CPU 接口），
+   但 XNU 侧尚未编译/真机验证。
 
 下一步优先级：
 
-1. **给 ADT 补上 `top-level` 设备节点**（或让 `DandelionPlatformExpert` 手工创建根 nub）。
-   这是当前最靠前的阻塞：没有设备节点，任何驱动都不会被匹配
-2. **确定 GIC 工作模式**：读 `GICD_CTLR`（0x0）的 `ARE_NS` 位判断是否 v2 兼容模式；
-   在真实 DTB 里找 GICC 区。若是 v2，在 `pe_fiq.c` 里实现 GICv2 内存映射路径
-   （GICC_CTLR / GICC_PMR / GICC_BPR + GICD_ISENABLER 使能定时器 PPI）
-3. 定时器中断可用后，再看 `bsd_init` 能否走到 `waiting for root device`
+1. 刷 shim，取 `GIC INVENTORY`：期望 `arch rev 3`、`SecurityExtn 1`、
+   `timer -> IRQ (gp1) PENDING`；
+2. 用 CI 编出带本次补丁的内核，刷机看是否越过 `configure: done`；
+3. 有 tick 之后再看 `bsd_init` 能否稳定走到 `waiting for root device`（那是硬上限）；
+4. 之后再谈 `top-level`/kext、SMP（PSCI）。
 
 ## 10. 硬上限（要提前知道）
 
@@ -201,6 +206,25 @@ DANDELION: configure: done
 **无法进入用户态 / 起 Android**。这是该移植的结构性边界，不是调参能解决的。
 
 ## 11. 调试手段速查
+
+### 没有真机也能跑（QEMU，WSL/Linux）
+
+```bash
+bash bootshim/build.sh xnu-qemu                 # shim 控制台走 PL011
+python3 bootshim/mkxnu.py mach_kernel -o /tmp/xnu-payload.bin
+python3 tools/qemu/qemu_run.py --gic 3 --seconds 40 --initrd /tmp/xnu-payload.bin
+python3 tools/qemu/qemu_run.py --gic 2 --seconds 10          # GIC-400 模型
+```
+
+`tools/qemu/qemu_run.py` 会打印 shim 的串口日志，并用 QEMU monitor 的 `pmemsave`
+把 XNU 的 trace ring（物理地址 `0x5fc00000`）抓出来当文本打印 —— 不需要解码 framebuffer。
+
+### 真机上（只有 boot.img）
+
+shim 在跳转前打印 `GIC INVENTORY`（`bootshim/gic_probe.c`）：
+`GICD_PIDR2` 的两个偏移、`SecurityExtn`、选中的模式/组、redistributor 状态，
+以及「自 SGI」和「定时器 PPI 是否真的到达 CPU 接口」两个自检。
+这段输出不需要新内核，是判断中断问题的第一手证据。
 
 | 位置 | 用途 |
 |---|---|

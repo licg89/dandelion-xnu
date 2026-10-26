@@ -26,4 +26,5 @@ fi
 echo "== copying Dandelion board files into $SRC =="
 cp -v "$HERE/config/MASTER.arm64.dandelion"                 "$SRC/config/"
 cp -v "$HERE/pexpert/pexpert/arm64/DANDELION.h"             "$SRC/pexpert/pexpert/arm64/"
+cp -v "$HERE/pexpert/pexpert/arm64/dandelion_gic.h"         "$SRC/pexpert/pexpert/arm64/"
 cp -v "$HERE/iokit/Kernel/arm/DandelionPlatformExpert.cpp"  "$SRC/iokit/Kernel/arm/"

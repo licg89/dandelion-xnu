@@ -47,7 +47,7 @@ esac
 
 CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only \
         -mstrict-align -fno-stack-protector -fno-builtin -mcpu=cortex-a53 \
-        -fno-asynchronous-unwind-tables -Wall -Wextra"
+        -fno-asynchronous-unwind-tables -Wall -Wextra -I../pexpert/pexpert/arm64"
 CXXFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -fno-exceptions -fno-rtti \
         -mgeneral-regs-only -mstrict-align -fno-stack-protector -fno-builtin \
         -mcpu=cortex-a53 -fno-asynchronous-unwind-tables -std=c++17 \
@@ -136,7 +136,7 @@ esac
 
 echo "=== Building dandelion bootshim ($MODE) with $CC ==="
 
-for f in start.S shim.c fdt.c fb.c adt.c rng.c handoff.c; do
+for f in start.S shim.c fdt.c fb.c adt.c rng.c handoff.c gic_probe.c; do
 	echo "  $f"
 	$CC $TARGET $CFLAGS $EXTRA_CFLAGS -I../pexpert -c "$f" -o "out/${f%.*}.o"
 done
@@ -144,7 +144,7 @@ done
 echo "  Linking..."
 $CC $TARGET $CFLAGS $LINKER -static -T shim.ld -Wl,--build-id=none -Wl,-e,_head \
 	out/start.o out/shim.o out/fdt.o out/fb.o \
-	out/adt.o out/rng.o out/handoff.o \
+	out/adt.o out/rng.o out/handoff.o out/gic_probe.o \
 	$EXTRA_OBJS \
 	-o out/shim.elf
 

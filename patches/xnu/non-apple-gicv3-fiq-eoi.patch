@@ -1,22 +1,61 @@
 diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
-index c40c6ea..a8bbee0 100644
+index c40c6ea..eb1fd78 100644
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
-@@ -1920,7 +1920,7 @@ sleh_fiq(arm_saved_state_t *state)
+@@ -1857,7 +1857,31 @@ sleh_irq(arm_saved_state_t *state)
+ 
+ 	sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_OTHER);
+ 
+-#if USE_APPLEARMSMP
++#if defined(DANDELION)
++	/*
++	 * This port ships no interrupt-controller kext, so nothing has
++	 * registered cdp->interrupt_handler.  Acknowledge through the shared
++	 * GIC code (which knows whether the controller put us in Group 0 or
++	 * Group 1) and dispatch the one source the kernel has: the generic
++	 * virtual timer.  On a GIC with both security states implemented the
++	 * timer arrives as a normal IRQ, not as the FIQ that Apple's platforms
++	 * use, which is why this path exists at all.
++	 */
++	{
++		uint32_t intid = dandelion_gic_ack();
++
++		if (intid == DANDELION_TIMER_IRQ) {
++			cdp->cpu_decrementer = -1; /* Large */
++			rtclock_intr(TRUE);
++		} else if (intid < GIC_SPURIOUS_IRQ && cdp->interrupt_handler) {
++			cdp->interrupt_handler(cdp->interrupt_target,
++			    cdp->interrupt_refCon,
++			    cdp->interrupt_nub,
++			    cdp->interrupt_source);
++		}
++		dandelion_gic_eoi(intid);
++	}
++#elif USE_APPLEARMSMP
+ 	PE_handle_ext_interrupt();
+ #else
+ 	/* Run the registered interrupt handler. */
+@@ -1920,7 +1944,9 @@ sleh_fiq(arm_saved_state_t *state)
  
  	sleh_interrupt_handler_prologue(state, type);
  
 -#if APPLEVIRTUALPLATFORM
-+#if APPLEVIRTUALPLATFORM || HAS_GIC_V3
++#if defined(DANDELION)
++	uint32_t iar = dandelion_gic_ack();
++#elif APPLEVIRTUALPLATFORM || HAS_GIC_V3
  	uint64_t iar = __builtin_arm_rsr64("ICC_IAR0_EL1");
  #endif
  
-@@ -1966,7 +1966,7 @@ sleh_fiq(arm_saved_state_t *state)
+@@ -1966,7 +1992,11 @@ sleh_fiq(arm_saved_state_t *state)
  		INTERRUPT_MASKED_DEBUG_END();
  	}
  
 -#if APPLEVIRTUALPLATFORM
-+#if APPLEVIRTUALPLATFORM || HAS_GIC_V3
++#if defined(DANDELION)
++	if (iar != GIC_SPURIOUS_IRQ) {
++		dandelion_gic_eoi(iar);
++	}
++#elif APPLEVIRTUALPLATFORM || HAS_GIC_V3
  	if (iar != GIC_SPURIOUS_IRQ) {
  		__builtin_arm_wsr64("ICC_EOIR0_EL1", iar);
  		__builtin_arm_isb(ISB_SY);

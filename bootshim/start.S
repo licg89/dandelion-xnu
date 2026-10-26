@@ -53,9 +53,13 @@ halt:
 	wfe
 	b	halt
 
-/* Enter EL1h for XNU. Called at EL2 with MMU/cache off. */
+/* Enter EL1h for XNU. Called at EL2 with MMU/cache off.
+ * x0 = device tree pointer, x1 = 1 when the GIC implements the v3 system
+ * register interface.  ICC_SRE_EL2 does not exist on a GICv2, and touching
+ * it there is an UNDEFINED instruction at EL2. */
 	.globl enter_el1
 enter_el1:
+	mov	x2, x1
 	mov	x1, #(1 << 31)		/* HCR_EL2.RW = 1 (AArch64) */
 	msr	hcr_el2, x1
 	mov	x1, #3
@@ -74,9 +78,11 @@ enter_el1:
 	 * first ICC_BPR0_EL1 access is UNDEFINED, which lands the kernel in
 	 * its early spin vector with no output at all.
 	 */
+	cbz	x2, 1f
 	mov	x1, #0xf			/* SRE | DFB | DIB | Enable */
 	msr	icc_sre_el2, x1
 	isb
+1:
 	/* SCTLR_EL1: reserved bits, little-endian */
 	mov	x1, #0x0800
 	movk	x1, #0x30d0, lsl #16

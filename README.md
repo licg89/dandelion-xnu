@@ -12,8 +12,9 @@
 | Framebuffer 控制台 | ✅ 完成 | stride=2944, base=0x7ec50000, 736x1600 RGBA8888 |
 | 测试内核加载 | ✅ 完成 | 嵌入 shim 的测试内核成功在 0x60000000 运行 |
 | 设备 DTB 平台探测 | ✅ 完成 | shim 从设备自己的 DTB 读取 GICv3/定时器/UART/看门狗/CPU，并与 `DANDELION.h` 比对 |
+| GIC 识别与初始化 | ✅ 完成（待真机验证） | 共享核心 `dandelion_gic.h`：GICv2/v3 自动识别、按安全态选 Group0/FIQ 或 Group1/IRQ；shim 会打印 `GIC INVENTORY` 并做定时器自检 |
 | 真机平台测试负载 | ✅ 完成（待刷入） | 在 EL1 逐项调用平台专家并画到 framebuffer，见 [docs/PLATFORM_TEST.md](docs/PLATFORM_TEST.md) |
-| XNU 内核适配 | 🚧 已进入 BSD 初始化 | 内核完整编译并真机运行到 `bsd_init`；当前停在 `IOPlatformExpert::configure()`，中断控制器（GIC）版本待修正，详见 [docs/HANDOVER.md](docs/HANDOVER.md) |
+| XNU 内核适配 | 🚧 已进入 BSD 初始化 | 内核完整编译并真机运行到 `bsd_init`；中断控制器改造完成但未编译/真机验证，见 [docs/ANALYSIS-2026-10-26.md](docs/ANALYSIS-2026-10-26.md) |
 | UART 调试 | 🚧 部分实现 | MT6577 UART 驱动已实现（`0x11002000` @921600 8N1）；物理串口未引出，实际仍以 framebuffer 输出为主 |
 | pstore 日志 | ❌ 未实现 | ramoops 格式不兼容 |
 | USB CDC-ACM | ❌ 未实现 | 实时串口输出方案 |
@@ -69,6 +70,7 @@ dandelion-xnu/
 ├── bootshim/           # Boot shim（扁平目录）
 │   ├── start.S         # AArch64 入口 + 异常向量 + EL2→EL1
 │   ├── shim.c          # 主诊断逻辑 + 设备 DTB 平台探测
+│   ├── gic_probe.c/h   # 中断控制器取证：寄存器 + 定时器自检（跳内核前）
 │   ├── fdt.c/h         # FDT 解析器 + fdt_probe_platform()
 │   ├── fb.c/h          # Framebuffer 控制台
 │   ├── adt.c           # Apple Device Tree 生成器
@@ -91,16 +93,20 @@ dandelion-xnu/
 ├── pexpert/
 │   ├── pe_dandelion.h  # 转发头（独立编译检查用）
 │   └── pexpert/arm64/
-│       └── DANDELION.h # 平台定义 + XNU 特性开关（对应参考项目 A04BR3.h）
+│       ├── DANDELION.h        # 平台定义 + XNU 特性开关（对应参考项目 A04BR3.h）
+│       └── dandelion_gic.h    # 共享 GIC 核心（shim 与 XNU 编译同一份）
 ├── config/
 │   └── MASTER.arm64.dandelion  # 内核配置（MACHINE_CONFIGS=DANDELION）
 ├── iokit/Kernel/arm/
 │   └── DandelionPlatformExpert.cpp  # 平台专家：串口/GICv3/定时器/看门狗/视频
 ├── tools/
 │   ├── check-platform-expert.sh     # aarch64 交叉编译检查
+│   ├── qemu/qemu_run.py             # QEMU 复现：串口日志 + XNU trace ring
 │   ├── make_test_dtb.py             # 合成 MT6765 DTB（主机回归测试用）
-│   └── test_fdt_probe.c             # fdt_probe_platform() 主机侧测试
+│   ├── test_fdt_probe.c             # fdt_probe_platform() 主机侧测试
+│   └── ci/                          # 补丁应用 + macOS 构建脚本
 ├── docs/
+│   ├── ANALYSIS-2026-10-26.md       # ★ 当前分析：中断死锁的真实原因与修复
 │   ├── HARDWARE_ANALYSIS.md         # 硬件分析详细报告
 │   ├── PLATFORM_TEST.md             # 真机平台测试负载使用说明
 │   └── XNU_INTEGRATION.md           # XNU 源码树集成步骤（MakeInc/board_config/hook）
@@ -110,8 +116,14 @@ dandelion-xnu/
 
 ## XNU 平台专家
 
-`iokit/Kernel/arm/DandelionPlatformExpert.cpp` 实现了参考项目 A04BR3 仍标注为
-待完成的 "platform interrupt/timer/serial wiring"，对应 Redmi 9A 的硬件：
+内核侧真正生效的是 `pexpert/arm/pe_fiq.c`（补丁 `dandelion-gic-mode.patch`），它和
+`bootshim/gic_probe.c` 编译同一份共享核心 `pexpert/pexpert/arm64/dandelion_gic.h`：
+自动识别 GICv2/GICv3、按 `GICD_TYPER.SecurityExtn` 选 Group0/FIQ 或 Group1/IRQ。
+背景与证据见 [docs/ANALYSIS-2026-10-26.md](docs/ANALYSIS-2026-10-26.md)。
+
+`iokit/Kernel/arm/DandelionPlatformExpert.cpp` 是独立的 freestanding 平台专家，
+实现了参考项目 A04BR3 仍标注为待完成的 "platform interrupt/timer/serial wiring"，
+目前用于 shim 的平台测试负载，尚未接进 XNU：
 
 | 模块 | 实现 |
 |------|------|
@@ -172,6 +184,16 @@ bash build.sh platform-test   # 真机平台测试负载（见 docs/PLATFORM_TES
 # 或使用 Linux 交叉编译器
 CC=aarch64-linux-gnu-g++ ./tools/check-platform-expert.sh
 ```
+
+### 没有真机时用 QEMU 验证
+```bash
+bash bootshim/build.sh xnu-qemu                   # shim 控制台镜像到 PL011
+python3 bootshim/mkxnu.py mach_kernel -o /tmp/xnu-payload.bin
+python3 tools/qemu/qemu_run.py --gic 3 --seconds 40 --initrd /tmp/xnu-payload.bin
+```
+
+脚本会打印 shim 的串口日志（含跳转前的 `GIC INVENTORY` 探针）和 XNU 的
+trace ring（物理 `0x5fc00000`）。`--gic 2` 走 GIC-400 模型。
 
 ### 创建 boot.img
 

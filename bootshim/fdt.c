@@ -217,7 +217,19 @@ static void probe_classify(struct probe_frame *f,
 {
 	unsigned flag = 0;
 
+	/*
+	 * Both interrupt controller generations matter here: the port was
+	 * written for arm,gic-v3, but if the SoC turns out to run its GIC in
+	 * v2 compatibility mode the node is a GIC-400/Cortex-A15 GIC and the
+	 * second reg range is the CPU interface, not a redistributor.
+	 */
 	if (equal(s, n, "arm,gic-v3"))
+		flag = PROBE_GIC;
+	else if (equal(s, n, "arm,gic-400") ||
+		 equal(s, n, "arm,cortex-a15-gic") ||
+		 equal(s, n, "arm,cortex-a9-gic") ||
+		 equal(s, n, "arm,cortex-a7-gic") ||
+		 equal(s, n, "arm,arm11mp-gic"))
 		flag = PROBE_GIC;
 	else if (equal(s, n, "arm,armv8-timer"))
 		flag = PROBE_TIMER;

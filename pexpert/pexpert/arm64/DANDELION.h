@@ -58,6 +58,18 @@
 #define DANDELION_GICR_STRIDE_V4  0x00040000ULL
 
 /*
+ * The distributor frame is 64 KiB, so its peripheral ID registers live at
+ * 0xFFE8, not at the 0xFE8 a 4 KiB GICv2 frame uses.  Reading 0xFE8 on this
+ * part returns 0, which used to be mistaken for "not a GICv3" and disabled
+ * the whole CPU-interface setup.  dandelion_gic.h handles both layouts.
+ */
+#define DANDELION_GICD_PIDR2_V3   0x0000FFE8u
+#define DANDELION_GICD_PIDR2_V2   0x00000FE8u
+
+/* Only used if the controller turns out to be a GICv2 (GIC-400 style). */
+#define DANDELION_GICC_BASE       0x0C002000ULL
+
+/*
  * GICv3 with system-register CPU interface.  This switches pexpert/arm/pe_fiq.c
  * from a stub to the real GICv3 bring-up (redistributor wake, PPI 27 for the
  * virtual timer, ICC_*_EL1 programming).
@@ -114,6 +126,17 @@
 
 #define DANDELION_CHIP_ID         0x67620001
 #define DANDELION_COMPATIBLE      "xiaomi,dandelion\0mediatek,mt6762g"
+
+/*
+ * Interrupt controller state owned by pexpert/arm/pe_fiq.c and queried by the
+ * exception handlers in osfmk/arm64/sleh.c.  The GIC is driven through the
+ * shared code in dandelion_gic.h, which picks Group 0 (FIQ) or Group 1 (IRQ)
+ * from GICD_TYPER.SecurityExtn; these are the only entry points the handlers
+ * need.
+ */
+uint32_t dandelion_gic_ack(void);
+void     dandelion_gic_eoi(uint32_t intid);
+int      dandelion_gic_uses_group0(void);
 
 #endif /* ! ASSEMBLER */
 

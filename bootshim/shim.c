@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include "fb.h"
 #include "fdt.h"
+#include "gic_probe.h"
 #include "handoff.h"
 #include "log.h"
 #include "pstore.h"
@@ -17,7 +18,7 @@
 #define LOG_HEX(label, val, fg) do { fb_puthex(label, val, fg); ps_puthex(label, val); } while(0)
 #define LOG_DEC(label, val, fg) do { fb_putdec(label, val, fg); ps_putdec(label, val); } while(0)
 
-__attribute__((noreturn)) extern void enter_el1(uint64_t dtb);
+__attribute__((noreturn)) extern void enter_el1(uint64_t dtb, uint64_t gic_v3);
 
 /*
  * Default build: a two-instruction stand-in kernel in .test_kernel.
@@ -41,6 +42,20 @@ extern char test_kernel_start[], test_kernel_end[];
 #endif
 
 static struct fdt_info fdt_info;
+static struct fdt_platform fdt_platform_info;
+static int fdt_gic_v3 = 1;      /* does the GIC implement GICv3 sysregs? */
+
+/* Tiny substring search: the compat string decides whether the CPU has a
+ * GICv3 system register interface, and there is no libc here. */
+static int contains(const char *haystack, const char *needle)
+{
+	for (; *haystack; haystack++) {
+		const char *h = haystack, *n = needle;
+		while (*n && *h == *n) { h++; n++; }
+		if (!*n) return 1;
+	}
+	return 0;
+}
 
 __attribute__((noreturn)) static void stop(void)
 {
@@ -90,7 +105,7 @@ __attribute__((noreturn)) void exception_report(uint64_t slot)
 	stop();
 }
 
-static void show_cpu_info(void)
+static void show_cpu_info(int icc_v3)
 {
 	uint64_t sre2_in, sre2_out;
 
@@ -100,6 +115,18 @@ static void show_cpu_info(void)
 	fb_puthex("MPIDR_EL1  ", READ_SYSREG(MPIDR_EL1), CLR_CYAN);
 	fb_puthex("SCTLR_EL1  ", READ_SYSREG(SCTLR_EL1), CLR_CYAN);
 	fb_puthex("CNTFRQ_EL0 ", READ_SYSREG(CNTFRQ_EL0), CLR_CYAN);
+
+	if (!icc_v3) {
+		/*
+		 * ICC_SRE_EL2 only exists when the GIC implements the v3
+		 * system register interface.  On a GICv2 (or a GICv3 forced
+		 * into v2 compatibility mode with the interface disabled) this
+		 * MRS is UNDEFINED, so never touch it unless the device tree
+		 * says arm,gic-v3.
+		 */
+		fb_puts("SRE_EL2     skipped (GIC is not arm,gic-v3)\n", CLR_YELLOW);
+		return;
+	}
 
 	/*
 	 * GICv3 system register interface.  EL1 may only touch ICC_* once
@@ -150,68 +177,70 @@ static void show_fdt_info(uint64_t dtb)
  */
 static void show_platform_probe(uint64_t dtb)
 {
-	static struct fdt_platform p;
+	struct fdt_platform *p = &fdt_platform_info;
 
+	(void)dtb;
 	fb_puts("\n--- PLATFORM (device DTB) ---\n", CLR_YELLOW);
 
-	if (fdt_probe_platform((const void *)(uintptr_t)dtb, fdt_info.bytes, &p)) {
+	if (!p->gic.found && !p->timer.found && !p->uart.found &&
+	    !p->wdt.found && !p->cpus.count) {
 		fb_puts("probe: DTB parse failed\n", CLR_RED);
 		return;
 	}
 
-	if (p.gic.found) {
-		int ok = p.gic.regions >= 2 &&
-			 p.gic.base[0] == DANDELION_GIC_BASE &&
-			 p.gic.base[1] == DANDELION_GICR_BASE;
+	if (p->gic.found) {
+		int ok = p->gic.regions >= 2 &&
+			 p->gic.base[0] == DANDELION_GIC_BASE &&
+			 p->gic.base[1] == DANDELION_GICR_BASE;
 		fb_puts("GIC  ", CLR_CYAN);
-		fb_puts(p.gic.compatible, CLR_WHITE);
+		fb_puts(p->gic.compatible, CLR_WHITE);
 		fb_puts(ok ? " = DANDELION.h\n" : " != DANDELION.h\n",
 			ok ? CLR_GREEN : CLR_RED);
-		for (unsigned i = 0; i < p.gic.regions; i++) {
-			fb_puthex("  base    ", p.gic.base[i], CLR_CYAN);
-			fb_puthex("  size    ", p.gic.size[i], CLR_CYAN);
+		for (unsigned i = 0; i < p->gic.regions; i++) {
+			fb_puthex("  base    ", p->gic.base[i], CLR_CYAN);
+			fb_puthex("  size    ", p->gic.size[i], CLR_CYAN);
 		}
 	} else {
 		fb_puts("GIC: not described in DTB\n", CLR_RED);
 	}
 
-	if (p.timer.found) {
-		fb_putdec("timer Hz ", p.timer.frequency,
-			  p.timer.frequency == DANDELION_TIMER_FREQ ?
+	if (p->timer.found) {
+		fb_putdec("timer Hz ", p->timer.frequency,
+			  p->timer.frequency == DANDELION_TIMER_FREQ ?
 			  CLR_GREEN : CLR_YELLOW);
-		for (unsigned i = 0; i < p.timer.irq_count; i++)
-			fb_putdec("  intid   ", p.timer.irq[i],
-				  p.timer.irq[i] == DANDELION_TIMER_IRQ ?
+		for (unsigned i = 0; i < p->timer.irq_count; i++)
+			fb_putdec("  intid   ", p->timer.irq[i],
+				  p->timer.irq[i] == DANDELION_TIMER_IRQ ?
 				  CLR_GREEN : CLR_CYAN);
 	} else {
 		fb_puts("timer: not described in DTB\n", CLR_RED);
 	}
 
-	if (p.uart.found) {
-		fb_puthex("uart base", p.uart.base,
-			  p.uart.base == DANDELION_UART_BASE ?
+	if (p->uart.found) {
+		fb_puthex("uart base", p->uart.base,
+			  p->uart.base == DANDELION_UART_BASE ?
 			  CLR_GREEN : CLR_RED);
-		fb_puthex("  size   ", p.uart.size, CLR_CYAN);
+		fb_puthex("  size   ", p->uart.size, CLR_CYAN);
 	} else {
 		fb_puts("uart: not described in DTB\n", CLR_RED);
 	}
 
-	if (p.wdt.found) {
-		fb_puthex("wdt base ", p.wdt.base,
-			  p.wdt.base == DANDELION_WDT_BASE ?
+	if (p->wdt.found) {
+		fb_puthex("wdt base ", p->wdt.base,
+			  p->wdt.base == DANDELION_WDT_BASE ?
 			  CLR_GREEN : CLR_RED);
-		fb_puthex("  size   ", p.wdt.size, CLR_CYAN);
+		fb_puthex("  size   ", p->wdt.size, CLR_CYAN);
 	} else {
 		fb_puts("wdt: not described in DTB\n", CLR_RED);
 	}
 
-	fb_putdec("cpus     ", p.cpus.count,
-		  p.cpus.count == DANDELION_NCPUS ? CLR_GREEN : CLR_YELLOW);
-	for (unsigned i = 0; i < p.cpus.count; i++)
-		fb_puthex("  mpidr  ", p.cpus.mpidr[i], CLR_CYAN);
-	if (p.cpus.enable_method[0]) {
+	fb_putdec("cpus     ", p->cpus.count,
+		  p->cpus.count == DANDELION_NCPUS ? CLR_GREEN : CLR_YELLOW);
+	for (unsigned i = 0; i < p->cpus.count; i++)
+		fb_puthex("  mpidr  ", p->cpus.mpidr[i], CLR_CYAN);
+	if (p->cpus.enable_method[0]) {
 		fb_puts("enable   ", CLR_CYAN);
-		fb_puts(p.cpus.enable_method, CLR_WHITE);
+		fb_puts(p->cpus.enable_method, CLR_WHITE);
 		fb_newline();
 	}
 }
@@ -221,6 +250,18 @@ __attribute__((noreturn)) void shim_el1(uint64_t dtb)
 	fb_puts("\n=== EL1 DIAGNOSTIC ===\n", CLR_YELLOW);
 	fb_puthex("CurrentEL  ", READ_SYSREG(CurrentEL), CLR_CYAN);
 	fb_puts("EL1 transition OK!\n", CLR_GREEN);
+
+	/*
+	 * Interrupt controller inventory.  This is the part of the boot that
+	 * decides whether XNU can ever receive a timer interrupt, so report it
+	 * before handing over: the register values, the security state and a
+	 * live "does the timer PPI arrive" test all print here.
+	 */
+	{
+		static struct gic_probe_result probe;
+
+		gic_probe_run(&fdt_platform_info, &probe);
+	}
 
 	/* Embedded test kernel handoff */
 	fb_puts("\n--- HANDOFF ---\n", CLR_YELLOW);
@@ -394,8 +435,20 @@ __attribute__((noreturn)) void shim_main(uint64_t x0, uint64_t x1,
 	fb_puthex("CurrentEL  ", el, CLR_CYAN);
 	fb_puthex("entry_x0   ", x0, CLR_CYAN);
 
-	show_cpu_info();
 	show_fdt_info(x0);
+	{
+		int gic_v3 = 1;
+
+		if (fdt_info.bytes) {
+			if (fdt_probe_platform((const void *)(uintptr_t)x0,
+				fdt_info.bytes, &fdt_platform_info))
+				fdt_platform_info.gic.found = 0;
+			gic_v3 = fdt_platform_info.gic.found &&
+			    contains(fdt_platform_info.gic.compatible, "gic-v3");
+		}
+		fdt_gic_v3 = gic_v3;
+		show_cpu_info(gic_v3);
+	}
 	if (fdt_info.bytes)
 		show_platform_probe(x0);
 
@@ -409,7 +462,7 @@ __attribute__((noreturn)) void shim_main(uint64_t x0, uint64_t x1,
 			stop();
 		}
 		fb_puts("Transitioning...\n", CLR_GREEN);
-		enter_el1(x0);
+		enter_el1(x0, (uint64_t)fdt_gic_v3);
 		fb_puts("enter_el1 returned?!\n", CLR_RED);
 		stop();
 	}

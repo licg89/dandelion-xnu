@@ -48,15 +48,24 @@ Still waiting for root device
 
 ## 重新验证
 
-```powershell
-# 1. 构建（CI，需 workflow_dispatch + machine=dandelion）
-# 2. 拉产物
-powershell -NoProfile -ExecutionPolicy Bypass -File fetch_art.ps1 -Sha <sha>
-# 3. QEMU 跑 60 秒并读屏
-python qemu_check.py --kernel ...\mach_kernel --unstrip ...\mach.development.dandelion.unstripped `
-    --seconds 60 --cmdline "-v serial=3 debug=0x14e keepsyms=1 cpus=1 -noprogress wdt=-1"
-python fbdump.py 60; python fbcrop.py
+以前这里引用的 `qemu_check.py` / `fbdump.py` / `fbcrop.py` 从来没有入库，命令无法复现。
+现在用 `tools/qemu/qemu_run.py`（需要 WSL 或 Linux 上的 `qemu-system-aarch64`）：
+
+```bash
+# 1. 构建 QEMU 版 shim（framebuffer 控制台镜像到 PL011）
+bash bootshim/build.sh xnu-qemu
+
+# 2. 把 CI 产物打进 shim 认识的 payload（mkxnu.py 只认 Mach-O）
+python3 bootshim/mkxnu.py mach_kernel -o /tmp/xnu-payload.bin
+
+# 3. 跑，并打印 shim 串口日志 + XNU 的 trace ring（0x5fc00000）
+python3 tools/qemu/qemu_run.py --gic 3 --seconds 40 --initrd /tmp/xnu-payload.bin
 ```
+
+`--gic 2` 用 GIC-400 模型跑同一份代码（shim 会走 GICv2 路径）。
+shim 在跳转前还会打印 `GIC INVENTORY`（见
+[ANALYSIS-2026-10-26.md](ANALYSIS-2026-10-26.md) §4.2），那段输出不需要内核就能说明
+中断控制器能不能用，也是判断「真机是否两安全态 GIC」的依据。
 
 ## 打真机镜像 / 刷机
 
