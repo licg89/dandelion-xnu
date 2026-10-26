@@ -43,16 +43,46 @@
 
 #if PSTORE_ENABLED
 
-static inline volatile uint32_t *ps_hdr(void)
+/*
+ * The ramoops region holds several zones back to back: console, pmsg and
+ * optionally ftrace.  Their sizes come from the ramoops.* kernel arguments
+ * that LK appends, so the only way to be right without parsing them is to
+ * write the same record into every plausible zone; the kernel then exposes it
+ * as console-ramoops-0, pmsg-ramoops-0 or ftrace-ramoops-0 and the host reads
+ * whichever appeared.  A record at offset 0 lands in the first *dump* zone and
+ * is never read back - which is why the earlier attempt looked like "ramoops
+ * does not use our format".
+ *
+ * Each zone starts with a persistent_ram_buffer header:
+ *     { u32 sig = 0x43474244 ("DBGC"), u32 start, u32 size }  then text.
+ */
+#define PS_ZONE_COUNT 6
+#define PS_ZONE_STEP  0x20000UL
+
+static inline volatile uint32_t *ps_hdr(int zone)
 {
-	return (volatile uint32_t *)PSTORE_BASE;
+	return (volatile uint32_t *)(PSTORE_BASE + (unsigned long)zone * PS_ZONE_STEP);
+}
+
+static inline unsigned long ps_capacity(int zone)
+{
+	(void)zone;
+	return PS_ZONE_STEP - PS_HDR_SIZE - 0x400;
+}
+
+static inline void ps_reset_zone(int zone)
+{
+	volatile uint32_t *h = ps_hdr(zone);
+	h[0] = PS_SIG;
+	h[1] = 0;
+	h[2] = 0;
 }
 
 static inline void ps_reset(void)
 {
-	ps_hdr()[0] = PS_SIG;
-	ps_hdr()[1] = 0;
-	ps_hdr()[2] = 0;
+	for (int zone = 0; zone < PS_ZONE_COUNT; zone++) {
+		ps_reset_zone(zone);
+	}
 }
 
 static inline void _ps_flush(void)
@@ -62,14 +92,21 @@ static inline void _ps_flush(void)
 
 static inline void ps_char(char c)
 {
-	volatile uint32_t *h = ps_hdr();
-	if (h[0] != PS_SIG)
-		ps_reset();
-	uint32_t n = h[2];
-	if (n >= PS_MAX)
-		return;
-	((volatile uint8_t *)(PSTORE_BASE + PS_HDR_SIZE))[n] = (uint8_t)c;
-	h[2] = n + 1;
+	for (int zone = 0; zone < PS_ZONE_COUNT; zone++) {
+		volatile uint32_t *h = ps_hdr(zone);
+		uint32_t n;
+
+		if (h[0] != PS_SIG) {
+			ps_reset_zone(zone);
+		}
+		n = h[2];
+		if (n >= ps_capacity(zone)) {
+			continue;
+		}
+		((volatile uint8_t *)(PSTORE_BASE +
+		    (unsigned long)zone * PS_ZONE_STEP + PS_HDR_SIZE))[n] = (uint8_t)c;
+		h[2] = n + 1;
+	}
 }
 
 static inline void ps_puts(const char *s)

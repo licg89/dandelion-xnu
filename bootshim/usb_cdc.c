@@ -16,7 +16,7 @@
 #include "usb_cdc.h"
 
 #define MUSB_BASE        0x11200000UL
-#define USB_PHY_BASE     0x11CC0000UL
+#define USB_PHY_BASE     0x11CC0800UL
 #define TOPCK_BASE       0x10000000UL
 #define INFRAAO_BASE     0x10001000UL
 #define APMIX_BASE       0x1000C000UL
@@ -85,6 +85,26 @@ static uint32_t musb_devctl_after;
 #define TXCSR_MODE       0x2000
 #define TXCSR_AUTOSET    0x8000
 #define TXCSR_FLUSHFIFO  0x0008
+
+/*
+ * EP0 uses CSR0, which has a different bit layout from the data endpoints:
+ * bit0 is RXPKTRDY, bit1 is TXPKTRDY, bit6 acknowledges a SETUP packet and
+ * bit7 signals DATAEND (the status stage of a control transfer).  Writing the
+ * data-endpoint TXCSR value (0x0001) here sets RXPKTRDY instead of TXPKTRDY,
+ * so nothing is ever transmitted and the host never enumerates - which is
+ * exactly what the earlier attempt did.
+ */
+#define CSR0_RXPKTRDY     0x0001
+#define CSR0_TXPKTRDY     0x0002
+#define CSR0_OPRQ         0x0004
+#define CSR0_SERVICEDSETUP 0x0040
+#define CSR0_DATAEND      0x0080
+#define CSR0_SENTSTALL    0x0100
+
+/* FIFO sizing registers (indexed) */
+#define MUSB_TXFIFOSZ     (MUSB_BASE + 0x62)
+#define MUSB_TXMAXP_      (MUSB_BASE + 0x10)
+#define MUSB_TXFIFOADD    (MUSB_BASE + 0x64)
 
 /* RXCSR bits (device mode) */
 #define RXCSR_RXPKTRDY   0x0001
@@ -252,12 +272,16 @@ static void ep_write(const uint8_t *data, int length)
 	w16(MUSB_TXCSR, TXCSR_TXPKTRDY);
 }
 
-/* --- EP0 control transfers --------------------------------------------- */
+/* --- EP0 control transfers (CSR0 layout) -------------------------------- */
 
 static void ep0_ack_status(void)
 {
-	/* Zero length IN packet completes the status stage of a control write. */
-	w16(MUSB_TXCSR, TXCSR_TXPKTRDY);
+	/*
+	 * Status stage of a control write: a zero length IN packet, which on EP0
+	 * is TXPKTRDY together with DATAEND so the core closes the transfer.
+	 */
+	select_ep(0);
+	w16(MUSB_TXCSR, CSR0_TXPKTRDY | CSR0_DATAEND);
 }
 
 static void ep0_send(const uint8_t *data, int length)
@@ -265,12 +289,22 @@ static void ep0_send(const uint8_t *data, int length)
 	if (length > 64) {
 		length = 64;
 	}
-	ep_write(data, length);
+	select_ep(0);
+	fifo_write(data, length);
+	w16(MUSB_TXCSR, CSR0_TXPKTRDY);
+}
+
+/* Finish a control-IN transfer once the last data packet has gone out. */
+static void ep0_data_end(void)
+{
+	select_ep(0);
+	w16(MUSB_TXCSR, CSR0_TXPKTRDY | CSR0_DATAEND);
 }
 
 static void ep0_stall(void)
 {
-	w16(MUSB_TXCSR, r16(MUSB_TXCSR) | 0x0010);
+	select_ep(0);
+	w16(MUSB_TXCSR, CSR0_OPRQ);     /* STALL for EP0 */
 }
 
 static void handle_setup(const uint8_t *setup)
@@ -351,13 +385,19 @@ static void handle_setup(const uint8_t *setup)
 
 /* --- public interface --------------------------------------------------- */
 
+/*
+ * Service EP0.  On EP0 the status/control register is CSR0 (0x12), not the
+ * data-endpoint RXCSR (0x16): RXPKTRDY is bit0, a SETUP packet is acknowledged
+ * by clearing RXPKTRDY and setting SERVICEDSETUP, and the receive byte count
+ * is in COUNT0 (0x18).
+ */
 static void drain_ep0(void)
 {
 	select_ep(0);
 
 	for (int guard = 0; guard < 8; guard++) {
-		uint16_t rxcsr = r16(MUSB_RXCSR);
-		if (!(rxcsr & RXCSR_RXPKTRDY)) {
+		uint16_t csr0 = r16(MUSB_TXCSR);
+		if (!(csr0 & CSR0_RXPKTRDY)) {
 			break;
 		}
 
@@ -368,39 +408,33 @@ static void drain_ep0(void)
 			count = sizeof(buffer);
 		}
 		fifo_read(buffer, count);
-		/* Clear RXPKTRDY and re-arm the endpoint for the next SETUP. */
-		w16(MUSB_RXCSR, (uint16_t)(RXCSR_RXPKTRDY | RXCSR_FLUSHFIFO));
-		w16(MUSB_RXCSR, 0);
+
+		/* Acknowledge the packet; a SETUP packet also needs
+		 * SERVICEDSETUP so the core accepts the next one. */
+		w16(MUSB_TXCSR, (uint16_t)(CSR0_RXPKTRDY | CSR0_SERVICEDSETUP));
 
 		if (count == 8) {
 			handle_setup(buffer);
 		}
 		event_count++;
-
-		/* A control-IN data stage may need the rest of the descriptor. */
-		if (desc_remaining > 0 && desc_ptr) {
-			uint16_t txcsr = r16(MUSB_TXCSR);
-			if (!(txcsr & TXCSR_TXPKTRDY)) {
-				int send = desc_remaining > 64 ? 64 : desc_remaining;
-				ep0_send(desc_ptr, send);
-				desc_ptr += send;
-				desc_remaining -= send;
-			}
-		}
 	}
 }
 
+/* Continue a multi-packet control-IN transfer when the previous packet left. */
 static void service_ep0_tx(void)
 {
 	select_ep(0);
 	if (desc_remaining > 0 && desc_ptr) {
-		uint16_t txcsr = r16(MUSB_TXCSR);
-		if (!(txcsr & TXCSR_TXPKTRDY)) {
+		uint16_t csr0 = r16(MUSB_TXCSR);
+		if (!(csr0 & CSR0_TXPKTRDY)) {
 			int send = desc_remaining > 64 ? 64 : desc_remaining;
 			ep0_send(desc_ptr, send);
 			desc_ptr += send;
 			desc_remaining -= send;
 			event_count++;
+			if (desc_remaining == 0) {
+				ep0_data_end();
+			}
 		}
 	}
 }

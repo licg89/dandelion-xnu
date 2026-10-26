@@ -47,8 +47,7 @@ static struct fdt_platform fdt_platform_info;
 static int fdt_gic_v3 = 1;      /* does the GIC implement GICv3 sysregs? */
 
 /* Tiny substring search: the compat string decides whether the CPU has a
- * GICv3 system register interface, and there is no libc here. */
-static int contains(const char *haystack, const char *needle)
+ * GICv3 system register interface, and there is no libc here. */static int contains(const char *haystack, const char *needle)
 {
 	for (; *haystack; haystack++) {
 		const char *h = haystack, *n = needle;
@@ -456,10 +455,42 @@ static void fb_probe(void)
 }
 #endif
 
+/*
+ * MediaTek TOPRGU watchdog at 0x10007000.  LK arms it (about 10 s, dual mode)
+ * before jumping to the boot image, so a shim that lingers - or a kernel that
+ * takes its time - is reset out of nowhere; that is the most likely reason the
+ * test image "reboots by itself".  MODE needs the 0x22000000 key in its top
+ * bits, and writing it also clears the reset-reason field, so read it first.
+ */
+#define TOPRGU_BASE     0x10007000UL
+#define TOPRGU_MODE_KEY 0x22000000UL
+
+static void watchdog_quiesce(void)
+{
+	volatile uint32_t *mode = (volatile uint32_t *)TOPRGU_BASE;
+	uint32_t before = *mode;
+
+	*mode = TOPRGU_MODE_KEY | (before & ~1u);
+	*(volatile uint32_t *)(TOPRGU_BASE + 0x08) = 0x1971;    /* pet */
+
+	fb_puthex("WDT before ", before, CLR_CYAN);
+	fb_puthex("WDT after  ", *mode, CLR_CYAN);
+}
+
 __attribute__((noreturn)) void shim_main(uint64_t x0, uint64_t x1,
 					 uint64_t x2, uint64_t x3, uint64_t old_sp)
 {
 	(void)x1; (void)x2; (void)x3; (void)old_sp;
+
+	/*
+	 * MediaTek TOPRGU watchdog: LK arms it (about 10 s, dual mode) before
+	 * jumping to the boot image, so anything that lingers - the shim's probe
+	 * mode, or a kernel taking its time - gets reset out of nowhere.  That
+	 * is the most likely reason the test image "reboots by itself" after a
+	 * few seconds.  Disable it before anything can be lost.
+	 */
+	fb_init();
+	watchdog_quiesce();
 #ifdef FB_PROBE
 	fb_probe();
 #endif
