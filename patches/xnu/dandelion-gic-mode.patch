@@ -1,5 +1,5 @@
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
-index 3ad743f..17617aa 100644
+index 3ad743f..4fc7a0d 100644
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
 @@ -1,5 +1,23 @@
@@ -26,7 +26,7 @@ index 3ad743f..17617aa 100644
   */
  
  #include <stdint.h>
-@@ -9,169 +27,226 @@
+@@ -9,169 +27,224 @@
  #include <machine/atomic.h>
  #include <machine/machine_routines.h>
  #include <pexpert/device_tree.h>
@@ -211,26 +211,24 @@ index 3ad743f..17617aa 100644
 +		    second, second_size_prop, dandelion_gic_node_is_v3(entry));
 +
 +		/*
-+		 * Diagnostic: every GIC write in this project so far happened in
-+		 * the shim, with the MMU off, and the two group-control writes
-+		 * never took.  Linux does the same writes from kernel context
-+		 * with the MMU on and works on this device, so repeat them here
-+		 * and keep the readbacks for the late report (the early console
-+		 * scrolls them away within a second).
++		 * Do NOT write GICD_CTLR or GICD_IGROUPR from here.
++		 *
++		 * On this SoC those two accesses behave differently depending on
++		 * the context, which cost a boot to discover: from the boot shim
++		 * (MMU off) they are silently dropped and read back unchanged,
++		 * while from kernel context (MMU on) the write stalls the bus and
++		 * the kernel stops right after arm_init: cpu_timabase_init.  The
++		 * GIC implements both security states, so the group registers
++		 * belong to EL3; poking them from non-secure code is not just
++		 * ineffective here, it hangs.
++		 *
++		 * The four exported values stay (the late report prints them) but
++		 * now describe what identify() saw, not a write experiment.
 +		 */
-+		dandelion_gic_ctlr_pre = dgic_read32(gicd, DGICD_CTLR);
-+		dandelion_gic_igroupr_pre = dgic_read32(gicd, DGICD_IGROUPR);
-+		dgic_write32(gicd, DGICD_CTLR, 0x13u);
-+		dgic_write32(gicd, DGICD_IGROUPR, 0xffffffffu);
-+		__asm__ volatile("dsb sy" ::: "memory");
-+		dandelion_gic_ctlr_post = dgic_read32(gicd, DGICD_CTLR);
-+		dandelion_gic_igroupr_post = dgic_read32(gicd, DGICD_IGROUPR);
-+		/* Leave the group bits as they were. */
-+		if (dandelion_gic_igroupr_post != dandelion_gic_igroupr_pre) {
-+			dgic_write32(gicd, DGICD_IGROUPR,
-+			    dandelion_gic_igroupr_pre);
-+		}
-+		__asm__ volatile("dsb sy" ::: "memory");
++		dandelion_gic_ctlr_pre = dandelion_gic.ctlr;
++		dandelion_gic_ctlr_post = dandelion_gic.ctlr;
++		dandelion_gic_igroupr_pre = 0;
++		dandelion_gic_igroupr_post = 0;
 +
 +		dandelion_gic_typer = dandelion_gic.typer;
 +		dandelion_gic_pidr2 = (dandelion_gic.pidr2_64k != 0) ?
