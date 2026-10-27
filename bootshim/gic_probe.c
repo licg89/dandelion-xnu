@@ -137,6 +137,7 @@ walk_redistributors(struct gic_probe_result *r)
 {
 	unsigned long frame = r->gic.gicr;
 	unsigned long end = frame + r->gic.gicr_size;
+	unsigned long mpidr;
 	unsigned int count = 0;
 
 	r->redist_frames = 0;
@@ -144,9 +145,31 @@ walk_redistributors(struct gic_probe_result *r)
 		return;
 	}
 
+	/*
+	 * Experiment E0 of docs/R1-GIC-PLAN.md: the frame that should belong to
+	 * affinity 0 reads GICR_TYPER as zero while the other seven decode to
+	 * affinities 1,2,3,0x100..0x103.  Either that frame is genuinely dead,
+	 * or we have been programming the wrong redistributor all along.  Print
+	 * the boot CPU's MPIDR, decode every frame, and read a zero TYPER twice
+	 * before believing it.
+	 */
+	__asm__ volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
+	out("  boot mpidr ", CLR_CYAN);
+	outhex(mpidr);
+	out("  affinity ", CLR_CYAN);
+	outhex(mpidr & 0xFF00FFFFFFul);
+	fb_newline();
+
 	while (frame + 0x20000ul <= end && count < PROBE_REDIST_MAX) {
 		unsigned long typer = dgic_read64(frame, DGICR_TYPER);
-		unsigned int waker = dgic_read32(frame, DGICR_WAKER);
+		unsigned long affinity = (typer >> 32) & 0xFFFFFFFFul;
+		unsigned int waker;
+
+		if (typer == 0) {
+			typer = dgic_read64(frame, DGICR_TYPER);
+			affinity = (typer >> 32) & 0xFFFFFFFFul;
+		}
+		waker = dgic_read32(frame, DGICR_WAKER);
 
 		r->redist_base[count] = frame;
 		r->redist_typer[count] = typer;
@@ -157,10 +180,16 @@ walk_redistributors(struct gic_probe_result *r)
 		outhex(frame);
 		out(" typer ", CLR_CYAN);
 		outhex(typer);
+		out(" aff ", CLR_CYAN);
+		outhex(affinity);
 		out(" waker ", CLR_CYAN);
 		outhex(waker);
-		out((waker & DGICR_WAKER_CHILDRENASLEEP) ? "  (asleep)\n" :
-		    "  (awake)\n", CLR_WHITE);
+		out((waker & DGICR_WAKER_CHILDRENASLEEP) ? "  (asleep)" :
+		    "  (awake)", CLR_WHITE);
+		if (affinity == (mpidr & 0xFF00FFFFFFul)) {
+			out("  <- self", CLR_GREEN);
+		}
+		fb_newline();
 
 		if (typer & DGICR_TYPER_LAST) {
 			break;
