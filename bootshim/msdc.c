@@ -124,6 +124,11 @@
 #define CHUNK_BLOCKS		128u		/* 64 KiB per CMD18/CMD25 */
 #define BOUNCE_BYTES		4096u
 
+/* ---- where to put the log ---------------------------------------------- */
+#define MSDC_SCAN_STEP		128u		/* 64 KiB between candidates  */
+#define MSDC_SCAN_MAX		240u		/* covers ~15 MiB of the part */
+#define MSDC_TEXT_MAX		(256u * 1024u)
+
 enum {
 	MSDC_OK = 0,
 	MSDC_ETMO = -1,
@@ -134,7 +139,8 @@ enum {
 	MSDC_ENOCLK = -6,
 	MSDC_ENOPART = -7,
 	MSDC_ENOTERASED = -8,
-	MSDC_EIO = -9
+	MSDC_EIO = -9,
+	MSDC_ESPACE = -10
 };
 
 static uint32_t msdc_ready;
@@ -847,30 +853,103 @@ gpt_find(const char *name, uint32_t *lba_out, uint32_t *sectors_out,
 /* The log block                                                          */
 /* ---------------------------------------------------------------------- */
 
-static int
-target_probe(uint32_t lba, int *blank, int *ours)
-{
-	static uint8_t probe[512] __attribute__((aligned(8)));
-	int all_ff = 1;
+/*
+ * Shared staging buffer.  4 KiB is the smallest unit that makes the 128-byte
+ * FIFO depth irrelevant and keeps the per-transfer command overhead low.
+ */
+static uint8_t msdc_bounce[BOUNCE_BYTES] __attribute__((aligned(8)));
 
-	if (msdc_read_sectors(lba, probe, 512))
-		return MSDC_EIO;
-	for (unsigned i = 0; i < sizeof(probe); i++) {
-		if (probe[i] != 0xFFu) {
-			all_ff = 0;
-			break;
-		}
+/* Is [lba, lba+sectors) entirely erased?  Checked in 4 KiB reads. */
+static int
+span_is_blank(uint32_t lba, uint32_t sectors)
+{
+	while (sectors) {
+		uint32_t chunk = sectors > (BOUNCE_BYTES / 512) ?
+				 (BOUNCE_BYTES / 512) : sectors;
+		uint32_t bytes = chunk << 9;
+
+		if (msdc_read_sectors(lba, msdc_bounce, bytes))
+			return 0;
+		for (uint32_t i = 0; i < bytes; i++)
+			if (msdc_bounce[i] != 0xFFu)
+				return 0;
+		lba += chunk;
+		sectors -= chunk;
 	}
-	*blank = all_ff;
-	*ours = same_bytes(probe + SLOG_OFF_MAGIC, SLOG_MAGIC, 8);
-	return MSDC_OK;
+	return 1;
+}
+
+/*
+ * Find a place to put the log.
+ *
+ * The first test boot proved that flashinfo is not blank past its vendor
+ * header (the sector at +1 MiB held real data), so scan for a blank run
+ * instead of assuming one.  Candidates are examined one sector per 64 KiB so
+ * the scan costs a few hundred small reads; the full span is only read when a
+ * candidate looks empty.
+ *
+ * A slot that already carries one of our headers is reused as-is, which keeps
+ * the boot counter counting up instead of starting over.
+ */
+static int
+find_slot(struct msdc_report *r, uint32_t part_lba, uint32_t part_sectors,
+	  uint32_t need_bytes, uint32_t *out_lba)
+{
+	uint32_t need = (need_bytes + 511u) >> 9;
+	uint32_t probes = 0;
+
+	for (uint32_t offset = MSDC_LOG_LBA_OFFSET;
+	     offset + need <= part_sectors && probes < MSDC_SCAN_MAX;
+	     offset += MSDC_SCAN_STEP, probes++) {
+		uint32_t lba = part_lba + offset;
+		static uint8_t probe[512] __attribute__((aligned(8)));
+		int blank = 1;
+
+		r->scan_count = probes + 1;
+		if (msdc_read_sectors(lba, probe, 512))
+			return MSDC_EIO;
+
+		if (probes == 0) {
+			/* Record what is actually there: the first attempt is
+			 * the one whose assumption we want to check. */
+			for (unsigned i = 0; i < 4; i++)
+				r->probe_hex[i] = get_le32(probe + i * 4);
+			for (unsigned i = 0; i < 512; i++)
+				if (probe[i] != 0xFFu)
+					r->probe_nonff++;
+		}
+
+		if (same_bytes(probe + SLOG_OFF_MAGIC, SLOG_MAGIC, 8)) {
+			r->reused = 1;
+			r->erased_ok = 0;
+			*out_lba = lba;
+			return MSDC_OK;
+		}
+
+		for (unsigned i = 0; i < sizeof(probe); i++) {
+			if (probe[i] != 0xFFu) {
+				blank = 0;
+				break;
+			}
+		}
+		if (!blank)
+			continue;
+
+		if (!span_is_blank(lba, need))
+			continue;
+
+		r->erased_ok = 1;
+		r->reused = 0;
+		*out_lba = lba;
+		return MSDC_OK;
+	}
+	return MSDC_ESPACE;
 }
 
 static int
 write_text(uint32_t base_lba, const char *text, uint32_t length,
 	   uint32_t *written)
 {
-	static uint8_t bounce[BOUNCE_BYTES] __attribute__((aligned(8)));
 	uint32_t offset = 0;
 
 	while (offset < length) {
@@ -878,13 +957,13 @@ write_text(uint32_t base_lba, const char *text, uint32_t length,
 		uint32_t blocks;
 		int rc;
 
-		if (chunk > sizeof(bounce))
-			chunk = sizeof(bounce);
-		__builtin_memcpy(bounce, text + offset, chunk);
-		for (uint32_t i = chunk; i < sizeof(bounce); i++)
-			bounce[i] = 0;
+		if (chunk > sizeof(msdc_bounce))
+			chunk = sizeof(msdc_bounce);
+		__builtin_memcpy(msdc_bounce, text + offset, chunk);
+		for (uint32_t i = chunk; i < sizeof(msdc_bounce); i++)
+			msdc_bounce[i] = 0;
 		blocks = (chunk + 511u) >> 9;
-		rc = msdc_write_sectors(base_lba + (offset >> 9), bounce,
+		rc = msdc_write_sectors(base_lba + (offset >> 9), msdc_bounce,
 				       blocks << 9);
 		if (rc) {
 			*written = offset;
@@ -897,16 +976,20 @@ write_text(uint32_t base_lba, const char *text, uint32_t length,
 }
 
 /*
- * Stage 1: bring the controller up from LK's state and prove we can talk to
- * the card.  Read-only - nothing is written here, so a wrong assumption costs
- * a failed test rather than a partition.
+ * Stage 1: bring the controller up from LK's state, prove we can talk to the
+ * card, and pick a blank run to write into.  Read-only - nothing is written
+ * here, so a wrong assumption costs a failed test rather than a partition.
+ *
+ * `span_bytes` is the space we want to reserve for the text; the caller knows
+ * roughly how long the log is before it starts, and the report that prepare()
+ * itself prints is added on top of that by the caller's slack.
  */
 int
-msdc_log_prepare(struct msdc_report *r)
+msdc_log_prepare(struct msdc_report *r, uint32_t span_bytes)
 {
 	uint32_t flashinfo_lba = MSDC_FALLBACK_LBA;
 	uint32_t flashinfo_sectors = MSDC_FALLBACK_SECTORS;
-	uint32_t base_lba;
+	uint32_t base_lba = 0;
 	int rc;
 
 	/* Wipe the report first: a partially filled struct printed after a
@@ -915,6 +998,10 @@ msdc_log_prepare(struct msdc_report *r)
 		((uint8_t *)r)[i] = 0;
 	r->target_lba = 0;
 	msdc_ready = 0;
+
+	if (span_bytes > MSDC_TEXT_MAX)
+		span_bytes = MSDC_TEXT_MAX;
+	r->span_bytes = span_bytes;
 
 	rc = host_bringup(r, 260);		/* ~385 kHz @ MSDC PLL/2 */
 	if (rc) {
@@ -968,29 +1055,17 @@ msdc_log_prepare(struct msdc_report *r)
 	if (flashinfo_sectors < msdc_lba_offset + 2048u)
 		return MSDC_EARG;
 
-	base_lba = flashinfo_lba + msdc_lba_offset;
-	r->target_lba = base_lba;
-
 	/* A mismatch here means LK left the controller driving a bus the card is
 	 * not listening on, so a write would land as garbage. */
 	if (!r->bus_ok)
 		return MSDC_ESTATE;
 
-	/* Safety gate: the target must be blank, or already ours.  A stale log
-	 * from an earlier test boot is expected and must not block the next
-	 * one; anything else means the LBA is wrong. */
-	{
-		int blank = 0, ours = 0;
+	rc = find_slot(r, flashinfo_lba, flashinfo_sectors,
+		       SLOG_HEADER_SIZE + span_bytes, &base_lba);
+	if (rc)
+		return rc;
 
-		rc = target_probe(base_lba, &blank, &ours);
-		if (rc)
-			return rc;
-		r->erased_ok = blank;
-		r->reused = ours;
-		if (!blank && !ours)
-			return MSDC_ENOTERASED;
-	}
-
+	r->target_lba = base_lba;
 	msdc_log_base = base_lba;
 	return MSDC_OK;
 }
@@ -1016,6 +1091,8 @@ msdc_log_commit(struct msdc_report *r, const char *text, uint32_t length)
 	 * the decoder treats the byte count as authoritative anyway. */
 	if (length > SLOG_SLOTS * SLOG_SLOT_SIZE)
 		length = SLOG_SLOTS * SLOG_SLOT_SIZE;
+	if (r->span_bytes && length > r->span_bytes)
+		length = r->span_bytes;
 
 	/* Keep the boot counter running across test boots; the second pass of the
 	 * same boot must not bump it again. */
@@ -1106,7 +1183,7 @@ msdc_log_commit(struct msdc_report *r, const char *text, uint32_t length)
 int
 msdc_log_run(struct msdc_report *r, const char *text, uint32_t length)
 {
-	int rc = msdc_log_prepare(r);
+	int rc = msdc_log_prepare(r, length);
 
 	if (rc)
 		return rc;
@@ -1177,6 +1254,16 @@ msdc_report_print(const struct msdc_report *r)
 	out(r->erased_ok ? "yes" : "no", r->erased_ok ? CLR_GREEN : CLR_YELLOW);
 	out("  reused ", CLR_CYAN);
 	out(r->reused ? "yes" : "no", CLR_WHITE);
+	fb_newline();
+
+	field_dec("scan probes ", r->scan_count);
+	out("  probe[0]    ", CLR_CYAN);
+	for (unsigned i = 0; i < 4; i++) {
+		outhex(r->probe_hex[i]);
+		out(" ", CLR_WHITE);
+	}
+	out("nonff ", CLR_CYAN);
+	outdec(r->probe_nonff);
 	fb_newline();
 
 	field_hex("write rc   ", (unsigned long)(int32_t)r->write_rc);

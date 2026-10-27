@@ -282,19 +282,22 @@ dump_log_to_emmc(void)
 
 	fb_puts("\n--- eMMC log channel (flashinfo) ---\n", CLR_YELLOW);
 
-	rc = msdc_log_prepare(&report);
-	msdc_report_print(&report);
-	if (rc) {
-		fb_puts("  prepare failed, nothing written\n", CLR_RED);
-		return;
-	}
-
 	length = captured_log(&text);
 	if (!length) {
 		fb_puts("  no captured log text\n", CLR_RED);
 		return;
 	}
 
+	/* Reserve a little extra: the report printed below becomes part of the
+	 * log, so the text grows between here and the commit. */
+	rc = msdc_log_prepare(&report, length + 8192u);
+	msdc_report_print(&report);
+	if (rc) {
+		fb_puts("  prepare failed, nothing written\n", CLR_RED);
+		return;
+	}
+
+	length = captured_log(&text);		/* now includes the report */
 	rc = msdc_log_commit(&report, text, length);
 	fb_puthex("  commit rc", (unsigned long)(unsigned)rc, CLR_WHITE);
 	if (rc) {
@@ -305,12 +308,12 @@ dump_log_to_emmc(void)
 
 	/* Second pass: the log now contains its own report and the line above. */
 	length = captured_log(&text);
-	if (length) {
+	rc = msdc_log_prepare(&report, length + 8192u);
+	if (!rc)
 		rc = msdc_log_commit(&report, text, length);
-		fb_puthex("  pass2 rc ", (unsigned long)(unsigned)rc, CLR_WHITE);
-		if (!rc)
-			fb_puts("  final log on medium\n", CLR_GREEN);
-	}
+	fb_puthex("  pass2 rc ", (unsigned long)(unsigned)rc, CLR_WHITE);
+	if (!rc)
+		fb_puts("  final log on medium\n", CLR_GREEN);
 }
 #endif /* MSDC_LOG */
 

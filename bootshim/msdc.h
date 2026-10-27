@@ -66,8 +66,12 @@ struct msdc_report {
 	uint32_t flashinfo_sectors;
 	uint32_t target_lba;		/* where the log header goes             */
 
-	int      erased_ok;		/* target sector read back as 0xff       */
-	int      reused;		/* target already holds one of our logs  */
+	int      erased_ok;		/* chosen slot read back as 0xff         */
+	int      reused;		/* chosen slot already holds one of ours */
+	uint32_t scan_count;		/* candidates examined                   */
+	uint32_t probe_hex[4];		/* first 16 bytes at the first candidate */
+	uint32_t probe_nonff;		/* non-0xff bytes in that first sector   */
+	uint32_t span_bytes;		/* space reserved for the text           */
 	int      write_rc;		/* text slots                            */
 	int      verify_rc;		/* read-back comparison                  */
 	int      header_rc;		/* header sector                         */
@@ -92,7 +96,7 @@ int msdc_log_run(struct msdc_report *report, const char *text, uint32_t length);
  * "the target sector is erased", the caller prints that report, and commit()
  * then writes the captured text (which now includes the report).
  */
-int msdc_log_prepare(struct msdc_report *report);
+int msdc_log_prepare(struct msdc_report *report, uint32_t span_bytes);
 int msdc_log_commit(struct msdc_report *report, const char *text,
 		    uint32_t length);
 
