@@ -1425,7 +1425,7 @@ index e44008f..963b955 100644
  consdebug_putc(char c)
  {
 diff --git a/osfmk/kern/startup.c b/osfmk/kern/startup.c
-index bec97fb..a76cd99 100644
+index bec97fb..bde87a1 100644
 --- a/osfmk/kern/startup.c
 +++ b/osfmk/kern/startup.c
 @@ -221,6 +221,12 @@ TUNABLE(startup_debug_t, startup_debug, "startup_debug", 0);
@@ -1454,7 +1454,21 @@ index bec97fb..a76cd99 100644
  	if ((startup_debug & STARTUP_DEBUG_VERBOSE) &&
  	    startup_phase >= STARTUP_SUB_KPRINTF) {
  		kprintf("kernel_bootstrap_thread: %s\n", message);
-@@ -734,7 +746,12 @@ kernel_bootstrap_thread(void)
+@@ -391,6 +403,13 @@ event_register_handler(struct event_hdr *hdr)
+ 	head->next = hdr;
+ }
+ 
++#if defined(DANDELION)
++extern void dandelion_trace_mark(const char *);
++#define DL_MARK(s)  dandelion_trace_mark("[step] " s "\n")
++#else
++#define DL_MARK(s)  do { } while (0)
++#endif
++
+ __startup_func
+ void
+ kernel_startup_initialize_upto(startup_subsystem_id_t upto)
+@@ -734,7 +753,12 @@ kernel_bootstrap_thread(void)
  	csm_initialize_provisioning_profiles();
  #endif
  
@@ -1468,3 +1482,27 @@ index bec97fb..a76cd99 100644
  	kernel_bootstrap_log("trust_cache_init");
  
  	/* Initialize the runtime for the trust cache interface */
+@@ -753,11 +777,15 @@ kernel_bootstrap_thread(void)
+ 	 * the static KVA mappings used for the jettisoned bootstrap segments.
+ 	 */
+ 	kernel_bootstrap_log("OSKextRemoveKextBootstrap");
++	DL_MARK("oskext remove: enter");
+ 	OSKextRemoveKextBootstrap();
++	DL_MARK("oskext remove: done");
+ 
+ 	/* No changes to kernel text and rodata beyond this point. */
+ 	kernel_bootstrap_log("machine_lockdown");
++	DL_MARK("machine_lockdown: enter");
+ 	machine_lockdown();
++	DL_MARK("machine_lockdown: done");
+ 
+ #ifdef CONFIG_XNUPOST
+ 	kern_return_t result = kernel_list_tests();
+@@ -786,6 +814,7 @@ kernel_bootstrap_thread(void)
+ 	/*
+ 	 *	Start the user bootstrap.
+ 	 */
++	DL_MARK("bsd_init: enter");
+ #ifdef  MACH_BSD
+ 	bsd_init();
+ #endif
