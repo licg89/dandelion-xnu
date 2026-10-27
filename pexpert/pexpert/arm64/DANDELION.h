@@ -125,6 +125,17 @@
 #define DANDELION_CPUS_PER_CLUSTER 4
 
 /*
+ * Compile the polled-PIO eMMC console (pexpert/arm/pe_serial.c,
+ * patches/xnu/native-emmc-serial.patch).
+ *
+ * This board has no debug UART, so the kernel console has to go somewhere that
+ * survives a panic.  The driver stays inactive unless the device tree carries an
+ * "emmc-log" node, so enabling it here costs nothing at runtime and keeps the
+ * code compile-tested; it is also the transport the UniXNU port will use.
+ */
+#define XNU_EMMC_SERIAL           1
+
+/*
  * eMMC log channel.
  *
  * The panel and the ramoops ring both die with the machine, and this kernel
