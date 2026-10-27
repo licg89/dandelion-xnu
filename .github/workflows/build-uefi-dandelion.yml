@@ -1,0 +1,61 @@
+name: build-uefi-dandelion
+
+# EDK2 for the Redmi 9A (MT6762G).  Runs on a Linux runner on purpose: building
+# this tree from the Windows mount in WSL stalls in Mu's "Init Self Describing
+# Environment" step, because that phase walks the whole tree and 9p is far too
+# slow for it.  A native filesystem plus a warm cache fixes it.
+on:
+  push:
+    paths:
+      - 'Silicon/MediaTek/MT6765Pkg/**'
+      - 'Platforms/Xiaomi/dandelionPkg/**'
+      - 'Resources/Configs/dandelion.toml'
+      - '.github/workflows/build-uefi-dandelion.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3 python3-pip python3-venv uuid-dev iasl \
+            gcc-aarch64-linux-gnu build-essential git mono-complete
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r pip-requirements.txt
+
+      - name: Disable the x86 NASM external dependency
+        # mu_nasm is the x86 assembler package; an aarch64-only build never
+        # invokes it and the feed is not reachable from CI.
+        run: |
+          F=Mu_Basecore/BaseTools/Bin/nasm_ext_dep.yaml
+          if [ -f "$F" ]; then
+            sed -i 's/"scope": "edk2-build"/"scope": "edk2-build-disabled-dandelion"/' "$F"
+            grep -n scope "$F"
+          fi
+
+      - name: Fetch external dependencies
+        run: stuart_update -c Platforms/Xiaomi/dandelionPkg/DeviceBuild.py
+        continue-on-error: true
+
+      - name: Build
+        run: python3 build_uefi.py -d dandelion -m 0 -r DEBUG -c
+
+      - name: Collect firmware
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dandelion-fd
+          path: |
+            Build/**/FV/*.fd
+            Build/**/BUILDLOG_*.txt
+          if-no-files-found: warn
