@@ -1,8 +1,8 @@
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
-index 3ad743f..7b39357 100644
+index 3ad743f..b4cad4e 100644
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
-@@ -1,177 +1,156 @@
+@@ -1,177 +1,172 @@
  /*
   * Copyright (c) 2021 Apple Inc. All rights reserved.
 + *
@@ -158,10 +158,24 @@ index 3ad743f..7b39357 100644
 -		if (error != kSuccess) {
 -			panic("%s: cannot find GIC MMIO regions in DT", __func__);
 -		}
- 
+-
 -		// Need at least GICD base, GICD size, GICR base and GICR size
 -		if (prop_size < 4 * sizeof(uint64_t)) {
 -			panic("%s: incorrect reg property size in GIC DT node; expecting 32 bytes but got %u bytes", __func__, prop_size);
+-		}
+ 
+-		vm_offset_t soc_base_phys = pe_arm_get_soc_base_phys();
+-
+-		uint64_t const gicd_base_prop = ((uint64_t const *) prop)[0];
+-		uint64_t const gicd_size_prop = ((uint64_t const *) prop)[1];
+-		uint64_t const gicr_base_prop = ((uint64_t const *) prop)[2];
+-		uint64_t const gicr_size_prop = ((uint64_t const *) prop)[3];
+-
+-		// Find GICD base address
+-		gicd_base = ml_io_map(soc_base_phys + gicd_base_prop, gicd_size_prop);
+-
+-		if (!gicd_base) {
+-			panic("%s: cannot map GICD region", __func__);
 +	/*
 +	 * One-time CPU interface setup for this PE.  No MMIO: see the file
 +	 * comment.  The shim has already done the distributor/redistributor
@@ -182,30 +196,31 @@ index 3ad743f..7b39357 100644
 +			return;
  		}
  
--		vm_offset_t soc_base_phys = pe_arm_get_soc_base_phys();
--
--		uint64_t const gicd_base_prop = ((uint64_t const *) prop)[0];
--		uint64_t const gicd_size_prop = ((uint64_t const *) prop)[1];
--		uint64_t const gicr_base_prop = ((uint64_t const *) prop)[2];
--		uint64_t const gicr_size_prop = ((uint64_t const *) prop)[3];
--
--		// Find GICD base address
--		gicd_base = ml_io_map(soc_base_phys + gicd_base_prop, gicd_size_prop);
-+		dandelion_gic_group0 = 0;
-+		dandelion_gic_ready = 1;
-+		dandelion_gic_arch_rev = 3;
- 
--		if (!gicd_base) {
--			panic("%s: cannot map GICD region", __func__);
--		}
--
 -		// Find GICR base address
 -		gicr_base = ml_io_map(soc_base_phys + gicr_base_prop, gicr_size_prop);
 -
 -		if (!gicr_base) {
 -			panic("%s: cannot map GICR region", __func__);
--		}
--
++		dandelion_gic_group0 = 0;
++		dandelion_gic_ready = 1;
++		dandelion_gic_arch_rev = 3;
++
++		/*
++		 * Give the decrementer a real deadline.  arm_init() enables CNTV
++		 * (fiq_context_init) without ever writing TVAL, so the very first
++		 * tick is an already-expired interrupt - the interrupt arrives
++		 * before any handler is ready for it.  10 ms is the usual tick.
++		 */
++		{
++			uint64_t freq = __builtin_arm_rsr64("CNTFRQ_EL0");
++
++			if (freq == 0) {
++				freq = 13000000;
++			}
++			__builtin_arm_wsr64("CNTV_TVAL_EL0", freq / 100);
++			__builtin_arm_wsr64("CNTV_CTL_EL0", 1);
+ 		}
+ 
 -		gicr_size = gicr_size_prop;
 +		kprintf("DANDELION: icc ready (sre=%lx pmr=%lx ctlr=%lx), "
 +		    "timer INTID %u on Group1/IRQ\n",

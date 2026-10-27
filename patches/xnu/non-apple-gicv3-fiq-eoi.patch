@@ -1,8 +1,8 @@
 diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
-index c40c6ea..c59c5e2 100644
+index c40c6ea..73996c4 100644
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
-@@ -1857,7 +1857,60 @@ sleh_irq(arm_saved_state_t *state)
+@@ -1857,7 +1857,64 @@ sleh_irq(arm_saved_state_t *state)
  
  	sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_OTHER);
  
@@ -36,6 +36,10 @@ index c40c6ea..c59c5e2 100644
 +				uint64_t cntp_ctl = __builtin_arm_rsr64("CNTP_CTL_EL0");
 +
 +				decider_done = 1;
++				{
++					extern void dandelion_trace_mark(const char *);
++					dandelion_trace_mark("[irq1] first irq seen\n");
++				}
 +				/*
 +				 * The timers are deliberately left alone: the shim now
 +				 * disables INTID 30 before the handoff, so the level
@@ -64,7 +68,7 @@ index c40c6ea..c59c5e2 100644
  	PE_handle_ext_interrupt();
  #else
  	/* Run the registered interrupt handler. */
-@@ -1920,7 +1973,52 @@ sleh_fiq(arm_saved_state_t *state)
+@@ -1920,7 +1977,56 @@ sleh_fiq(arm_saved_state_t *state)
  
  	sleh_interrupt_handler_prologue(state, type);
  
@@ -88,6 +92,10 @@ index c40c6ea..c59c5e2 100644
 +				uint64_t cntp_ctl = __builtin_arm_rsr64("CNTP_CTL_EL0");
 +
 +				decider_done = 1;
++				{
++					extern void dandelion_trace_mark(const char *);
++					dandelion_trace_mark("[irq1] first irq seen\n");
++				}
 +				/*
 +				 * The timers are deliberately left alone: the shim now
 +				 * disables INTID 30 before the handoff, so the level
@@ -118,7 +126,7 @@ index c40c6ea..c59c5e2 100644
  	uint64_t iar = __builtin_arm_rsr64("ICC_IAR0_EL1");
  #endif
  
-@@ -1966,7 +2064,11 @@ sleh_fiq(arm_saved_state_t *state)
+@@ -1966,7 +2072,11 @@ sleh_fiq(arm_saved_state_t *state)
  		INTERRUPT_MASKED_DEBUG_END();
  	}
  
