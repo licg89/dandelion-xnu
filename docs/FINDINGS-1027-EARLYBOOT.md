@@ -92,3 +92,23 @@ spllo() 是启动序列里**第一次允许中断**的地方。所以死因不�
 一路推进到调度器启动（sched_startup）。之前「第一次开中断即静默死」= 中断风暴/活锁，
 不是异常入口崩溃。
 
+
+## 第五、六轮：屏蔽 vs 不屏蔽
+
+| 版本 | 结果 |
+|---|---|
+| 内核里屏蔽 CNTV/CNTP（PPI30 仍开） | 推进到 `sched_startup`，但没有 tick，调度器切不走 |
+| shim 关掉 PPI30 + 内核不再屏蔽 | **退回 `spllo next`**，第一次中断就死，且没有 `[irq1]` 诊断行 |
+
+结论：
+
+1. 屏蔽 = 能走但没有 tick；不屏蔽 = 第一个中断就死。说明**中断处理路径本身在真中断到来时有问题**。
+2. 关掉 PPI30 并未解决 —— 说明进来的不是 30，而更可能是 **27（CNTV）**，而它在 handler 里的 dispatch/rtclock 路径上炸掉。
+3. 关键缺口：**没有给 CNTV 设过 TVAL**（`arm_init` 打开却没设），所以进来的是「立刻到期的过期中断」。
+
+下一步（明确）：
+
+- 在 `pe_init_fiq()` 里给 CNTV 一个真实 deadline：`CNTV_TVAL_EL0 = freq/100`（10 ms）并 `CNTV_CTL_EL0 = 1`，再补 setPop；
+- 保留 `[irq1]` 打印并同时写 trace mark（kprintf 可能来不及落盘）；
+- 若仍死，把 `rtclock_intr` 的入口单独打点，区分「没进 handler」和「进了但 dispatch 崩」。
+
