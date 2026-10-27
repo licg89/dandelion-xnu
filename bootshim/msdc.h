@@ -64,6 +64,8 @@ struct msdc_report {
 	uint32_t gpt_entries;		/* entries the header claims             */
 	uint32_t flashinfo_lba;		/* partition start as found/located      */
 	uint32_t flashinfo_sectors;
+	uint32_t alt_gpt_lba;		/* backup GPT header, last sector        */
+	int      alt_gpt_ok;		/* it read back with its signature       */
 	uint32_t target_lba;		/* where the log header goes             */
 
 	int      erased_ok;		/* chosen slot read back as 0xff         */
@@ -72,6 +74,7 @@ struct msdc_report {
 	uint32_t probe_hex[4];		/* first 16 bytes at the first candidate */
 	uint32_t probe_nonff;		/* non-0xff bytes in that first sector   */
 	uint32_t span_bytes;		/* space reserved for the text           */
+	uint32_t slot_pattern;		/* 0xff or 0x00: what the slot held      */
 	int      write_rc;		/* text slots                            */
 	int      verify_rc;		/* read-back comparison                  */
 	int      header_rc;		/* header sector                         */

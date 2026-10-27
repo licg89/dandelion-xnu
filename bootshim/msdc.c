@@ -805,7 +805,7 @@ get_le32(const uint8_t *p)
 
 static int
 gpt_find(const char *name, uint32_t *lba_out, uint32_t *sectors_out,
-	 uint32_t *entries_seen)
+	 uint32_t *entries_seen, uint64_t *alternate_out)
 {
 	static uint8_t header[512] __attribute__((aligned(8)));
 	static uint8_t table[16384] __attribute__((aligned(8)));
@@ -819,6 +819,7 @@ gpt_find(const char *name, uint32_t *lba_out, uint32_t *sectors_out,
 	if (!same_bytes(header, "EFI PART", 8))
 		return MSDC_ENOPART;
 
+	*alternate_out = get_le64(header + 32);
 	entries_lba = get_le64(header + 72);
 	count = get_le32(header + 80);
 	size = get_le32(header + 84);
@@ -859,34 +860,51 @@ gpt_find(const char *name, uint32_t *lba_out, uint32_t *sectors_out,
  */
 static uint8_t msdc_bounce[BOUNCE_BYTES] __attribute__((aligned(8)));
 
-/* Is [lba, lba+sectors) entirely erased?  Checked in 4 KiB reads. */
+/*
+ * Is [lba, lba+sectors) free space?
+ *
+ * Two patterns count: all 0xff (never programmed) and all 0x00 (a partition
+ * that was zeroed once and never used since - which is what flashinfo on this
+ * device turned out to look like, despite the earlier note claiming 0xff).
+ * Anything else is somebody's data and the scan moves on.
+ */
 static int
-span_is_blank(uint32_t lba, uint32_t sectors)
+span_is_free(uint32_t lba, uint32_t sectors, uint32_t *pattern)
 {
+	uint32_t seen = 0;
+
 	while (sectors) {
 		uint32_t chunk = sectors > (BOUNCE_BYTES / 512) ?
 				 (BOUNCE_BYTES / 512) : sectors;
 		uint32_t bytes = chunk << 9;
+		int all_ff = 1, all_00 = 1;
 
 		if (msdc_read_sectors(lba, msdc_bounce, bytes))
 			return 0;
-		for (uint32_t i = 0; i < bytes; i++)
+		for (uint32_t i = 0; i < bytes; i++) {
 			if (msdc_bounce[i] != 0xFFu)
+				all_ff = 0;
+			if (msdc_bounce[i] != 0x00u)
+				all_00 = 0;
+			if (!all_ff && !all_00)
 				return 0;
+		}
+		seen = all_ff ? 0xFFu : 0x00u;
 		lba += chunk;
 		sectors -= chunk;
 	}
+	if (pattern)
+		*pattern = seen;
 	return 1;
 }
 
 /*
  * Find a place to put the log.
  *
- * The first test boot proved that flashinfo is not blank past its vendor
- * header (the sector at +1 MiB held real data), so scan for a blank run
- * instead of assuming one.  Candidates are examined one sector per 64 KiB so
- * the scan costs a few hundred small reads; the full span is only read when a
- * candidate looks empty.
+ * The first test boots proved that flashinfo is not erased past its vendor
+ * header, so scan for a free run instead of assuming one.  Candidates are
+ * examined one sector per 64 KiB so the scan costs a few hundred small reads;
+ * the full span is only read when a candidate looks free.
  *
  * A slot that already carries one of our headers is reused as-is, which keeps
  * the boot counter counting up instead of starting over.
@@ -903,7 +921,7 @@ find_slot(struct msdc_report *r, uint32_t part_lba, uint32_t part_sectors,
 	     offset += MSDC_SCAN_STEP, probes++) {
 		uint32_t lba = part_lba + offset;
 		static uint8_t probe[512] __attribute__((aligned(8)));
-		int blank = 1;
+		uint32_t pattern = 0;
 
 		r->scan_count = probes + 1;
 		if (msdc_read_sectors(lba, probe, 512))
@@ -926,20 +944,12 @@ find_slot(struct msdc_report *r, uint32_t part_lba, uint32_t part_sectors,
 			return MSDC_OK;
 		}
 
-		for (unsigned i = 0; i < sizeof(probe); i++) {
-			if (probe[i] != 0xFFu) {
-				blank = 0;
-				break;
-			}
-		}
-		if (!blank)
+		if (!span_is_free(lba, need, &pattern))
 			continue;
 
-		if (!span_is_blank(lba, need))
-			continue;
-
-		r->erased_ok = 1;
+		r->erased_ok = pattern == 0xFFu;
 		r->reused = 0;
+		r->slot_pattern = pattern;
 		*out_lba = lba;
 		return MSDC_OK;
 	}
@@ -1042,9 +1052,32 @@ msdc_log_prepare(struct msdc_report *r, uint32_t span_bytes)
 
 	/* Locate the partition.  The GPT is authoritative; the measured LBA is
 	 * only a fallback for a partition table we cannot parse. */
-	r->gpt_rc = gpt_find("flashinfo", &flashinfo_lba, &flashinfo_sectors,
-			     &r->gpt_entries);
-	r->gpt_found = r->gpt_rc == MSDC_OK;
+	{
+		uint64_t alternate = 0;
+
+		r->gpt_rc = gpt_find("flashinfo", &flashinfo_lba,
+				     &flashinfo_sectors, &r->gpt_entries,
+				     &alternate);
+		r->gpt_found = r->gpt_rc == MSDC_OK;
+
+		/*
+		 * Sanity check on high-LBA reads: the backup GPT header lives
+		 * in the last sector of the disk.  If it reads back with its
+		 * signature intact then a sector near LBA 122 million is
+		 * genuinely readable, which is what makes "the bytes at
+		 * flashinfo+1MiB really are zero" a fact rather than a guess
+		 * about a broken address path.
+		 */
+		if (alternate) {
+			static uint8_t backup[512] __attribute__((aligned(8)));
+
+			r->alt_gpt_lba = (uint32_t)alternate;
+			r->alt_gpt_ok =
+				msdc_read_sectors((uint32_t)alternate, backup,
+						  512) == MSDC_OK &&
+				same_bytes(backup, "EFI PART", 8);
+		}
+	}
 	if (!r->gpt_found) {
 		flashinfo_lba = MSDC_FALLBACK_LBA;
 		flashinfo_sectors = MSDC_FALLBACK_SECTORS;
@@ -1248,12 +1281,23 @@ msdc_report_print(const struct msdc_report *r)
 	out(r->gpt_found ? " (gpt)" : " (fallback)", CLR_WHITE);
 	fb_newline();
 
+	field_hex("alt gpt lba", r->alt_gpt_lba);
+	out("  backup hdr  ", CLR_CYAN);
+	out(r->alt_gpt_ok ? "EFI PART ok" : "UNREADABLE",
+	    r->alt_gpt_ok ? CLR_GREEN : CLR_RED);
+	fb_newline();
+
 	out("  log lba     ", CLR_CYAN);
 	outdec(r->target_lba);
-	out("  erased ", CLR_CYAN);
-	out(r->erased_ok ? "yes" : "no", r->erased_ok ? CLR_GREEN : CLR_YELLOW);
-	out("  reused ", CLR_CYAN);
-	out(r->reused ? "yes" : "no", CLR_WHITE);
+	out("  slot ", CLR_CYAN);
+	if (r->reused)
+		out("reused", CLR_WHITE);
+	else if (r->slot_pattern == 0xFFu)
+		out("0xff", CLR_GREEN);
+	else if (r->slot_pattern == 0x00u)
+		out("0x00", CLR_GREEN);
+	else
+		out("none", CLR_RED);
 	fb_newline();
 
 	field_dec("scan probes ", r->scan_count);
