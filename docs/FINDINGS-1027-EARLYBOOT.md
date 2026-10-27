@@ -38,3 +38,15 @@ python tools/read_log_block.py klog.bin --scan
 1. 在 `early_boot` 之后继续加打点，定位新的死点（`kernel_bootstrap()` 里
    `kernel_startup_initialize_upto(STARTUP_SUB_EARLY_BOOT)` 之后的语句）
 2. UEFI 线 M1 并行推进（`docs/UEFI-MT6765PKG-DERIVATION.md`）
+
+## 第二轮（三打点）结果：死点在 spllo() 内部
+
+```n[step] early_boot phase returned
+[step] early_boot: spllo next      <-- 到此为止，没有 spllo returned
+```
+
+spllo() 是启动序列里**第一次允许中断**的地方。所以死因不是栈、不是 phase 返回，
+而是**开中断后立刻发生的异常入口**（有待中断的 IRQ/FIQ，而向量或处理路径尚未就绪）。
+
+下一步：把 spllo() 临时改成不解除屏蔽（或先清 DAIF 前检查 VBAR_EL1/IAR），确认死点是否随之后移。
+
