@@ -1457,7 +1457,7 @@ index e44008f..6987219 100644
  consdebug_putc(char c)
  {
 diff --git a/osfmk/kern/startup.c b/osfmk/kern/startup.c
-index bec97fb..a12e94a 100644
+index bec97fb..d0ca558 100644
 --- a/osfmk/kern/startup.c
 +++ b/osfmk/kern/startup.c
 @@ -221,6 +221,12 @@ TUNABLE(startup_debug_t, startup_debug, "startup_debug", 0);
@@ -1547,7 +1547,7 @@ index bec97fb..a12e94a 100644
  #endif
 +	DL_MARK("early_boot: spllo next");
 +/* Experiment switch: 1 = keep interrupts masked at this point, 0 = normal. */
-+#define DANDELION_HOLD_INTERRUPTS 1
++#define DANDELION_HOLD_INTERRUPTS 0
 +#if DANDELION_HOLD_INTERRUPTS
 +	/* One-shot experiment: stay masked and see whether the boot moves on. */
 +	DL_MARK("early_boot: spllo SKIPPED (DANDELION_HOLD_INTERRUPTS)");
