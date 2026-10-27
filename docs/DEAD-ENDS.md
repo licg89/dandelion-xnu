@@ -49,8 +49,19 @@
 - **PHY 基址也错**：是 `0x11CC0800`（`USBSIF_BASE + 0x800`），不是 `0x11CC0000`。
   之前"PHY 寄存器全读 0"就是这个原因。
 
-## 8. 认定"开源 XNU 进不了系统"的说法要修正
-- 准确说法：**只用开源 XNU 源码**这条路进不了用户态（缺 APFS/HFS+ 与整个用户态）。
-- UniXNU/mouseos 那种"跑到某些阶段"是靠 Apple IPSW 的闭源 kext 与用户态，
-  工程量是另一个量级（UniXNU 在 MT6765 上也写着 no UART, blocked；
-  mouseos 三个仓库 README 首行都是 "watchdog-reboots; a working OS is not available"）。
+## 8. 认定「开源 XNU 进不了系统」的说法要修正（2026-10-27 更正）
+
+**本条之前的内容有误，已重写。**
+
+- UniXNU **确实在非 Apple ARM64 硬件上启动真正的 iOS**：用户态来自目标 IPSW 的
+  OS / SystemOS 镜像。mouseos/UniXNU-a04br3（MT8167 平板）README 原文：
+  “The hardware **reaches the iPadOS home screen** with four CPUs, eMMC DMA and the
+  CPU framebuffer renderer.”
+- 但那条路径**不是本仓库现在走的这条**。mouseos 早期也做过 boot shim 直启 XNU，
+  三个仓库自我标注为 “Experimental; **watchdog boot loop, OS boot incomplete**”，
+  现在只作为「MT8167 寄存器数值的参考资料」列在 Credits 里。
+- 可用路径是 UniXNU 的六层栈：
+  BootShim -> UEFI(Mu-Silicium fork) -> UniXNU.efi -> DarwinBoot -> XNU + 原版 kext -> IPSW 用户态。
+  **dandelion 缺的是第 2 层（UEFI）**，不是内核补丁。
+- 结论修正：**只做「boot shim + 开源 XNU」到不了用户态**（同一作者在同类硬件上验证过，
+  走不通）；要到 iOS 必须补 UEFI 这一层。见 docs/UEFI-DANDELION-PLAN.md。
