@@ -200,6 +200,80 @@ walk_redistributors(struct gic_probe_result *r)
 }
 
 /*
+ * E0.1 of docs/R1-GIC-PLAN.md.
+ *
+ * Android proves that a non-secure kernel on this SoC does receive the timer
+ * PPI on CPU0, at this very redistributor address, so the hardware is fine and
+ * the earlier "firmware wall" reading was wrong.  This dumps the raw state of
+ * the boot CPU's PPI frame, tests whether IGROUPR0 is writable at all, forces
+ * both timer PPIs pending and looks at the CPU interface again.  Whatever is
+ * wrong has to show up in one of these numbers.
+ */
+static void
+redist_self_test(unsigned long self)
+{
+	unsigned long before, want, after, hppir;
+
+	if (self == 0) {
+		return;
+	}
+
+	out("  e01 typer64 ", CLR_CYAN);
+	outhex(dgic_read64(self, DGICR_TYPER));
+	out(" lo ", CLR_CYAN);
+	outhex(dgic_read32(self, DGICR_TYPER));
+	out(" hi ", CLR_CYAN);
+	outhex(dgic_read32(self, DGICR_TYPER + 4));
+	fb_newline();
+
+	out("  e01 igroupr0 ", CLR_CYAN);
+	outhex(dgic_read32(self, DGICR_IGROUPR0));
+	out(" isenabler0 ", CLR_CYAN);
+	outhex(dgic_read32(self, DGICR_ISENABLER0));
+	out(" ispender0 ", CLR_CYAN);
+	outhex(dgic_read32(self, DGICR_ISPENDR0));
+	fb_newline();
+
+	out("  e01 ipriority ", CLR_CYAN);
+	outhex(dgic_read32(self, DGICR_IPRIORITYR));
+	out(" icfgr1 ", CLR_CYAN);
+	outhex(dgic_read32(self, DGICR_ICFGR1));
+	out(" waker ", CLR_CYAN);
+	outhex(dgic_read32(self, DGICR_WAKER));
+	fb_newline();
+
+	/* Is the group assignment writable from non-secure at all? */
+	before = dgic_read32(self, DGICR_IGROUPR0);
+	want = before | (1ul << 30) | (1ul << 27);
+	dgic_write32(self, DGICR_IGROUPR0, want);
+	after = dgic_read32(self, DGICR_IGROUPR0);
+	out("  e01 igroupr w ", CLR_CYAN);
+	outhex(want);
+	out(" r ", CLR_CYAN);
+	outhex(after);
+	out((after & ((1ul << 30) | (1ul << 27))) != 0 ?
+	    "  group1 bits stuck" : "  group1 bits DROPPED",
+	    (after & ((1ul << 30) | (1ul << 27))) != 0 ? CLR_GREEN : CLR_RED);
+	fb_newline();
+
+	/* Force both timer PPIs pending, then ask the CPU interface again. */
+	dgic_write32(self, DGICR_ISENABLER0, (1ul << 30) | (1ul << 27));
+	dgic_write32(self, DGICR_ISPENDR0, (1ul << 30) | (1ul << 27));
+	dgic_isb();
+
+	out("  e01 after enable  isenabler0 ", CLR_CYAN);
+	outhex(dgic_read32(self, DGICR_ISENABLER0));
+	out(" ispender0 ", CLR_CYAN);
+	outhex(dgic_read32(self, DGICR_ISPENDR0));
+	fb_newline();
+
+	__asm__ volatile("mrs %0, icc_hppir1_el1" : "=r"(hppir));
+	out("  e01 hppir1 ", CLR_CYAN);
+	outhex(hppir);
+	fb_newline();
+}
+
+/*
  * Send ourselves an SGI and see whether it reaches the CPU interface.  This
  * separates the two halves of the path: if an SGI arrives but the timer PPI
  * does not, the distributor and CPU interface are fine and the problem is on
@@ -472,6 +546,7 @@ gic_probe_run(const struct fdt_platform *platform, struct gic_probe_result *r)
 	if (r->gic.mode == DGIC_MODE_V3) {
 		r->self_redist = dgic_find_redist(&r->gic);
 		field_hex("self redist", r->self_redist);
+		redist_self_test(r->self_redist);
 	}
 
 	/*
