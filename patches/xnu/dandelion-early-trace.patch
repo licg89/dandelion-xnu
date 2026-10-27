@@ -461,10 +461,10 @@ index 0a00656..aa4c197 100644
  	iotrace_disable();
  
 diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
-index e44008f..c3a12c6 100644
+index e44008f..7ef5758 100644
 --- a/osfmk/kern/printf.c
 +++ b/osfmk/kern/printf.c
-@@ -908,6 +908,877 @@ vprintf(const char *fmt, va_list ap)
+@@ -908,6 +908,880 @@ vprintf(const char *fmt, va_list ap)
  	return vprintf_internal(fmt, ap, __builtin_return_address(0));
  }
  
@@ -772,10 +772,6 @@ index e44008f..c3a12c6 100644
 +    (volatile unsigned char *)DANDELION_TRACE_PA;
 +static volatile unsigned int dandelion_trace_len;
 +
-+/* Defined with the eMMC channel below; used here so that the very first
-+ * checkpoint brings it up, long before any printf output exists. */
-+void dandelion_emmc_putc(char c);
-+
 +void
 +dandelion_trace_attach(void)
 +{
@@ -847,12 +843,6 @@ index e44008f..c3a12c6 100644
 +
 +		dandelion_trace_putc(c);
 +		dandelion_fb_putc(c);
-+		/*
-+		 * Checkpoints are the only output that exists during arm_init,
-+		 * so they are also what starts the eMMC channel: the first one
-+		 * brings it up and every later one streams.
-+		 */
-+		dandelion_emmc_putc(c);
 +	}
 +}
 +
@@ -1231,20 +1221,10 @@ index e44008f..c3a12c6 100644
 +dandelion_emmc_putc(char c)
 +{
 +	if (!dl_emmc_ready) {
-+		/*
-+		 * First character after the MMU came on: bring the channel up
-+		 * now, so everything from here on reaches the medium.
-+		 */
-+		if (!dl_emmc_tried) {
-+			dandelion_emmc_enable();
++		if (dl_emmc_ring_len < sizeof(dl_emmc_ring)) {
++			dl_emmc_ring[dl_emmc_ring_len++] = (unsigned char)c;
 +		}
-+		if (!dl_emmc_ready) {
-+			if (dl_emmc_ring_len < sizeof(dl_emmc_ring)) {
-+				dl_emmc_ring[dl_emmc_ring_len++] =
-+				    (unsigned char)c;
-+			}
-+			return;
-+		}
++		return;
 +	}
 +	if (dl_emmc_failed) {
 +		return;
@@ -1285,19 +1265,39 @@ index e44008f..c3a12c6 100644
 +	 * Both the hand-off record and the controller are reached through the
 +	 * V=P bootstrap map that start.s builds and arm_vm_init keeps
 +	 * (DANDELION_KEEP_IDENTITY_MAP), so neither phystokv() nor ml_io_map()
-+	 * is involved: this runs from the very first console character, long
-+	 * before the VM exists.
++	 * is involved.
 +	 */
 +	handoff = (struct dandelion_emmc_handoff *)DANDELION_EMMC_HANDOFF_PA;
++
++	/*
++	 * Report on the panel as well as the log: this runs at the end of
++	 * arm_vm_init, which is early enough that a failure here is only ever
++	 * visible on screen.
++	 */
++	printf("eMMC log: handoff magic 0x%x ok %u lba 0x%x sectors %u\n",
++	    handoff->magic, handoff->ok, handoff->lba, handoff->sectors);
++
 +	if (handoff->magic != DANDELION_EMMC_HANDOFF_MAGIC ||
 +	    handoff->ok != 1 || handoff->sectors < 2) {
++		printf("eMMC log: bad handoff, channel disabled\n");
 +		dl_emmc_failed = 1;
 +		return;
 +	}
 +
 +	dl_emmc_reg = (volatile unsigned int *)DANDELION_MSDC_VA;
++	printf("eMMC log: MSDC version 0x%x cfg 0x%x\n",
++	    dl_emmc_rd(0x114), dl_emmc_rd(DL_MSDC_CFG));
++
++	/* 0x20170426 is what the shim reads; anything else means the block
++	 * mapping does not point at MSDC0 and must not be written through. */
++	if (dl_emmc_rd(0x114) != 0x20170426u) {
++		printf("eMMC log: MSDC not where it should be, channel disabled\n");
++		dl_emmc_failed = 1;
++		return;
++	}
 +
 +	if ((dl_emmc_rd(DL_MSDC_CFG) & DL_CFG_CKSTB) == 0) {
++		printf("eMMC log: no MSDC clock, channel disabled\n");
 +		dl_emmc_failed = 1;
 +		return;
 +	}
@@ -1323,6 +1323,9 @@ index e44008f..c3a12c6 100644
 +	}
 +	dl_emmc_ring_len = 0;
 +	dl_emmc_write_header();
++
++	printf("eMMC log: streaming to lba 0x%x (%u sectors)\n",
++	    dl_emmc_lba, dl_emmc_sectors);
 +}
 +
 +/*
