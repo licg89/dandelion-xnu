@@ -1,61 +1,96 @@
 name: build-uefi-dandelion
 
-# EDK2 for the Redmi 9A (MT6762G).  Runs on a Linux runner on purpose: building
-# this tree from the Windows mount in WSL stalls in Mu's "Init Self Describing
-# Environment" step, because that phase walks the whole tree and 9p is far too
-# slow for it.  A native filesystem plus a warm cache fixes it.
+# EDK2 firmware for the Redmi 9A (MT6762G).
+#
+# Two reasons this runs on a Linux runner rather than locally:
+#   - building from the Windows mount inside WSL (/mnt/...) stalls in Mu's
+#     "Init Self Describing Environment" step, which walks the whole tree and
+#     9p is far too slow for that;
+#   - the submodules must be a real git checkout, not an extracted zip, or
+#     stuart cannot build its workspace (MdePkg.dec(33) "not found in
+#     workspace").
+#
+# The EDK2 base is an external fork, so the job clones it with submodules and
+# then overlays the packages that live in *this* repository.
 on:
   push:
     paths:
       - 'Silicon/MediaTek/MT6765Pkg/**'
       - 'Platforms/Xiaomi/dandelionPkg/**'
-      - 'Resources/Configs/dandelion.toml'
+      - 'Resources/**'
       - '.github/workflows/build-uefi-dandelion.yml'
   workflow_dispatch:
+
+env:
+  UEFI_REPO: https://github.com/mouseos/uefi-a04br3.git
+  WORK: ${{ github.workspace }}/uefi
 
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
-      - name: Checkout
+      - name: Checkout our packages
         uses: actions/checkout@v4
         with:
-          submodules: recursive
-          fetch-depth: 1
+          path: dandelion-xnu
 
       - name: Toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             python3 python3-pip python3-venv uuid-dev iasl \
-            gcc-aarch64-linux-gnu build-essential git mono-complete
+            gcc-aarch64-linux-gnu build-essential git
           python3 -m pip install --upgrade pip
+
+      - name: Clone the EDK2 base with submodules
+        run: |
+          git clone --recursive --depth 1 "$UEFI_REPO" "$WORK"
+          ls "$WORK" | head -20
+          test -f "$WORK/Mu_Basecore/MdePkg/MdePkg.dec" && echo "MdePkg present"
+
+      - name: Install the Mu python requirements
+        run: |
+          cd "$WORK"
           python3 -m pip install -r pip-requirements.txt
 
-      - name: Disable the x86 NASM external dependency
-        # mu_nasm is the x86 assembler package; an aarch64-only build never
-        # invokes it and the feed is not reachable from CI.
+      - name: Overlay our packages
         run: |
-          F=Mu_Basecore/BaseTools/Bin/nasm_ext_dep.yaml
+          set -e
+          mkdir -p "$WORK/Silicon/MediaTek" "$WORK/Platforms/Xiaomi" "$WORK/Resources/Configs" "$WORK/Resources/DTBs"
+          rm -rf "$WORK/Silicon/MediaTek/MT6765Pkg" "$WORK/Platforms/Xiaomi/dandelionPkg"
+          cp -r dandelion-xnu/Silicon/MediaTek/MT6765Pkg "$WORK/Silicon/MediaTek/"
+          cp -r dandelion-xnu/Platforms/Xiaomi/dandelionPkg "$WORK/Platforms/Xiaomi/"
+          cp -f dandelion-xnu/Resources/Configs/dandelion.toml "$WORK/Resources/Configs/"
+          cp -f dandelion-xnu/Resources/DTBs/dandelion.dtb "$WORK/Resources/DTBs/"
+          echo "MT6765Pkg: $(find "$WORK/Silicon/MediaTek/MT6765Pkg" -type f | wc -l) files"
+          echo "dandelionPkg: $(find "$WORK/Platforms/Xiaomi/dandelionPkg" -type f | wc -l) files"
+
+      - name: Disable the x86 NASM external dependency
+        # mu_nasm packages the x86 assembler; an aarch64-only build never runs
+        # it, and the feed is not reachable from CI.
+        run: |
+          F="$WORK/Mu_Basecore/BaseTools/Bin/nasm_ext_dep.yaml"
           if [ -f "$F" ]; then
             sed -i 's/"scope": "edk2-build"/"scope": "edk2-build-disabled-dandelion"/' "$F"
             grep -n scope "$F"
           fi
 
       - name: Fetch external dependencies
+        working-directory: ${{ env.WORK }}
         run: stuart_update -c Platforms/Xiaomi/dandelionPkg/DeviceBuild.py
         continue-on-error: true
 
       - name: Build
+        working-directory: ${{ env.WORK }}
         run: python3 build_uefi.py -d dandelion -m 0 -r DEBUG -c
 
-      - name: Collect firmware
+      - name: Collect firmware and logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dandelion-fd
           path: |
-            Build/**/FV/*.fd
-            Build/**/BUILDLOG_*.txt
+            uefi/Build/**/FV/*.fd
+            uefi/Build/BUILDLOG_*.txt
           if-no-files-found: warn
