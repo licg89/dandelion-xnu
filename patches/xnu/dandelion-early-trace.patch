@@ -468,10 +468,10 @@ index 0a00656..aa4c197 100644
  	iotrace_disable();
  
 diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
-index e44008f..6a72457 100644
+index e44008f..23babf5 100644
 --- a/osfmk/kern/printf.c
 +++ b/osfmk/kern/printf.c
-@@ -908,6 +908,891 @@ vprintf(const char *fmt, va_list ap)
+@@ -908,6 +908,918 @@ vprintf(const char *fmt, va_list ap)
  	return vprintf_internal(fmt, ap, __builtin_return_address(0));
  }
  
@@ -1207,10 +1207,30 @@ index e44008f..6a72457 100644
 +	(void)dl_emmc_write_block(dl_emmc_lba, header);
 +}
 +
++/*
++ * Recover from a failed transfer.
++ *
++ * A single-block write that fails leaves the card in the receive state, where
++ * every later command is answered with ILLEGAL_COMMAND.  A CMD12 followed by
++ * CMD13 is the documented way out, and without it one transient error would
++ * silence the log for the rest of the boot.
++ */
++static void
++dl_emmc_recover(void)
++{
++	uint32_t response = 0;
++
++	(void)dl_emmc_cmd(0x0000438Cu /* CMD12, R1b + stop */, 0, &response, 250);
++	dl_emmc_wr(DL_MSDC_INT, 0xFFFFFFFFu);
++	(void)dl_emmc_fifo_clear();
++	(void)dl_emmc_wait_ready(1000);
++}
++
 +static void
 +dl_emmc_flush_sector(void)
 +{
 +	unsigned int i;
++	int attempt;
 +
 +	if (dl_emmc_failed) {
 +		return;
@@ -1223,9 +1243,16 @@ index e44008f..6a72457 100644
 +	for (i = dl_emmc_used; i < DL_EMMC_SECTOR; i++) {
 +		dl_emmc_sector[i] = 0;
 +	}
-+	dl_emmc_clean(dl_emmc_sector, DL_EMMC_SECTOR);
-+	if (dl_emmc_write_block(dl_emmc_lba + 1 + dl_emmc_index,
-+	    dl_emmc_sector) != 0) {
++
++	for (attempt = 0; attempt < 3; attempt++) {
++		dl_emmc_clean(dl_emmc_sector, DL_EMMC_SECTOR);
++		if (dl_emmc_write_block(dl_emmc_lba + 1 + dl_emmc_index,
++		    dl_emmc_sector) == 0) {
++			break;
++		}
++		dl_emmc_recover();
++	}
++	if (attempt == 3) {
 +		dl_emmc_failed = 1;
 +		return;
 +	}
