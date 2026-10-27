@@ -1,8 +1,8 @@
 diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
-index c40c6ea..7b9a01c 100644
+index c40c6ea..c59c5e2 100644
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
-@@ -1857,7 +1857,56 @@ sleh_irq(arm_saved_state_t *state)
+@@ -1857,7 +1857,60 @@ sleh_irq(arm_saved_state_t *state)
  
  	sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_OTHER);
  
@@ -36,8 +36,12 @@ index c40c6ea..7b9a01c 100644
 +				uint64_t cntp_ctl = __builtin_arm_rsr64("CNTP_CTL_EL0");
 +
 +				decider_done = 1;
-+				__builtin_arm_wsr64("CNTV_CTL_EL0", (cntv_ctl | 2u) & ~1u);
-+				__builtin_arm_wsr64("CNTP_CTL_EL0", (cntp_ctl | 2u) & ~1u);
++				/*
++				 * The timers are deliberately left alone: the shim now
++				 * disables INTID 30 before the handoff, so the level
++				 * storm that forced the mask is gone, and masking CNTV
++				 * would also kill the only tick the scheduler has.
++				 */
 +
 +				kprintf("DANDELION irq1: hppir1=%llu intid=%u cntv_ctl=%llu "
 +				    "cntv_tval=%llu cntp_ctl=%llu\n",
@@ -60,7 +64,7 @@ index c40c6ea..7b9a01c 100644
  	PE_handle_ext_interrupt();
  #else
  	/* Run the registered interrupt handler. */
-@@ -1920,7 +1969,48 @@ sleh_fiq(arm_saved_state_t *state)
+@@ -1920,7 +1973,52 @@ sleh_fiq(arm_saved_state_t *state)
  
  	sleh_interrupt_handler_prologue(state, type);
  
@@ -84,8 +88,12 @@ index c40c6ea..7b9a01c 100644
 +				uint64_t cntp_ctl = __builtin_arm_rsr64("CNTP_CTL_EL0");
 +
 +				decider_done = 1;
-+				__builtin_arm_wsr64("CNTV_CTL_EL0", (cntv_ctl | 2u) & ~1u);
-+				__builtin_arm_wsr64("CNTP_CTL_EL0", (cntp_ctl | 2u) & ~1u);
++				/*
++				 * The timers are deliberately left alone: the shim now
++				 * disables INTID 30 before the handoff, so the level
++				 * storm that forced the mask is gone, and masking CNTV
++				 * would also kill the only tick the scheduler has.
++				 */
 +
 +				kprintf("DANDELION irq1: hppir1=%llu intid=%u cntv_ctl=%llu "
 +				    "cntv_tval=%llu cntp_ctl=%llu\n",
@@ -110,7 +118,7 @@ index c40c6ea..7b9a01c 100644
  	uint64_t iar = __builtin_arm_rsr64("ICC_IAR0_EL1");
  #endif
  
-@@ -1966,7 +2056,11 @@ sleh_fiq(arm_saved_state_t *state)
+@@ -1966,7 +2064,11 @@ sleh_fiq(arm_saved_state_t *state)
  		INTERRUPT_MASKED_DEBUG_END();
  	}
  
