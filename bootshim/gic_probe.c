@@ -296,6 +296,19 @@ timer_ppi_test(unsigned long self)
 		return;
 	}
 
+	/*
+	 * Clear both PPIs first.  E0.1 forced them pending and nothing
+	 * acknowledged them, so without this the poll below matches a leftover
+	 * bit on its first iteration and reports a result that means nothing.
+	 */
+	dgic_write32(self, DGICR_ICENABLER0, (1ul << 30) | (1ul << 27));
+	dgic_write32(self, DGICR_ICPENDR0, (1ul << 30) | (1ul << 27));
+	dgic_isb();
+	if ((dgic_read32(self, DGICR_ISPENDR0) & ((1ul << 30) | (1ul << 27))) != 0) {
+		out("  e02 pending not clearable, test skipped\n", CLR_RED);
+		return;
+	}
+
 	dgic_write32(self, DGICR_ISENABLER0, (1ul << 30) | (1ul << 27));
 	dgic_isb();
 
