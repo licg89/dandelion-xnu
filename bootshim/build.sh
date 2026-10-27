@@ -136,7 +136,9 @@ probe)
 	# Diagnostics only: run the platform probe and the GIC inventory, then
 	# stop.  Nothing is handed off, so the results stay on the panel instead
 	# of being overwritten by the kernel console (which starts at y=860).
-	EXTRA_CFLAGS="-DXNU_HANDOFF -DPROBE_ONLY"
+	# MSDC_LOG also mirrors the whole log into the flashinfo partition, so a
+	# run can be read back over adb instead of photographed.
+	EXTRA_CFLAGS="-DXNU_HANDOFF -DPROBE_ONLY -DMSDC_LOG"
 	;;
 usb)
 	# Bring up the MUSB controller as a CDC-ACM console, mirror the
@@ -148,7 +150,7 @@ esac
 
 echo "=== Building dandelion bootshim ($MODE) with $CC ==="
 
-for f in start.S shim.c fdt.c fb.c adt.c rng.c handoff.c gic_probe.c usb_cdc.c; do
+for f in start.S shim.c fdt.c fb.c adt.c rng.c handoff.c gic_probe.c usb_cdc.c msdc.c; do
 	echo "  $f"
 	$CC $TARGET $CFLAGS $EXTRA_CFLAGS -I../pexpert -c "$f" -o "out/${f%.*}.o"
 done
@@ -156,7 +158,7 @@ done
 echo "  Linking..."
 $CC $TARGET $CFLAGS $LINKER -static -T shim.ld -Wl,--build-id=none -Wl,-e,_head \
 	out/start.o out/shim.o out/fdt.o out/fb.o \
-	out/adt.o out/rng.o out/handoff.o out/gic_probe.o out/usb_cdc.o \
+	out/adt.o out/rng.o out/handoff.o out/gic_probe.o out/usb_cdc.o out/msdc.o \
 	$EXTRA_OBJS \
 	-o out/shim.elf
 

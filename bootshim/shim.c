@@ -8,6 +8,7 @@
 #include "gic_probe.h"
 #include "handoff.h"
 #include "log.h"
+#include "msdc.h"
 #include "pstore.h"
 #include "usb_cdc.h"
 #include "pe_dandelion.h"
@@ -245,9 +246,76 @@ static void show_platform_probe(uint64_t dtb)
 	}
 }
 
-__attribute__((noreturn)) void shim_el1(uint64_t dtb)
+#ifdef MSDC_LOG
+/*
+ * Persistent log channel.
+ *
+ * The text is taken from the ramoops mirror rather than from the framebuffer:
+ * pstore.h already appends every byte that goes through fb_puts(), it is plain
+ * ASCII independent of where fb scrolling left the cursor, and it survives the
+ * panel scrolling past.
+ *
+ * The report is printed *before* the commit so that it ends up inside the log
+ * itself - which is the whole point, since the panel is the thing we are
+ * trying to stop photographing.  A second pass then captures the first pass's
+ * verdict as well.
+ */
+static uint32_t
+captured_log(const char **text)
 {
-	fb_puts("\n=== EL1 DIAGNOSTIC ===\n", CLR_YELLOW);
+	volatile uint32_t *header = (volatile uint32_t *)(uintptr_t)PSTORE_BASE;
+	uint32_t length = header[2];
+
+	if (header[0] != PS_SIG || length < 16 || length > PS_MAX)
+		return 0;
+	*text = (const char *)(uintptr_t)(PSTORE_BASE + PS_HDR_SIZE);
+	return length;
+}
+
+static void
+dump_log_to_emmc(void)
+{
+	struct msdc_report report;
+	const char *text = 0;
+	uint32_t length;
+	int rc;
+
+	fb_puts("\n--- eMMC log channel (flashinfo) ---\n", CLR_YELLOW);
+
+	rc = msdc_log_prepare(&report);
+	msdc_report_print(&report);
+	if (rc) {
+		fb_puts("  prepare failed, nothing written\n", CLR_RED);
+		return;
+	}
+
+	length = captured_log(&text);
+	if (!length) {
+		fb_puts("  no captured log text\n", CLR_RED);
+		return;
+	}
+
+	rc = msdc_log_commit(&report, text, length);
+	fb_puthex("  commit rc", (unsigned long)(unsigned)rc, CLR_WHITE);
+	if (rc) {
+		fb_puts("  LOG NOT WRITTEN\n", CLR_RED);
+		return;
+	}
+	fb_puts("  LOG ON MEDIUM\n", CLR_GREEN);
+
+	/* Second pass: the log now contains its own report and the line above. */
+	length = captured_log(&text);
+	if (length) {
+		rc = msdc_log_commit(&report, text, length);
+		fb_puthex("  pass2 rc ", (unsigned long)(unsigned)rc, CLR_WHITE);
+		if (!rc)
+			fb_puts("  final log on medium\n", CLR_GREEN);
+	}
+}
+#endif /* MSDC_LOG */
+
+__attribute__((noreturn)) void shim_el1(uint64_t dtb)
+{	fb_puts("\n=== EL1 DIAGNOSTIC ===\n", CLR_YELLOW);
 	fb_puthex("CurrentEL  ", READ_SYSREG(CurrentEL), CLR_CYAN);
 	fb_puts("EL1 transition OK!\n", CLR_GREEN);
 
@@ -278,6 +346,13 @@ __attribute__((noreturn)) void shim_el1(uint64_t dtb)
 		if (!frequency) {
 			frequency = 13000000;
 		}
+#ifdef MSDC_LOG
+		/*
+		 * Write everything above into flashinfo, so this run can be
+		 * read back over adb instead of photographed.
+		 */
+		dump_log_to_emmc();
+#endif
 		fb_puts("\nPROBE ONLY - not handing off to XNU\n", CLR_YELLOW);
 		fb_puts("holding this panel for 120 s, then PSCI reset\n", CLR_YELLOW);
 		start = READ_SYSREG(CNTPCT_EL0);
