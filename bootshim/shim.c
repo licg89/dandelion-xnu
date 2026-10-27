@@ -363,7 +363,13 @@ __attribute__((noreturn)) void shim_el1(uint64_t dtb)
 	}
 
 #ifdef MSDC_LOG
+	/*
+	 * Stage MSDC0 and leave a shim log behind on every boot, not just in
+	 * the diagnostic build: when the kernel dies silently the shim log is
+	 * the only record of how the hand-off went.
+	 */
 	emmc_boot_setup();
+	dump_log_to_emmc();
 #endif
 
 #ifdef PROBE_ONLY
@@ -381,13 +387,6 @@ __attribute__((noreturn)) void shim_el1(uint64_t dtb)
 		if (!frequency) {
 			frequency = 13000000;
 		}
-#ifdef MSDC_LOG
-		/*
-		 * Write everything above into flashinfo, so this run can be
-		 * read back over adb instead of photographed.
-		 */
-		dump_log_to_emmc();
-#endif
 		fb_puts("\nPROBE ONLY - not handing off to XNU\n", CLR_YELLOW);
 		fb_puts("holding this panel for 120 s, then PSCI reset\n", CLR_YELLOW);
 		start = READ_SYSREG(CNTPCT_EL0);

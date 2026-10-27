@@ -173,7 +173,7 @@ index e26a1d7..8e6fb01 100644
  	/*
  	 * Initialize the stack protector for all future calls
 diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
-index d89b0f1..b44076b 100644
+index d89b0f1..bf49c8b 100644
 --- a/osfmk/arm64/arm_vm_init.c
 +++ b/osfmk/arm64/arm_vm_init.c
 @@ -51,6 +51,22 @@
@@ -385,30 +385,33 @@ index d89b0f1..b44076b 100644
  	// global table pointers may need to be different due to physical aperture remapping
  	cpu_tte = (tt_entry_t*)(phystokv(cpu_ttep));
  	invalid_tte = (tt_entry_t*)(phystokv(invalid_ttep));
-@@ -2244,7 +2309,18 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2244,7 +2309,9 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
      }
  #endif
  #endif
 +	DANDELION_TRACE("arm_vm_init: pmap_bootstrap\n");
  	pmap_bootstrap(dynamic_memory_begin);
 +	DANDELION_TRACE("arm_vm_init: pmap_bootstrap done\n");
-+
-+#if defined(DANDELION)
-+	/*
-+	 * The VM can map device memory from here on, so this is the earliest
-+	 * point at which the eMMC log channel can be brought up.  Everything
-+	 * printed before it is held in a RAM ring and flushed by the call.
-+	 */
-+	dandelion_emmc_enable();
-+#endif
  
  	disable_preemption();
  
-@@ -2371,6 +2447,9 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2371,6 +2438,21 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	first_avail = avail_start;
  	patch_low_glo_static_region(args->topOfKernelData, avail_start - args->topOfKernelData);
  	enable_preemption();
 +	DANDELION_TRACE("arm_vm_init: return\n");
++
++#if defined(DANDELION)
++	/*
++	 * Bring the eMMC log channel up here: the very last thing arm_vm_init
++	 * does, so every mapping and page-table structure it depends on is
++	 * definitely in place.  Everything printed before this point is held in
++	 * a RAM ring and flushed by the call, so nothing is lost by the delay.
++	 */
++	dandelion_emmc_enable();
++	DANDELION_TRACE("arm_vm_init: emmc enable returned\n");
++#endif
++
 +	/* White bar: we are past everything and about to hit the epilogue. */
 +	DANDELION_PROBE(990, 0xffffffffU);
  }
