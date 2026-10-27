@@ -59,7 +59,27 @@ MT6768Pkg/Library/MsdcImplLib           eMMC
 
 **MT6768 与 MT6765 同属 MT676x 家族**：GICD 基址一致（`0x0C000000`），
 核数/簇数一致（8 核 2 簇）。所以 `MT6765Pkg` 更可能是「加一个 `SOC_TYPE` 变体」，
-而不是「从零写一个 SoC 包」——工作量比最初估计低一个数量级。
+而不是「从零写一个 SoC 包」。
+
+### 但是：这个包没有任何验证过的设备（2026-10-27 核对）
+
+`Status.md` 里 MTK 只有三个分组，全部是 Inactive、特性栏全是 `?`：
+**没有任何 MTK 设备跑通过 iOS**，iOS 的成功案例全在 Qualcomm 平台。
+
+| 分组 | 设备 | 状态 |
+|---|---|---|
+| MediaTek MT8167 | Benesse TAB-A04-BR3（a04br3） | ✅ **唯一成功的 MTK 案例**（iPadOS 桌面） |
+| MediaTek P65/G80（MT6768/MT6769T） | Xiaomi Redmi 9（lancelot） | ❌ Inactive，仅 Windows PE，且 **CPU: One Core only** |
+| MediaTek G99（MT6789） | Xiaomi POCO M5（stone） | ❌ Inactive，全 `?` |
+
+两个直接后果：
+
+1. **`MT6768Pkg` 是脚手架，不是可用基线。** 它的唯一目标 `lancelot` 从未跑起显示/存储/USB。
+2. **`lancelot` 的「One Core only」和我们在 dandelion 上撞到的中断墙高度一致** ——
+   MTK 的 GICv3 手机平台在非安全态拿不到 PPI，很可能不是我们这一个移植的特例。
+
+所以下面的 R1 不是「可能有风险」，而是**已被两个独立现象指向的同一个障碍**。
+
 
 已知差异（需要逐项核对）：
 
@@ -164,9 +184,26 @@ IPSW 用户态 + owner root 链（`CONFIG_XNU_OWNER_ROOT_AUDIT/TRUST`）+ launch
 a04br3 是 GICv2 单安全态，没有这个问题；所以它成功不能推广到我们这里。
 这是 dandelion 全项目的头号风险。
 
-**但有一条强线索**：`MT6768Pkg` 的 UEFI 在 `0x0C000000` 上驱动 GICv3 redistributor，
-说明在 MT676x 家族的**非安全态**下 GIC 是能被驱动的。如果 MT6768 同样是两安全态，
-那它必然解决了我们卡住的那一点 —— 读它的实现（见 §5 第 2 条）是当前性价比最高的一步。
+**2026-10-27 补充证据（削弱了之前的乐观判断）**：`MT6768Pkg` 虽然用标准 EDK2
+`ArmGicDxe` 在 `0x0C000000` 上配 GICv3，但它的唯一目标 `lancelot` 是 **Inactive**，
+且在 Windows PE 下只有「One Core only」；G99 的 `stone` 同样 Inactive。
+换句话说：**这个生态里没有任何一颗 MTK GICv3 手机被验证过能正常拿中断。**
+
+所以 R1 不能靠「读别人的实现」绕过，只能自己解决。候选路径按代价排序：
+
+1. **确认中断究竟在哪一层被关**：preloader/ATF 是 EL3，`lk.img` 与
+   `mmcblk0boot0` 都已有备份。用 mtkclient 读 EL3 侧状态，或 patch preloader 打开 Group1NS。
+2. **patch LK**：公开的 MT6765 LK 源码（`svoboda18/lk`）已确认它写
+   `GICD_CTLR = 0x16`（ARE|EnGrp1S|EnGrp1NS）—— 与我们实测的 `0x12` 不符
+   （bit2 掉了）。这说明 ROM/ATF 覆盖了 LK 的写入。可尝试在 LK 里延后写、或被
+   ATF 拒绝后改用其它路径。
+3. **换中断入口**：`sysirq`（`0x10200b00`）对 NS 可读，MTK 自己的中断汇聚层在它上面。
+   如果 GIC 对 NS 只开放 SPI 而 PPI 永久关闭，可以考虑把 timer 挪到 SPI（如 GPT
+   `0x10017000`，其寄存器 NS 可读写），这就是 `docs/NEXT-STEPS.md` 里任务 B 的思路。
+
+在 R1 有结论之前，投入 P1/P2 的收益是不确定的 —— 因为即使 UEFI 跑起来，
+没有 tick 也进不了 iOS 用户态。
+
 
 
 ### R2. 没有 UART
@@ -197,17 +234,14 @@ dandelion 大概率需要同样的 PR，要有 fork 长期存在的准备。
 
 ## 5. 立刻可以做的三件事
 
-1. **P0**：把 eMMC console 做成 UniXNU 补丁（见 `docs/UNIXNU-EMMC-CONSOLE.md`），
-   解掉 `UniXNU-dandelion` README 里的 no-UART 阻塞
-2. **读 `MT6768Pkg` 的 GIC 与时钟实现**（最高信息量的一件事）：
-   - `MdeModulePkg`/`ArmPkg` 的 GIC 基址 PCD 指向 `0x0C000000`/`0x0C040000`，
-     说明在 MT6768 上 UEFI（非安全态）**确实在操作 GICv3**
-   - 如果 MT6768 也是两安全态，那它就必须绕过我们卡住的那道墙 ——
-     看它有没有写 `GICR_WAKER`、怎么处理 `GICD_CTLR.ARE`、是否依赖 LK 留下的状态
-   - `USE_PHYSICAL_TIMER=1` 也值得注意：用 CNTP 而不是 CNTV
-   这一项的结论会**直接决定 R1 是否可解**
-3. **R1 立项**：GIC 两安全态是唯一可能让整个项目归零的风险，应该在写 UEFI 之前
-   就排出可行路径（patch LK / 找 EL3 入口 / 复现 Android 的配置方式）
+1. **P0**：把 eMMC console 做成 UniXNU 补丁 —— **已完成**
+   （`patches/xnu/native-emmc-serial.patch`，CI 编译通过，提交 `3d5cd90`）
+2. **R1 立项（现在是唯一的主线）**：见上文三条候选路径。在它没有结论之前，
+   UEFI 移植的收益是不确定的
+3. **若要同时推进 P1**：从 `MT6768Pkg` 复制出 `MT6765Pkg`（改 GICR 基址、
+   时钟表、PMIC 配置），先只求「能编译进 `.fd` 并跑到 DXE」。注意它是未验证的脚手架，
+   不要假设里面的寄存器值对 MT6765 成立
+
 
 
 ---
