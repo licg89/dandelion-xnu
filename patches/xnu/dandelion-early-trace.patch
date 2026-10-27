@@ -1,8 +1,8 @@
 diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
-index e26a1d7..8e6fb01 100644
+index e26a1d7..f6048fd 100644
 --- a/osfmk/arm/arm_init.c
 +++ b/osfmk/arm/arm_init.c
-@@ -76,6 +76,24 @@
+@@ -76,6 +76,25 @@
  
  #include <console/serial_protos.h>
  
@@ -14,6 +14,7 @@ index e26a1d7..8e6fb01 100644
 + */
 +extern void dandelion_trace_mark(const char *);
 +extern void dandelion_trace_attach(void);
++extern void dandelion_emmc_enable(void);
 +extern void dandelion_probe_bar(unsigned int, unsigned int);
 +#define DANDELION_TRACE(s)       dandelion_trace_mark(s)
 +#define DANDELION_TRACE_ATTACH() dandelion_trace_attach()
@@ -27,7 +28,7 @@ index e26a1d7..8e6fb01 100644
  #if CONFIG_TELEMETRY
  #include <kern/telemetry.h>
  #endif
-@@ -346,6 +364,8 @@ arm_init(
+@@ -346,6 +365,8 @@ arm_init(
  	DTEntry chosen = NULL;
  	unsigned int dt_entry_size = 0;
  
@@ -36,7 +37,7 @@ index e26a1d7..8e6fb01 100644
  	arm_setup_pre_sign();
  
  	arm_slide_rebase_and_sign_image();
-@@ -362,6 +382,7 @@ arm_init(
+@@ -362,6 +383,7 @@ arm_init(
  #endif /* defined(HAS_APPLE_PAC) */
  
  	PE_init_platform(FALSE, args); /* Get platform expert set up */
@@ -44,7 +45,7 @@ index e26a1d7..8e6fb01 100644
  
  #if __arm64__
  	configure_timer_apple_regs();
-@@ -424,6 +445,8 @@ arm_init(
+@@ -424,6 +446,8 @@ arm_init(
  
  	ml_parse_cpu_topology();
  
@@ -53,7 +54,7 @@ index e26a1d7..8e6fb01 100644
  
  	master_cpu = ml_get_boot_cpu_number();
  	assert(master_cpu >= 0 && master_cpu <= ml_get_max_cpu_number());
-@@ -453,20 +476,26 @@ arm_init(
+@@ -453,20 +477,26 @@ arm_init(
  	 */
  	thread->machine.preemption_count = 0;
  	cpu_bootstrap();
@@ -80,7 +81,7 @@ index e26a1d7..8e6fb01 100644
  
  	if (PE_parse_boot_argn("maxmem", &maxmem, sizeof(maxmem))) {
  		xmaxmem = (uint64_t) maxmem * (1024 * 1024);
-@@ -513,7 +542,22 @@ arm_init(
+@@ -513,7 +543,22 @@ arm_init(
  	__builtin_arm_wsr("pan", 1);
  #endif  /* __ARM_PAN_AVAILABLE__ */
  
@@ -103,7 +104,7 @@ index e26a1d7..8e6fb01 100644
  
  	if (debug_boot_arg) {
  		patch_low_glo();
-@@ -524,10 +568,14 @@ arm_init(
+@@ -524,10 +569,14 @@ arm_init(
  #endif
  
  	PE_consistent_debug_inherit();
@@ -118,7 +119,7 @@ index e26a1d7..8e6fb01 100644
  	kprintf("kprintf initialized\n");
  
  	serialmode = 0;
-@@ -569,9 +617,11 @@ arm_init(
+@@ -569,9 +618,23 @@ arm_init(
  		disableConsoleOutput = FALSE;     /* Allow printfs to happen */
  	}
  	PE_create_console();
@@ -127,10 +128,22 @@ index e26a1d7..8e6fb01 100644
  	/* setup console output */
  	PE_init_printf(FALSE);
 +	DANDELION_TRACE("arm_init: PE_init_printf\n");
++
++#if defined(DANDELION)
++	/*
++	 * Bring the eMMC log channel up now: kprintf is live and the console is
++	 * fully wired, and everything printed before this point has been held in
++	 * the channel's RAM ring and is flushed by the call.  This is also
++	 * comfortably ahead of cpu_timebase_init()/PE_init_cpu(), which is where
++	 * this kernel currently stops.
++	 */
++	dandelion_emmc_enable();
++	DANDELION_TRACE("arm_init: emmc enable returned\n");
++#endif
  
  #if __arm64__
  #if DEBUG
-@@ -582,6 +632,7 @@ arm_init(
+@@ -582,6 +645,7 @@ arm_init(
  	cpu_machine_idle_init(TRUE);
  
  	PE_init_platform(TRUE, &BootCpuData);
@@ -138,7 +151,7 @@ index e26a1d7..8e6fb01 100644
  
  #if __arm64__
  	extern bool cpu_config_correct;
-@@ -590,6 +641,7 @@ arm_init(
+@@ -590,6 +654,7 @@ arm_init(
  	}
  
  	ml_map_cpu_pio();
@@ -146,7 +159,7 @@ index e26a1d7..8e6fb01 100644
  
  #if APPLE_ARM64_ARCH_FAMILY
  	configure_late_apple_regs();
-@@ -598,6 +650,7 @@ arm_init(
+@@ -598,6 +663,7 @@ arm_init(
  #endif
  
  	cpu_timebase_init(TRUE);
@@ -154,7 +167,7 @@ index e26a1d7..8e6fb01 100644
  
  #if KPERF
  	/* kptimer_curcpu_up() must be called after cpu_timebase_init */
-@@ -605,7 +658,9 @@ arm_init(
+@@ -605,7 +671,9 @@ arm_init(
  #endif /* KPERF */
  
  	PE_init_cpu();
@@ -164,7 +177,7 @@ index e26a1d7..8e6fb01 100644
  
  
  #if HIBERNATION
-@@ -634,6 +689,7 @@ arm_init(
+@@ -634,6 +702,7 @@ arm_init(
  
  	gDramBase = *dram_base;
  	gDramSize = *dram_size;
@@ -173,7 +186,7 @@ index e26a1d7..8e6fb01 100644
  	/*
  	 * Initialize the stack protector for all future calls
 diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
-index d89b0f1..bf49c8b 100644
+index d89b0f1..ad6eb44 100644
 --- a/osfmk/arm64/arm_vm_init.c
 +++ b/osfmk/arm64/arm_vm_init.c
 @@ -51,6 +51,22 @@
@@ -349,14 +362,14 @@ index d89b0f1..bf49c8b 100644
  
  	arm_set_user_tbi();
 +	DANDELION_TRACE("vm: tbi done\n");
- 
 +
+ 
 +	DANDELION_TRACE("vm: physmap_init\n");
  	arm_vm_physmap_init(args);
  	set_mmu_ttb_alternate(cpu_ttep & TTBR_BADDR_MASK);
 +	DANDELION_TRACE("vm: ttb alternate\n");
-+
  
++
 +	/*
 +	 * The monitor (PPLE) is only present on Apple silicon; keep the call out
 +	 * of native builds where ml_enable_monitor() has no implementation.
@@ -395,23 +408,11 @@ index d89b0f1..bf49c8b 100644
  
  	disable_preemption();
  
-@@ -2371,6 +2438,21 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2371,6 +2438,9 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	first_avail = avail_start;
  	patch_low_glo_static_region(args->topOfKernelData, avail_start - args->topOfKernelData);
  	enable_preemption();
 +	DANDELION_TRACE("arm_vm_init: return\n");
-+
-+#if defined(DANDELION)
-+	/*
-+	 * Bring the eMMC log channel up here: the very last thing arm_vm_init
-+	 * does, so every mapping and page-table structure it depends on is
-+	 * definitely in place.  Everything printed before this point is held in
-+	 * a RAM ring and flushed by the call, so nothing is lost by the delay.
-+	 */
-+	dandelion_emmc_enable();
-+	DANDELION_TRACE("arm_vm_init: emmc enable returned\n");
-+#endif
-+
 +	/* White bar: we are past everything and about to hit the epilogue. */
 +	DANDELION_PROBE(990, 0xffffffffU);
  }
