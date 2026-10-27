@@ -1,8 +1,8 @@
 diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
-index c40c6ea..d4acb1e 100644
+index c40c6ea..7b9a01c 100644
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
-@@ -1857,7 +1857,31 @@ sleh_irq(arm_saved_state_t *state)
+@@ -1857,7 +1857,56 @@ sleh_irq(arm_saved_state_t *state)
  
  	sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_OTHER);
  
@@ -20,6 +20,31 @@ index c40c6ea..d4acb1e 100644
 +	{
 +		uint32_t intid = dandelion_gic_ack();
 +
++		/*
++		 * First-interrupt decider (see docs/research/irq-entry-audit.md).
++		 * Log the pending INTID and the timer state once, and mask both
++		 * architectural timers so a level-triggered PPI cannot livelock
++		 * the run before the log is flushed.
++		 */
++		{
++			static int decider_done;
++
++			if (!decider_done) {
++				uint64_t hppir1 = __builtin_arm_rsr64("ICC_HPPIR1_EL1");
++				uint64_t cntv_ctl = __builtin_arm_rsr64("CNTV_CTL_EL0");
++				uint64_t cntv_tval = __builtin_arm_rsr64("CNTV_TVAL_EL0");
++				uint64_t cntp_ctl = __builtin_arm_rsr64("CNTP_CTL_EL0");
++
++				decider_done = 1;
++				__builtin_arm_wsr64("CNTV_CTL_EL0", (cntv_ctl | 2u) & ~1u);
++				__builtin_arm_wsr64("CNTP_CTL_EL0", (cntp_ctl | 2u) & ~1u);
++
++				kprintf("DANDELION irq1: hppir1=%llu intid=%u cntv_ctl=%llu "
++				    "cntv_tval=%llu cntp_ctl=%llu\n",
++				    hppir1, (unsigned)intid, cntv_ctl, cntv_tval, cntp_ctl);
++			}
++		}
++
 +		if (intid == DANDELION_TIMER_IRQ) {
 +			cdp->cpu_decrementer = -1; /* Large */
 +			rtclock_intr(TRUE);
@@ -35,13 +60,38 @@ index c40c6ea..d4acb1e 100644
  	PE_handle_ext_interrupt();
  #else
  	/* Run the registered interrupt handler. */
-@@ -1920,7 +1944,23 @@ sleh_fiq(arm_saved_state_t *state)
+@@ -1920,7 +1969,48 @@ sleh_fiq(arm_saved_state_t *state)
  
  	sleh_interrupt_handler_prologue(state, type);
  
 -#if APPLEVIRTUALPLATFORM
 +#if defined(DANDELION)
 +	uint32_t iar = dandelion_gic_ack();
++
++		/*
++		 * First-interrupt decider (see docs/research/irq-entry-audit.md).
++		 * Log the pending INTID and the timer state once, and mask both
++		 * architectural timers so a level-triggered PPI cannot livelock
++		 * the run before the log is flushed.
++		 */
++		{
++			static int decider_done;
++
++			if (!decider_done) {
++				uint64_t hppir1 = __builtin_arm_rsr64("ICC_HPPIR1_EL1");
++				uint64_t cntv_ctl = __builtin_arm_rsr64("CNTV_CTL_EL0");
++				uint64_t cntv_tval = __builtin_arm_rsr64("CNTV_TVAL_EL0");
++				uint64_t cntp_ctl = __builtin_arm_rsr64("CNTP_CTL_EL0");
++
++				decider_done = 1;
++				__builtin_arm_wsr64("CNTV_CTL_EL0", (cntv_ctl | 2u) & ~1u);
++				__builtin_arm_wsr64("CNTP_CTL_EL0", (cntp_ctl | 2u) & ~1u);
++
++				kprintf("DANDELION irq1: hppir1=%llu intid=%u cntv_ctl=%llu "
++				    "cntv_tval=%llu cntp_ctl=%llu\n",
++				    hppir1, (unsigned)iar, cntv_ctl, cntv_tval, cntp_ctl);
++			}
++		}
 +
 +	/*
 +	 * A spurious acknowledgement (1020..1023) means there was nothing to
@@ -60,7 +110,7 @@ index c40c6ea..d4acb1e 100644
  	uint64_t iar = __builtin_arm_rsr64("ICC_IAR0_EL1");
  #endif
  
-@@ -1966,7 +2006,11 @@ sleh_fiq(arm_saved_state_t *state)
+@@ -1966,7 +2056,11 @@ sleh_fiq(arm_saved_state_t *state)
  		INTERRUPT_MASKED_DEBUG_END();
  	}
  
