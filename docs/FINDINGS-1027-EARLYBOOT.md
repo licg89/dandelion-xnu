@@ -67,3 +67,28 @@ spllo() 是启动序列里**第一次允许中断**的地方。所以死因不�
 
 下一步：把 DANDELION_HOLD_INTERRUPTS 置回 0，转去修**异常入口**本身（sleh 的 IRQ/FIQ 分支 + dandelion_gic_ack/eoi 在 spurious INTID 与未初始化 per-CPU 状态下的行为）。
 
+
+## 第四轮（中断判定实验）：内核进入调度器启动
+
+```n> thread_machine_init_template
+> clock_init
+> thread_group_init
+> coalitions_init
+> code_signing_init
+> task_init
+> thread_init
+> restartable_init
+> workq_init
+> turnstiles_init
+> mach_init_activity_id
+> exception_init
+> kernel_thread_create
+> load_context - done
+>> idle_thread_create
+>> sched_startup
+```
+
+结论：在 EOI 之前屏蔽 CNTV/CNTP（电平不再自激）之后，启动**越过了 spllo**，
+一路推进到调度器启动（sched_startup）。之前「第一次开中断即静默死」= 中断风暴/活锁，
+不是异常入口崩溃。
+
