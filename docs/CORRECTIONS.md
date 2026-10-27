@@ -104,3 +104,29 @@ e02 CNTP30 ctl 0x5 ispender 0x41000000 hppir1 0x1e
 - QEMU 的 `pmemsave` 在本机不可用
 - 只用开源 XNU 源码时，终点是 `waiting for root device`（无 APFS/HFS+/ext4/f2fs、无用户态）
 - UniXNU 那条能进用户态的路需要 UEFI，且 MTK 手机无人验证成功
+
+## C7. `[uefi_fd].base` 与 `MemoryMapLib.c` 的 "UEFI FD" 不一致（**已确认为真**）
+
+实测两处源码：
+
+```
+Platforms/Xiaomi/dandelionPkg/Library/MemoryMapLib/MemoryMapLib.c:47
+    {"UEFI FD", 0x48880000, 0x00200000, AddMem, SYS_MEM, SYS_MEM_CAP, BsData, WRITE_BACK},
+
+MemoryMapLib.c:43 的注释原文
+    //            "UEFI FD" here must equal [uefi_fd].base in
+
+Resources/Configs/dandelion.toml
+    [uefi_fd]
+    base = 0x40080000      <-- 与上面的 0x48880000 矛盾
+    size = 0x200000
+```
+
+`0x40080000` 是从 `lancelot.toml` 抄来的，不是 dandelion 的值。
+
+**后果**：打包时 payload 会被放到一个和固件自己认为的地址不同的地方，现象是
+黑屏或立刻重启，且没有任何日志可看（SEC 还没起来）。
+
+**处理**：以 `MemoryMapLib.c` 的 `0x48880000` 为准，把 toml 改过来；
+并且核对 `bootshim/patch_boot.py` 里 payload 的落地地址与之相同。
+刷机前必须三处一致。
