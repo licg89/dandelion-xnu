@@ -468,10 +468,10 @@ index 0a00656..aa4c197 100644
  	iotrace_disable();
  
 diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
-index e44008f..23babf5 100644
+index e44008f..963b955 100644
 --- a/osfmk/kern/printf.c
 +++ b/osfmk/kern/printf.c
-@@ -908,6 +908,918 @@ vprintf(const char *fmt, va_list ap)
+@@ -908,6 +908,952 @@ vprintf(const char *fmt, va_list ap)
  	return vprintf_internal(fmt, ap, __builtin_return_address(0));
  }
  
@@ -1087,6 +1087,37 @@ index e44008f..23babf5 100644
 +	}
 +}
 +
++/*
++ * Re-arm the controller before a transfer.
++ *
++ * MSDC can gate its own clock while the bus has been idle, and the kernel goes
++ * quiet for seconds at a time between startup phases, so a transfer that
++ * follows a long gap is not guaranteed to find the block clocked.  If CKSTB
++ * reads 0, rewrite the divider and wait for it to lock again.  When the clock
++ * is already up this costs two register reads.
++ */
++static int
++dl_emmc_rearm(void)
++{
++	uint32_t cfg;
++	uint64_t deadline;
++
++	if ((dl_emmc_rd(DL_MSDC_CFG) & DL_CFG_CKSTB) == 0) {
++		cfg = dl_emmc_rd(DL_MSDC_CFG);
++		cfg &= ~(0xFFFu << 8);
++		cfg |= (1u << 0) | DL_CFG_PIO | (260u << 8);
++		dl_emmc_wr(DL_MSDC_CFG, cfg);
++		deadline = dl_emmc_now_ms() + 20;
++		while ((dl_emmc_rd(DL_MSDC_CFG) & DL_CFG_CKSTB) == 0) {
++			if (dl_emmc_now_ms() > deadline) {
++				return -1;
++			}
++		}
++	}
++	dl_emmc_wr(DL_MSDC_INTEN, 0);
++	return 0;
++}
++
 +/* One sector, one CMD24.  Multi-block would be faster, but the console
 + * produces a trickle and single-block removes the CMD12 state machine. */
 +static int
@@ -1099,6 +1130,9 @@ index e44008f..23babf5 100644
 +
 +	if (dl_emmc_wait_sts(DL_STS_SDCBUSY, 100) || dl_emmc_fifo_clear()) {
 +		return -1;
++	}
++	if (dl_emmc_rearm() != 0) {
++		return -7;
 +	}
 +
 +	dl_emmc_wr(DL_MSDC_BLK_NUM, 1);
