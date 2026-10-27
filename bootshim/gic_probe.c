@@ -625,6 +625,18 @@ gic_probe_run(const struct fdt_platform *platform, struct gic_probe_result *r)
 	}
 	r->timer_irq = irq;
 
+	/*
+	 * Leave only the virtual timer (INTID 27) enabled across the handoff.
+	 * The physical timer (INTID 30) is level-triggered and XNU never services
+	 * it, so keeping it enabled turns every first tick into a storm: the
+	 * kernel acks and EOIes, then the line re-asserts immediately.  That is
+	 * what used to stop the boot at the first interrupt-enabled moment.
+	 */
+	if (r->gic.redist != 0) {
+		dgic_write32(r->gic.redist, DGICR_ICENABLER0, 1ul << 30);
+		dgic_write32(r->gic.redist, DGICR_ICPENDR0, 1ul << 30);
+	}
+
 	out("  source  ", CLR_CYAN);
 	out(source, CLR_WHITE);
 	fb_newline();
