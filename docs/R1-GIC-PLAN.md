@@ -70,7 +70,39 @@ e01 hppir1 0x1b                                   ← 0x1b = 27
 
 ---
 
-## 0.1 历史：E0 的原始结果
+### 0.0.2 E0.2：定时器 → GIC 也是通的（R1 判定：不是固件墙）
+
+清掉 E0.1 残留的 pending 之后重测：
+
+```
+e02 CNTP30 ctl 0x5       ispender 0x41000000  hppir1 0x1e   GIC saw it
+e02 CNTV27 ctl 0x5       ispender 0x49000000  hppir1 0x1e   GIC saw it
+```
+
+| 值 | 含义 |
+|---|---|
+| `ctl = 0x5` | ENABLE + **ISTATUS(bit2)=1**，定时器确实到期 |
+| `ispender` bit30 / bit27 | 对应 PPI 在 redistributor **变成 pending** |
+| `hppir1 = 0x1e`(30) | **CPU 接口报告 INTID 30** |
+
+**结论：arch timer → redistributor → CPU 接口，在非安全态 EL1 下全链路正常。**
+
+历史上三条悲观结论全部作废，原因都是探针测法错误：
+
+| 旧结论 | 实际原因 |
+|---|---|
+| NS 写不进组寄存器 → 中断被锁 | NS 视角 RAZ/WI 是规范行为，实际分组已是 Group 1 |
+| 强制 pending 也收不到 | 旧探针读的是 Group 0 的 `HPPIR0`/`IAR0`，NS 不可用 |
+| 定时器到期不推给 GIC | 未清残留 pending，轮询首轮即误命中 |
+
+**→ R1 不再阻塞。剩下的是内核侧（XNU）没把 GIC 和定时器配上：**
+`pe_init_fiq()` 现在的做法（只碰 ICC、且曾因 `ICC_IGRPEN0_EL1` 崩过）需要改成
+「用 CNTP/PPI 30 + `ICC_IAR1_EL1`/`ICC_EOIR1_EL1`」，并按 shim 已验证的顺序配置。
+
+---
+
+## 0.1 历史：E0 与 E0.1 的原始结果
+
 
 ```
 boot mpidr 0x80000000  affinity 0x0
