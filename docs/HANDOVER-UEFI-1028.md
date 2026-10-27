@@ -133,11 +133,58 @@ python3 build_uefi.py -d dandelion -m 0 -r DEBUG        # 增量
 - `build.py` 在 drvfs 上做 meta-data 时可能几分钟不输出，不要以为卡死；
   看 `Build/BUILDLOG_dandelionPkg.txt` 和 `ps` 里的 `build.py` 子进程更可靠。
 
-## 下一步（M2）
+## 下一步（M2）：已经打包好了，等上机
 
-1. 打包：`boot.img` = 原厂头 + BootShim + DTB + payload（payload 换成
-   `SILICIUM_UEFI.fd`），沿用 `bootshim/patch_boot.py`。
-2. 上机验证 M2 判据：SEC 把一行 `MT6765Pkg SEC alive` 写进 `flashinfo`，
-   回 Android 用 `adb` 拉（`docs/EMMC-LOG.md` 的通道）。
-3. 注意 FD 的落地地址必须与 `MemoryMapLib.c` 的 `"UEFI FD"` 条目
-   （`0x48880000`，2 MiB）以及 `Resources/Configs/dandelion.toml` 的 `[uefi_fd].base` 一致。
+### FD 落地地址（已统一，2026-10-28 02:12）
+
+三处必须相等，现在都是 `0x48880000`：
+
+| 位置 | 值 |
+|---|---|
+| `Resources/Configs/dandelion.toml` → `[uefi_fd].base` | `0x48880000` |
+| `dandelionPkg/Library/MemoryMapLib/MemoryMapLib.c` → `"UEFI FD"` 条目 | `0x48880000`，`0x200000` |
+| boot image 头里的 `kernel_addr` | `0x48880000` |
+
+- `PcdFdBaseAddress` 从 toml 走 `BLD_*_FD_BASE` 一路传进 DSC，`BUILD_REPORT.TXT` 里可核对。
+- 原来 toml 是 `0x40080000`（照抄 lancelot），而 DSC 的 `PcdSystemMemoryBase` 是
+  `0x48000000`——FD 落在系统内存之外，是 M2 的硬错误。
+- **不需要 BootShim**：FD 的前 4 个字节就是 `0x140023EA`（`b +0x8FA8`），
+  跳到一个小 stub 去解压 FV。所以 `[boot_shim]` 段故意不存在，
+  `build_uefi.py` 的 `append_boot_shim` 分支不会走。
+
+### 打包（已执行）
+
+```bash
+python3 bootshim/patch_boot.py \
+  artifacts/boot_backup.img \                                  # 原厂 boot 分区镜像
+  Build/.../FV/SILICIUM_UEFI.fd \                              # 直接当 kernel 段
+  Resources/DTBs/dandelion.dtb \
+  artifacts/boot-uefi-m2.img \
+  --kernel-addr 0x48880000
+```
+
+`patch_boot.py` 新增 `--kernel-addr`：只改 header 里的 `kernel_addr`，
+`raddr=0x51B00000` / `tags=0x47880000` / `page=2048` / `ksize=13907597`
+全部保持原厂值——那是这台机器上**已经跑通过**的布局（见 `artifacts/boot-*.img`）。
+
+产物：`artifacts/boot-uefi-m2.img`，16,099,328 B，
+kernel 段 = gzip(FD) 575,283 B，解压后 sha256 与 FD 完全一致（已校验）。
+
+### 上机判据
+
+⚠️ **`SEC alive` 的 eMMC 标记还没有实现**（`MT6765Pkg` 里没有任何 flashinfo 写入代码）。
+所以这一版能看的只有两个信号：
+
+1. **看门狗**：`SecMain()` 第一件事就是 `PlatformInitialize()` → 关 TOPRGU 看门狗
+   （`Silicon/Silicium/SiliciumPkg/Sec/Sec.c:104`）。如果 LK 交棒时看门狗是武装的，
+   那么「跑到 SEC」= 不再自动重启，「没跑到」= 约 10 s 后自己重启。
+2. **Android 还起不起来**：正常进系统 = LK 根本没执行我们的 kernel。
+
+（这两条都是推断，没有在 dandelion 上验证过；M2 真正的判据仍要 eMMC 通道。）
+
+### 下一步要写的代码
+
+- 最小可信标记：把 `bootshim/msdc.c` 里已验证的 polled-PIO 写搬进
+  `MT6765Pkg/Library/MsdcImplLib`，SEC 里写一行到 flashinfo。
+- 更省事的过渡方案：**看门狗当进度信标**——SEC 入口设 3 s 超时、过一段设 6 s、
+  DXE 入口再关掉；重启时间不同就说明走到了不同里程碑，不需要任何驱动。

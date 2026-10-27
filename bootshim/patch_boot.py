@@ -20,10 +20,41 @@ the unchanged ramdisk_addr.
 
 Usage:
     python patch_boot.py <stock_boot.img> <Image> <dtb> <out.img> [payload]
+                         [--kernel-addr 0x48880000]
+
+`--kernel-addr` rewrites kernel_addr in the header, which is where LK places
+(and then jumps to) the decompressed kernel section.  Use it when the payload
+must land at a specific address: the UEFI FD has to be at [uefi_fd].base
+(0x48880000 for dandelion, matching MemoryMapLib's "UEFI FD" entry), while the
+vendor header says 0x40080000.  Everything else in the header - raddr, tags,
+page size, kernel_size - stays exactly as the stock image had it, because that
+layout is the one already proven to boot on this device.
 """
 import gzip
 import struct
 import sys
+
+
+def parse_kernel_addr(argv):
+    """Strip our own --kernel-addr option out of argv, return (addr, rest)."""
+    kernel_addr = None
+    rest = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--kernel-addr":
+            if i + 1 >= len(argv):
+                sys.exit("--kernel-addr needs a value")
+            kernel_addr = int(argv[i + 1], 0)
+            i += 2
+            continue
+        if arg.startswith("--kernel-addr="):
+            kernel_addr = int(arg.split("=", 1)[1], 0)
+            i += 1
+            continue
+        rest.append(arg)
+        i += 1
+    return kernel_addr, rest
 
 PAGE_ALIGN = 512
 
@@ -38,12 +69,14 @@ def round_up(n, a):
 
 
 def main():
-    if len(sys.argv) not in (5, 6):
+    kernel_addr, args = parse_kernel_addr(sys.argv[1:])
+
+    if len(args) not in (4, 5):
         print(__doc__)
         return 2
 
-    stock_path, image_path, dtb_path, out_path = sys.argv[1:5]
-    payload_path = sys.argv[5] if len(sys.argv) == 6 else None
+    stock_path, image_path, dtb_path, out_path = args[:4]
+    payload_path = args[4] if len(args) == 5 else None
 
     with open(stock_path, "rb") as f:
         stock = bytearray(f.read())
@@ -79,6 +112,15 @@ def main():
     print("  kernel@%d ramdisk@%d second@%d dtb@%d (%s)" %
           (kernel_off, ramdisk_off, second_off, dtb_off,
            "present" if stock[dtb_off:dtb_off + 4] == b"\xd0\x0d\xfe\xed" else "absent"))
+
+    if kernel_addr is not None:
+        print("kaddr: 0x%08X -> 0x%08X (payload will be decompressed here)" %
+              (kaddr, kernel_addr))
+        kaddr = kernel_addr
+        # kernel_addr is the 2nd UINT32 of the header, i.e. offset 8 + 4.
+        struct.pack_into("<I", stock, 12, kaddr)
+    else:
+        print("kaddr: 0x%08X (unchanged)" % kaddr)
 
     kernel = gz(shim)
     kernel += b"\0" * (-len(kernel) % PAGE_ALIGN)
