@@ -155,11 +155,15 @@ struct dandelion_emmc_handoff {
 /*
  * Where the kernel sees MSDC0.  osfmk/arm64/start.s installs this block
  * mapping in the V=P bootstrap tables as Device-nGnRnE, which is what lets the
- * log channel come up at the first printf instead of waiting for ml_io_map()
- * (which needs the VM, and therefore loses everything printed before it).
- * The two constants must stay in step.
+ * log channel come up early instead of waiting for ml_io_map() (which needs the
+ * VM, and therefore loses everything printed before it).
+ *
+ * The mapping covers the 2 MiB block at physical 0x11200000, because a block
+ * descriptor has to be aligned to its block size; MSDC0 itself sits 0x30000
+ * into that block, and the virtual address carries the same offset.  The two
+ * constants must stay in step.
  */
-#define DANDELION_MSDC_VA         0x41000000ULL
+#define DANDELION_MSDC_VA         0x41030000ULL
 
 /*
  * Where the kernel's block sits inside flashinfo, and how much of it is
