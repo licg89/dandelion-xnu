@@ -461,10 +461,10 @@ index 0a00656..aa4c197 100644
  	iotrace_disable();
  
 diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
-index e44008f..8ad8e47 100644
+index e44008f..26116f6 100644
 --- a/osfmk/kern/printf.c
 +++ b/osfmk/kern/printf.c
-@@ -908,6 +908,853 @@ vprintf(const char *fmt, va_list ap)
+@@ -908,6 +908,867 @@ vprintf(const char *fmt, va_list ap)
  	return vprintf_internal(fmt, ap, __builtin_return_address(0));
  }
  
@@ -924,8 +924,6 @@ index e44008f..8ad8e47 100644
 +#define DL_LOG_OFF_CNTPCT      0x24
 +#define DL_LOG_OFF_CNTFRQ      0x2C
 +
-+extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
-+
 +static volatile unsigned int *dl_emmc_reg;
 +static uint32_t dl_emmc_lba;
 +static uint32_t dl_emmc_sectors;
@@ -933,9 +931,12 @@ index e44008f..8ad8e47 100644
 +static uint32_t dl_emmc_used;           /* bytes used in that sector     */
 +static int dl_emmc_ready;
 +static int dl_emmc_failed;
++static int dl_emmc_tried;
 +static unsigned char dl_emmc_sector[DL_EMMC_SECTOR] __attribute__((aligned(64)));
 +static unsigned char dl_emmc_ring[DL_EMMC_RING] __attribute__((aligned(64)));
 +static unsigned int dl_emmc_ring_len;
++
++void dandelion_emmc_enable(void);
 +
 +static uint32_t
 +dl_emmc_rd(unsigned int off)
@@ -1220,10 +1221,20 @@ index e44008f..8ad8e47 100644
 +dandelion_emmc_putc(char c)
 +{
 +	if (!dl_emmc_ready) {
-+		if (dl_emmc_ring_len < sizeof(dl_emmc_ring)) {
-+			dl_emmc_ring[dl_emmc_ring_len++] = (unsigned char)c;
++		/*
++		 * First character after the MMU came on: bring the channel up
++		 * now, so everything from here on reaches the medium.
++		 */
++		if (!dl_emmc_tried) {
++			dandelion_emmc_enable();
 +		}
-+		return;
++		if (!dl_emmc_ready) {
++			if (dl_emmc_ring_len < sizeof(dl_emmc_ring)) {
++				dl_emmc_ring[dl_emmc_ring_len++] =
++				    (unsigned char)c;
++			}
++			return;
++		}
 +	}
 +	if (dl_emmc_failed) {
 +		return;
@@ -1253,25 +1264,28 @@ index e44008f..8ad8e47 100644
 +dandelion_emmc_enable(void)
 +{
 +	struct dandelion_emmc_handoff *handoff;
-+	vm_offset_t va;
 +	unsigned int i;
 +
-+	if (dl_emmc_ready || dl_emmc_failed) {
++	if (dl_emmc_tried) {
 +		return;
 +	}
++	dl_emmc_tried = 1;
 +
-+	handoff = (struct dandelion_emmc_handoff *)phystokv(
-+	    DANDELION_EMMC_HANDOFF_PA);
++	/*
++	 * Both the hand-off record and the controller are reached through the
++	 * V=P bootstrap map that start.s builds and arm_vm_init keeps
++	 * (DANDELION_KEEP_IDENTITY_MAP), so neither phystokv() nor ml_io_map()
++	 * is involved: this runs from the very first console character, long
++	 * before the VM exists.
++	 */
++	handoff = (struct dandelion_emmc_handoff *)DANDELION_EMMC_HANDOFF_PA;
 +	if (handoff->magic != DANDELION_EMMC_HANDOFF_MAGIC ||
 +	    handoff->ok != 1 || handoff->sectors < 2) {
++		dl_emmc_failed = 1;
 +		return;
 +	}
 +
-+	va = ml_io_map(DANDELION_MSDC_BASE, DANDELION_MSDC_SIZE);
-+	if (va == 0) {
-+		return;
-+	}
-+	dl_emmc_reg = (volatile unsigned int *)va;
++	dl_emmc_reg = (volatile unsigned int *)DANDELION_MSDC_VA;
 +
 +	if ((dl_emmc_rd(DL_MSDC_CFG) & DL_CFG_CKSTB) == 0) {
 +		dl_emmc_failed = 1;

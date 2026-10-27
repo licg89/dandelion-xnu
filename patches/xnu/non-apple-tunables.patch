@@ -1,5 +1,5 @@
 diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
-index e5336e5..09a7be9 100644
+index e5336e5..9097af4 100644
 --- a/osfmk/arm64/start.s
 +++ b/osfmk/arm64/start.s
 @@ -33,7 +33,9 @@
@@ -109,7 +109,7 @@ index e5336e5..09a7be9 100644
  	// Unlock the core for debugging
  	msr		OSLAR_EL1, xzr
  	msr		DAIFSet, #(DAIFSC_ALL)				// Disable all interrupts
-@@ -609,9 +687,36 @@ Lkernelcache_base_found:
+@@ -609,9 +687,56 @@ Lkernelcache_base_found:
  	lsr		x5,  x24, #(ARM_TT_L2_SHIFT)
  	create_bootstrap_mapping x14, x15, x5, x3, x2, x9, x10, x11, x12, x13
  
@@ -139,6 +139,26 @@ index e5336e5..09a7be9 100644
 +	b.ne	4b
 +	dsb		sy
 +
++	/*
++	 * Dandelion: map the eMMC controller at a fixed virtual address so the
++	 * kernel can start logging to it at the very first printf, long before
++	 * the VM exists.
++	 *
++	 * 0x41000000 is inside the same 1 GiB that this L2 table already covers
++	 * (L1 index 1) and below phys_base, so it collides with nothing; no new
++	 * L1 entry is needed.  The attributes are Device-nGnRnE (MAIR attr 3,
++	 * CACHE_ATTRINDX_DISABLE), *not* the normal memory the framebuffer
++	 * blocks above inherit: a cached peripheral is a dead peripheral.
++	 * DANDELION_MSDC_VA in DANDELION.h must stay equal to this address.
++	 */
++	movz	x3, #(0x08 * 8)			// L2 index of 0x41000000
++	movz	x1, #0x60d			// block, AF, SH=10b, AttrIndx=3
++	movk	x1, #0x0060, lsl #48		// PXN | UXN
++	movz	x4, #0x1120, lsl #16		// physical 0x11200000 (MSDC0)
++	orr	x1, x1, x4
++	str	x1, [x2, x3]
++	dsb		sy
++
  	/* Ensure TTEs are visible */
  	dsb		ish
  
@@ -146,7 +166,7 @@ index e5336e5..09a7be9 100644
  
  	b		common_start
  
-@@ -741,10 +846,13 @@ common_start:
+@@ -741,10 +866,13 @@ common_start:
  #endif /* HAS_APPLE_PAC */
  
  	// Enable caches, MMU, ROP and JOP
@@ -160,7 +180,7 @@ index e5336e5..09a7be9 100644
  #if !VMAPPLE
  	MOV64   x1, SCTLR_EL1_DEFAULT
  	cmp		x0, x1
-@@ -774,10 +882,12 @@ common_start:
+@@ -774,10 +902,12 @@ common_start:
  	// Initialization common to all non-virtual Apple targets
  #endif  // APPLE_ARM64_ARCH_FAMILY
  
@@ -173,7 +193,7 @@ index e5336e5..09a7be9 100644
  
  
  #if HAS_CLUSTER
-@@ -807,6 +917,8 @@ common_start:
+@@ -807,6 +937,8 @@ common_start:
  	mov	lr, x21
  #endif
  

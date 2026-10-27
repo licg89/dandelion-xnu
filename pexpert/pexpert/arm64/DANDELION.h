@@ -153,6 +153,15 @@ struct dandelion_emmc_handoff {
 #define DANDELION_MSDC_SIZE       0x00010000ULL
 
 /*
+ * Where the kernel sees MSDC0.  osfmk/arm64/start.s installs this block
+ * mapping in the V=P bootstrap tables as Device-nGnRnE, which is what lets the
+ * log channel come up at the first printf instead of waiting for ml_io_map()
+ * (which needs the VM, and therefore loses everything printed before it).
+ * The two constants must stay in step.
+ */
+#define DANDELION_MSDC_VA         0x41000000ULL
+
+/*
  * Where the kernel's block sits inside flashinfo, and how much of it is
  * reserved.  The shim writes its own log at +1 MiB in a slot it finds by
  * scanning; +2 MiB is far enough that the two can never overlap.
