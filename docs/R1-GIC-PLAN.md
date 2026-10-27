@@ -29,6 +29,49 @@
 
 ## 0. E0 结果（2026-10-27 实测）
 
+### 0.0 E0.1：中断通路是通的（推翻「收不到」）
+
+```
+e01 typer64 0x0 lo 0x0 hi 0x0                    ← TYPER 读不出（但该帧其他寄存器正常）
+e01 igroupr0 0x0  isenabler0 0x0  ispender0 0x1000000
+e01 ipriority 0x0 icfgr1 0x0 waker 0x0
+e01 igroupr w 0x48000000  r 0x0   group1 bits DROPPED
+e01 after enable  isenabler0 0x48000000  ispender0 0x49000000
+e01 hppir1 0x1b                                   ← 0x1b = 27
+```
+
+| 观察 | 含义 |
+|---|---|
+| `ISENABLER0` 回读 `0x48000000` | PPI 27/30 使能**成功** |
+| `ISPENDR0` 回读 `0x49000000` | PPI 27/30 强制 pending **成功** |
+| **`HPPIR1 = 0x1b`(27)** | **中断确实到达 CPU 接口** |
+| `IGROUPR0` 写后回读 0 | 只是 NS 视角的 RAZ/WI；实际分组已是 Group 1（安全侧设过），**丢写无害** |
+| `TYPER` 三种读法都是 0 | CPU0 那一帧的 TYPER 确实读不出，但**不影响功能**（其他寄存器都正常） |
+
+**结论：GIC → CPU 接口的整条通路是好的。** 之前所有「NS 收不到中断」的判断，
+是因为测试走的是**定时器自己到期**这条路，而不是 `ISPENDR` 强制 pending。
+
+### 0.0.1 剩下的唯一问题：定时器不产生中断
+
+- 用 `ISPENDR0` 强制 pending → `HPPIR1` 立刻看到 27 ✓
+- 靠 `CNTV`/`CNTP` 到期（`ISTATUS=1`）→ `HPPIR` 仍是 1020 ✗
+
+所以缺的只是 **arch timer → redistributor** 这一段。候选原因（按可能性）：
+
+1. MTK 对 timer 到 GIC 的中断线有额外门控（类似 `GIC_SYNC_DCM`，dmesg 里 Android 打开了它）
+2. arm/arm 时序：需要「先 arm timer，再 enable PPI」，或反之
+3. `ISPENDR0` 里那个残留的 **bit24** 才是被真正路由的定时器 INTID（DTB 说 27/30，
+   Android `/proc/interrupts` 说 30 —— 但值得实测确认）
+
+下一步实验（E0.2，纯 shim）：使能 PPI 30 → arm CNTP 让它在 1 ms 内到期 →
+轮询 `GICR_ISPENDR0` 和 `ICC_HPPIR1_EL1`，同时打印 `CNTP_CTL` 与
+`GICR_IPRIORITYR`/`ICFGR1` 的相关位。**ISPENDR0 有无 bit30 是分水岭**：
+有 → GIC 侧没问题、是 CPU 接口/优先级；没有 → 定时器到 GIC 这段不通。
+
+---
+
+## 0.1 历史：E0 的原始结果
+
 ```
 boot mpidr 0x80000000  affinity 0x0
 frame 0xc100000 typer 0x0          aff 0x0   <- self   ← 两次读仍为 0
