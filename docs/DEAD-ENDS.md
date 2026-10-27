@@ -19,7 +19,11 @@
   （内核未启用 DEVMEM）。
 - 结论：无法从 Android 读我们内核的寄存器/内存。
 
-## 4. 让内核去配置 GIC distributor
+## 4. 让内核去配置 GIC distributor（**归因已更正，见 CORRECTIONS.md C2**）
+
+> 本节原文说「内核写 GICD 会卡死总线」，这是**错误归因**。
+> 真正原因是 ICC_IGRPEN0_EL1 在两安全态 GIC 上对非安全态 UNDEFINED。
+> 内核不碰 Group 0 的系统寄存器即可；GICD/GICR 的 MMIO 本身不是禁忌。
 - shim 里（MMU 关）写 `GICD_CTLR` / `GICD_IGROUPR` 被静默丢弃；
 - 内核里（MMU 开）同样的写**会卡死总线**，机器在
   `arm_init: cpu_timabase_init` 之后一个字节都不打印。
