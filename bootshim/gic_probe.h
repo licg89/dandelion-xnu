@@ -39,4 +39,15 @@ struct gic_probe_result {
 void gic_probe_run(const struct fdt_platform *platform,
 		   struct gic_probe_result *result);
 
+/*
+ * Leave one PPI enabled for the kernel.
+ *
+ * The kernel must not touch the redistributor: writing it with the MMU on stalls
+ * the bus on this part.  The shim does it here, with the MMU off, and the probe
+ * has already proven the path works end to end (timer expires -> ISENABLER0 bit
+ * -> ICC_HPPIR1_EL1 reports the INTID).
+ */
+void gic_prepare_kernel_timer(struct gic_probe_result *result,
+			      unsigned int irq);
+
 #endif

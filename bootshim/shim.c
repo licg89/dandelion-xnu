@@ -360,6 +360,13 @@ __attribute__((noreturn)) void shim_el1(uint64_t dtb)
 		static struct gic_probe_result probe;
 
 		gic_probe_run(&fdt_platform_info, &probe);
+#ifdef XNU_HANDOFF
+		/*
+		 * Hand the kernel a distributor/redistributor side that is
+		 * already right, since it cannot program that block itself.
+		 */
+		gic_prepare_kernel_timer(&probe, DANDELION_TIMER_IRQ);
+#endif
 	}
 
 #ifdef MSDC_LOG

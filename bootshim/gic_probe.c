@@ -274,6 +274,44 @@ redist_self_test(unsigned long self)
 }
 
 /*
+ * Leave the architectural-timer PPI enabled for the kernel to inherit.
+ *
+ * The kernel cannot program the redistributor (an MMU-on write to that block
+ * stalls the bus on this part), so the enable has to happen here.  E0.2 proved
+ * the whole path: the timer expires, the redistributor sets the pending bit and
+ * ICC_HPPIR1_EL1 reports the INTID.  All the kernel has to do is enable its CPU
+ * interface and arm the timer.
+ */
+void
+gic_prepare_kernel_timer(struct gic_probe_result *r, unsigned int irq)
+{
+	unsigned long self;
+
+	if (r->gic.mode != DGIC_MODE_V3 || irq >= 32) {
+		return;
+	}
+	self = dgic_find_redist(&r->gic);
+	if (self == 0) {
+		return;
+	}
+
+	/* Drop any stale pending state, then enable it level-triggered. */
+	dgic_write32(self, DGICR_ICENABLER0, 1ul << irq);
+	dgic_write32(self, DGICR_ICPENDR0, 1ul << irq);
+	dgic_isb();
+	dgic_enable_ppi(&r->gic, irq);
+	dgic_isb();
+
+	out("  handoff: PPI enabled ", CLR_CYAN);
+	outdec(irq);
+	out("  isenabler0 ", CLR_CYAN);
+	outhex(dgic_read32(self, DGICR_ISENABLER0));
+	out(" ispender0 ", CLR_CYAN);
+	outhex(dgic_read32(self, DGICR_ISPENDR0));
+	fb_newline();
+}
+
+/*
  * E0.2 of docs/R1-GIC-PLAN.md.
  *
  * Forcing a PPI pending through GICR_ISPENDR0 reaches the CPU interface, but a
