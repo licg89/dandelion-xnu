@@ -1,0 +1,25 @@
+diff --git a/bsd/kern/sys_ulock.c b/bsd/kern/sys_ulock.c
+index ee848d5..5a9c508 100644
+--- a/bsd/kern/sys_ulock.c
++++ b/bsd/kern/sys_ulock.c
+@@ -239,14 +239,20 @@ ulock_initialize(void)
+ 	kprintf("%s>thread_max=%d, ull_hash_buckets=%d\n", __FUNCTION__, thread_max, ull_hash_buckets);
+ 	assert(ull_hash_buckets >= thread_max / 4);
+ 
++	kprintf("ulock: zalloc %d buckets x %d bytes\n", ull_hash_buckets, (int)sizeof(ull_bucket_t));
+ 	ull_bucket = zalloc_permanent(sizeof(ull_bucket_t) * ull_hash_buckets,
+ 	    ZALIGN_PTR);
++	kprintf("ulock: zalloc -> %p\n", (void *)ull_bucket);
+ 	assert(ull_bucket != NULL);
+ 
+ 	for (int i = 0; i < ull_hash_buckets; i++) {
+ 		queue_init(&ull_bucket[i].ulb_head);
+ 		lck_spin_init(&ull_bucket[i].ulb_lock, &ull_lck_grp, NULL);
++		if ((i & 127) == 127) {
++			kprintf("ulock: bucket %d\n", i);
++		}
+ 	}
++	kprintf("ulock: buckets ready\n");
+ }
+ STARTUP(EARLY_BOOT, STARTUP_RANK_FIRST, ulock_initialize);
+ 
