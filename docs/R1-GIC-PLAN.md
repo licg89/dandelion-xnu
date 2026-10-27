@@ -305,3 +305,29 @@ D:\aios\artifacts\backup\dtbo.img / boot_para.img / seccfg.img
 |---|---|
 | 2026-10-26 | 发现两安全态；组寄存器只读；PPI/SPI 都收不到 |
 | 2026-10-27 | 修掉 `ICC_IGRPEN0_EL1` UNDEFINED（内核得以越过 `arm_init`）；起草本计划；E0 待执行 |
+
+---
+
+## 7. 2026-10-27 收尾实验：PPI 交给内核后，死点不变
+
+shim 在交接前使能 PPI 27（gic_prepare_kernel_timer()），内核侧 ICC 首次成功：
+
+`
+DANDELION: cpu interface init returned 0
+DANDELION: icc ready (sre=1 pmr=f0 ctlr=400), timer INTID 27 on Group1/IRQ
+`
+
+但内核**仍然停在同一个位置**：
+
+`
+ulock: buckets ready
+[step] phase store: before
+[step] phase store: after      ← 之后无输出
+`
+
+**结论：kernel_startup_initialize_upto() 返回处的死机与中断无关。**
+GIC 侧现在已经是「已使能 + CPU 接口就绪」的状态，所以这条死点可以排除为
+中断缺失。剩下最强的假设仍是**栈/返回地址被破坏**（加代码死点会后移）。
+
+下一步：按 docs/FINDINGS-2026-10-27.md 的「下一步实验」第 2 条，
+在 kernel_bootstrap() 里放栈哨兵，并二分那 2284 个启动项。
