@@ -255,11 +255,16 @@ static void show_platform_probe(uint64_t dtb)
  * ASCII independent of where fb scrolling left the cursor, and it survives the
  * panel scrolling past.
  *
- * The report is printed *before* the commit so that it ends up inside the log
- * itself - which is the whole point, since the panel is the thing we are
- * trying to stop photographing.  A second pass then captures the first pass's
- * verdict as well.
+ * The same bring-up also serves the kernel: it claims a free run inside
+ * flashinfo for the kernel's own console log and publishes its LBA, so the
+ * kernel never has to touch the card's initialisation (bootshim/msdc.c and
+ * docs/EMMC-LOG.md).
  */
+#define MSDC_SHIM_SPAN (128u * 1024u)
+
+static struct msdc_report g_emmc_report;
+static int g_emmc_prepared;
+
 static uint32_t
 captured_log(const char **text)
 {
@@ -272,15 +277,48 @@ captured_log(const char **text)
 	return length;
 }
 
+/*
+ * Stage MSDC0 and publish the kernel's region.  Runs before the hand-off in
+ * every mode, because the kernel cannot do this itself: inheriting LK's card
+ * state is a one-shot opportunity and the shim is the stage that can still
+ * report a failure on the panel.
+ */
+static void
+emmc_boot_setup(void)
+{
+	uint32_t kernel_lba = 0;
+	int rc;
+
+	rc = msdc_log_prepare(&g_emmc_report, MSDC_SHIM_SPAN);
+	g_emmc_prepared = rc == 0;
+	if (g_emmc_prepared)
+		rc = msdc_reserve_kernel_region(&g_emmc_report, &kernel_lba,
+						DANDELION_EMMC_KLOG_SECTORS);
+
+	fb_puts("eMMC log: ", CLR_CYAN);
+	if (rc == 0) {
+		fb_putdec("shim slot ", g_emmc_report.target_lba, CLR_GREEN);
+		fb_putdec("kernel slot ", kernel_lba, CLR_GREEN);
+	} else {
+		fb_puthex("unavailable, rc ", (unsigned long)(unsigned)rc, CLR_RED);
+	}
+	msdc_publish(rc == 0, kernel_lba, DANDELION_EMMC_KLOG_SECTORS);
+}
+
 static void
 dump_log_to_emmc(void)
 {
-	struct msdc_report report;
 	const char *text = 0;
 	uint32_t length;
 	int rc;
 
 	fb_puts("\n--- eMMC log channel (flashinfo) ---\n", CLR_YELLOW);
+	msdc_report_print(&g_emmc_report);
+
+	if (!g_emmc_prepared) {
+		fb_puts("  prepare failed, nothing written\n", CLR_RED);
+		return;
+	}
 
 	length = captured_log(&text);
 	if (!length) {
@@ -288,17 +326,7 @@ dump_log_to_emmc(void)
 		return;
 	}
 
-	/* Reserve a little extra: the report printed below becomes part of the
-	 * log, so the text grows between here and the commit. */
-	rc = msdc_log_prepare(&report, length + 8192u);
-	msdc_report_print(&report);
-	if (rc) {
-		fb_puts("  prepare failed, nothing written\n", CLR_RED);
-		return;
-	}
-
-	length = captured_log(&text);		/* now includes the report */
-	rc = msdc_log_commit(&report, text, length);
+	rc = msdc_log_commit(&g_emmc_report, text, length);
 	fb_puthex("  commit rc", (unsigned long)(unsigned)rc, CLR_WHITE);
 	if (rc) {
 		fb_puts("  LOG NOT WRITTEN\n", CLR_RED);
@@ -308,12 +336,12 @@ dump_log_to_emmc(void)
 
 	/* Second pass: the log now contains its own report and the line above. */
 	length = captured_log(&text);
-	rc = msdc_log_prepare(&report, length + 8192u);
-	if (!rc)
-		rc = msdc_log_commit(&report, text, length);
-	fb_puthex("  pass2 rc ", (unsigned long)(unsigned)rc, CLR_WHITE);
-	if (!rc)
-		fb_puts("  final log on medium\n", CLR_GREEN);
+	if (length) {
+		rc = msdc_log_commit(&g_emmc_report, text, length);
+		fb_puthex("  pass2 rc ", (unsigned long)(unsigned)rc, CLR_WHITE);
+		if (!rc)
+			fb_puts("  final log on medium\n", CLR_GREEN);
+	}
 }
 #endif /* MSDC_LOG */
 
@@ -333,6 +361,10 @@ __attribute__((noreturn)) void shim_el1(uint64_t dtb)
 
 		gic_probe_run(&fdt_platform_info, &probe);
 	}
+
+#ifdef MSDC_LOG
+	emmc_boot_setup();
+#endif
 
 #ifdef PROBE_ONLY
 	/*

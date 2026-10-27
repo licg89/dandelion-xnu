@@ -32,6 +32,7 @@
 #include "fb.h"
 #include "log_block.h"
 #include "msdc.h"
+#include "DANDELION.h"
 
 #define MSDC0_BASE	0x11230000UL
 
@@ -146,6 +147,7 @@ enum {
 static uint32_t msdc_ready;
 static uint32_t msdc_log_base;
 static uint32_t msdc_lba_offset = MSDC_LOG_LBA_OFFSET;
+static uint32_t msdc_clock_div;
 
 /* ---------------------------------------------------------------------- */
 /* Register access.  One barrier per register write keeps the controller   */
@@ -699,6 +701,7 @@ host_bringup(struct msdc_report *r, uint32_t divider)
 		if (expired(deadline))
 			return MSDC_ENOCLK;
 	r->clock_div = divider;
+	msdc_clock_div = divider;
 	r->cfg_after = rd(R_CFG);
 
 	/* Generous hardware backstops; software deadlines are the real limit. */
@@ -1221,6 +1224,61 @@ msdc_log_run(struct msdc_report *r, const char *text, uint32_t length)
 	if (rc)
 		return rc;
 	return msdc_log_commit(r, text, length);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Hand-off to the kernel                                                 */
+/* ---------------------------------------------------------------------- */
+
+/*
+ * Claim the region the kernel will stream its console into.  Same rule as the
+ * shim's own slot: it must be free space, or already hold one of our logs.
+ */
+int
+msdc_reserve_kernel_region(struct msdc_report *r, uint32_t *lba_out,
+			   uint32_t sectors)
+{
+	uint32_t lba;
+	uint32_t pattern = 0;
+	static uint8_t probe[512] __attribute__((aligned(8)));
+
+	if (!r->flashinfo_lba || !sectors)
+		return MSDC_EARG;
+	if (DANDELION_EMMC_KLOG_OFFSET + sectors > r->flashinfo_sectors)
+		return MSDC_EARG;
+
+	lba = r->flashinfo_lba + DANDELION_EMMC_KLOG_OFFSET;
+	if (!span_is_free(lba, sectors, &pattern)) {
+		if (msdc_read_sectors(lba, probe, 512))
+			return MSDC_EIO;
+		if (!same_bytes(probe + SLOG_OFF_MAGIC, SLOG_MAGIC, 8))
+			return MSDC_ENOTERASED;
+	}
+	*lba_out = lba;
+	return MSDC_OK;
+}
+
+/*
+ * Publish the hand-off record.  The magic is written last so the kernel can
+ * never read a half-filled struct, and it is cleared first for the same
+ * reason.
+ */
+void
+msdc_publish(int ok, uint32_t lba, uint32_t sectors)
+{
+	struct dandelion_emmc_handoff *h = (struct dandelion_emmc_handoff *)
+	    (uintptr_t)DANDELION_EMMC_HANDOFF_PA;
+
+	h->magic = 0;
+	__asm__ volatile("dsb sy" ::: "memory");
+	h->ok = ok ? 1u : 0u;
+	h->lba = lba;
+	h->sectors = sectors;
+	h->clock_div = msdc_clock_div;
+	h->reserved = 0;
+	__asm__ volatile("dsb sy" ::: "memory");
+	h->magic = DANDELION_EMMC_HANDOFF_MAGIC;
+	__asm__ volatile("dsb sy" ::: "memory");
 }
 
 /* ---------------------------------------------------------------------- */

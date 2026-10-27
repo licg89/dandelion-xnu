@@ -124,6 +124,42 @@
 #define DANDELION_NCLUSTERS       2
 #define DANDELION_CPUS_PER_CLUSTER 4
 
+/*
+ * eMMC log channel.
+ *
+ * The panel and the ramoops ring both die with the machine, and this kernel
+ * has a habit of resetting without saying anything.  The boot shim stages
+ * MSDC0 (it is the only stage that can still inherit LK's card state) and
+ * publishes the LBA of a free run inside the unused `flashinfo` partition
+ * here; the kernel then streams its console output there with a polled PIO
+ * writer.  A kernel that dies silently leaves its log on the medium.
+ *
+ * Hand-off record layout is fixed and lives in plain DRAM:
+ */
+struct dandelion_emmc_handoff {
+	uint32_t magic;         /* DANDELION_EMMC_HANDOFF_MAGIC when valid */
+	uint32_t ok;            /* 1: controller staged, region verified    */
+	uint32_t lba;           /* first sector of the log block            */
+	uint32_t sectors;       /* sectors reserved                         */
+	uint32_t clock_div;     /* CKDIV the shim left programmed           */
+	uint32_t reserved;
+};
+
+#define DANDELION_EMMC_HANDOFF_PA    0x5FD00000ULL
+#define DANDELION_EMMC_HANDOFF_MAGIC 0x444D4844U  /* "DHMD" */
+
+/* MSDC0, the eMMC controller (stock DTB /msdc@11230000). */
+#define DANDELION_MSDC_BASE       0x11230000ULL
+#define DANDELION_MSDC_SIZE       0x00010000ULL
+
+/*
+ * Where the kernel's block sits inside flashinfo, and how much of it is
+ * reserved.  The shim writes its own log at +1 MiB in a slot it finds by
+ * scanning; +2 MiB is far enough that the two can never overlap.
+ */
+#define DANDELION_EMMC_KLOG_OFFSET  4096U   /* +2 MiB, in 512 B sectors */
+#define DANDELION_EMMC_KLOG_SECTORS 1024U   /* 512 KiB                  */
+
 #define DANDELION_CHIP_ID         0x67620001
 #define DANDELION_COMPATIBLE      "xiaomi,dandelion\0mediatek,mt6762g"
 

@@ -173,10 +173,10 @@ index e26a1d7..8e6fb01 100644
  	/*
  	 * Initialize the stack protector for all future calls
 diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
-index d89b0f1..626d02c 100644
+index d89b0f1..b44076b 100644
 --- a/osfmk/arm64/arm_vm_init.c
 +++ b/osfmk/arm64/arm_vm_init.c
-@@ -51,6 +51,21 @@
+@@ -51,6 +51,22 @@
  
  #include <san/kasan.h>
  
@@ -185,6 +185,7 @@ index d89b0f1..626d02c 100644
 +extern void dandelion_trace_mark(const char *);
 +extern void dandelion_trace_attach(void);
 +extern void dandelion_probe_bar(unsigned int, unsigned int);
++extern void dandelion_emmc_enable(void);
 +#define DANDELION_TRACE(s)        dandelion_trace_mark(s)
 +#define DANDELION_KEEP_IDENTITY_MAP 1
 +#define DANDELION_TRACE_ATTACH()  dandelion_trace_attach()
@@ -198,7 +199,7 @@ index d89b0f1..626d02c 100644
  #if __ARM_KERNEL_PROTECT__
  /*
   * If we want to support __ARM_KERNEL_PROTECT__, we need a sufficient amount of
-@@ -1825,6 +1840,8 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -1825,6 +1841,8 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	vm_offset_t      ptpage_vaddr;
  	vm_map_address_t dynamic_memory_begin;
  
@@ -207,7 +208,7 @@ index d89b0f1..626d02c 100644
  	/*
  	 * Get the virtual and physical kernel-managed memory base from boot_args.
  	 */
-@@ -1846,6 +1863,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -1846,6 +1864,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	 */
  	gPhysSize = mem_size = ((gPhysBase + args->memSize) & ~PAGE_MASK) - gPhysBase;
  
@@ -215,7 +216,7 @@ index d89b0f1..626d02c 100644
  	mem_actual = args->memSizeActual ? args->memSizeActual : mem_size;
  
  	if ((memory_size != 0) && (mem_size > memory_size)) {
-@@ -1854,6 +1872,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -1854,6 +1873,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	} else {
  		max_mem_actual = mem_actual;
  	}
@@ -223,7 +224,7 @@ index d89b0f1..626d02c 100644
  	if (mem_size >= ((VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS) / 2)) {
  		panic("Unsupported memory configuration %lx", mem_size);
  	}
-@@ -1865,11 +1884,14 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -1865,11 +1885,14 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	physmap_base = phystokv(args->topOfKernelData);
  #endif
  
@@ -238,7 +239,7 @@ index d89b0f1..626d02c 100644
  
  #if XNU_MONITOR
  	physmap_base = ROUND_TWIG(physmap_base);
-@@ -1907,11 +1929,13 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -1907,11 +1930,13 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
      iofilter_stacks_end = (void*)dynamic_memory_begin;
  #endif
  #endif
@@ -252,7 +253,7 @@ index d89b0f1..626d02c 100644
  	boot_ttep = kvtophys((vm_offset_t)boot_tte);
  
  #if DEVELOPMENT || DEBUG
-@@ -1938,12 +1962,15 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -1938,12 +1963,15 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	 * to trampoline to KVA. this requires only 3 pages to stay resident.
  	 */
  	avail_start = args->topOfKernelData;
@@ -268,7 +269,7 @@ index d89b0f1..626d02c 100644
  	invalid_tte = (tt_entry_t *)alloc_ptpage(TRUE);
  	invalid_ttep = kvtophys((vm_offset_t)invalid_tte);
  	bzero(invalid_tte, ARM_PGBYTES);
-@@ -1951,9 +1978,11 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -1951,9 +1979,11 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	/*
  	 * Initialize l1 page table page
  	 */
@@ -280,7 +281,7 @@ index d89b0f1..626d02c 100644
  	avail_end = gPhysBase + mem_size;
  	assert(!(avail_end & PAGE_MASK));
  
-@@ -1971,6 +2000,8 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -1971,6 +2001,8 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	 *   the so called physical aperture should be statically mapped
  	 */
  	init_ptpages(cpu_tte, gVirtBase, dynamic_memory_begin, TRUE, ARM_TTE_TABLE_AP(ARM_TTE_TABLE_AP_USER_NA));
@@ -289,7 +290,7 @@ index d89b0f1..626d02c 100644
  
  #if defined(ARM_LARGE_MEMORY)
  	/*
-@@ -2060,6 +2091,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2060,6 +2092,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  		segLINKB        = (vm_offset_t) getsegdatafromheader(kc_mh,            "__LINKEDIT", &segSizeLINK);
  	}
  
@@ -297,7 +298,7 @@ index d89b0f1..626d02c 100644
  	(void) PE_parse_boot_argn("use_contiguous_hint", &use_contiguous_hint, sizeof(use_contiguous_hint));
  	assert(segSizePRELINKTEXT < 0x03000000); /* 23355738 */
  
-@@ -2068,12 +2100,15 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2068,12 +2101,15 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  		assert(segSizePLKDATACONST && segSizePLKTEXTEXEC);
  	}
  
@@ -313,7 +314,7 @@ index d89b0f1..626d02c 100644
  
  	vm_kernel_base = segTEXTB;
  	vm_kernel_top = (vm_offset_t) &last_kernel_symbol;
-@@ -2094,6 +2129,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2094,6 +2130,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	vm_prelink_sdata = segPRELINKDATAB;
  	vm_prelink_edata = segPRELINKDATAB + segSizePRELINKDATA;
  
@@ -321,7 +322,7 @@ index d89b0f1..626d02c 100644
  	arm_vm_prot_init(args);
  
  	/*
-@@ -2101,6 +2137,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2101,6 +2138,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	 *   cover this address range:
  	 *     LOW_GLOBAL_BASE_ADDRESS + 2MB
  	 */
@@ -329,7 +330,7 @@ index d89b0f1..626d02c 100644
  	va_l1 = va_l2 = LOW_GLOBAL_BASE_ADDRESS;
  	cpu_l1_tte = cpu_tte + ((va_l1 & ARM_TT_L1_INDEX_MASK) >> ARM_TT_L1_SHIFT);
  	cpu_l2_tte = ((tt_entry_t *) phystokv(((*cpu_l1_tte) & ARM_TTE_TABLE_MASK))) + ((va_l2 & ARM_TT_L2_INDEX_MASK) >> ARM_TT_L2_SHIFT);
-@@ -2125,6 +2162,8 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2125,6 +2163,8 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	 * With legacy 3 level table systems we never mapped more than a single L1 entry so this may be dead code
  	 */
  	init_ptpages(cpu_tte, dynamic_memory_begin, VM_MAX_KERNEL_ADDRESS, TRUE, ARM_DYNAMIC_TABLE_XN | ARM_TTE_TABLE_AP(ARM_TTE_TABLE_AP_USER_NA));
@@ -338,7 +339,7 @@ index d89b0f1..626d02c 100644
  #endif
  
  #if KASAN
-@@ -2135,20 +2174,45 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2135,20 +2175,45 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  #endif /* KASAN */
  
  #if MONOTONIC
@@ -348,14 +349,14 @@ index d89b0f1..626d02c 100644
  
  	arm_set_user_tbi();
 +	DANDELION_TRACE("vm: tbi done\n");
-+
  
++
 +	DANDELION_TRACE("vm: physmap_init\n");
  	arm_vm_physmap_init(args);
  	set_mmu_ttb_alternate(cpu_ttep & TTBR_BADDR_MASK);
 +	DANDELION_TRACE("vm: ttb alternate\n");
- 
 +
+ 
 +	/*
 +	 * The monitor (PPLE) is only present on Apple silicon; keep the call out
 +	 * of native builds where ml_enable_monitor() has no implementation.
@@ -384,17 +385,26 @@ index d89b0f1..626d02c 100644
  	// global table pointers may need to be different due to physical aperture remapping
  	cpu_tte = (tt_entry_t*)(phystokv(cpu_ttep));
  	invalid_tte = (tt_entry_t*)(phystokv(invalid_ttep));
-@@ -2244,7 +2308,9 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2244,7 +2309,18 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
      }
  #endif
  #endif
 +	DANDELION_TRACE("arm_vm_init: pmap_bootstrap\n");
  	pmap_bootstrap(dynamic_memory_begin);
 +	DANDELION_TRACE("arm_vm_init: pmap_bootstrap done\n");
++
++#if defined(DANDELION)
++	/*
++	 * The VM can map device memory from here on, so this is the earliest
++	 * point at which the eMMC log channel can be brought up.  Everything
++	 * printed before it is held in a RAM ring and flushed by the call.
++	 */
++	dandelion_emmc_enable();
++#endif
  
  	disable_preemption();
  
-@@ -2371,6 +2437,9 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+@@ -2371,6 +2447,9 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
  	first_avail = avail_start;
  	patch_low_glo_static_region(args->topOfKernelData, avail_start - args->topOfKernelData);
  	enable_preemption();
@@ -448,10 +458,10 @@ index 0a00656..aa4c197 100644
  	iotrace_disable();
  
 diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
-index e44008f..cc19d13 100644
+index e44008f..8ad8e47 100644
 --- a/osfmk/kern/printf.c
 +++ b/osfmk/kern/printf.c
-@@ -908,6 +908,397 @@ vprintf(const char *fmt, va_list ap)
+@@ -908,6 +908,853 @@ vprintf(const char *fmt, va_list ap)
  	return vprintf_internal(fmt, ap, __builtin_return_address(0));
  }
  
@@ -833,6 +843,461 @@ index e44008f..cc19d13 100644
 +	}
 +}
 +
++/* Board constants for the log channel live with the other Dandelion
++ * definitions; the shim includes the same header, so the hand-off layout
++ * cannot drift. */
++#include <pexpert/arm64/DANDELION.h>
++
++/*
++ * ---------------------------------------------------------------------
++ * Dandelion eMMC log channel
++ * ---------------------------------------------------------------------
++ *
++ * The panel is only readable by photographing it, and the ramoops ring dies
++ * with the machine.  This kernel has a habit of resetting without saying
++ * anything, so the console is streamed to the unused `flashinfo` partition
++ * through a polled PIO writer instead.
++ *
++ * Only the *write* half lives here.  Card bring-up, the GPT lookup and the
++ * choice of a free run are the boot shim's job (bootshim/msdc.c): inheriting
++ * LK's card state is a one-shot opportunity, and the shim is the stage that
++ * can still report a failure on the panel.  The shim publishes the LBA of the
++ * kernel's block through struct dandelion_emmc_handoff in DANDELION.h.
++ *
++ * The block format is bootshim/log_block.h; the offsets are repeated here
++ * because osfmk cannot include the shim's headers.  See docs/EMMC-LOG.md.
++ */
++#define DL_EMMC_SECTOR         512
++#define DL_EMMC_RING           (16 * 1024)
++#define DL_EMMC_HEADER_EVERY   8        /* sectors between header updates */
++
++/* MSDC0 registers, see bootshim/msdc.c for the annotated table */
++#define DL_MSDC_CFG            0x000
++#define DL_MSDC_INT            0x00C
++#define DL_MSDC_INTEN          0x010
++#define DL_MSDC_FIFOCS         0x014
++#define DL_MSDC_TXDATA         0x018
++#define DL_MSDC_SDC_CMD        0x034
++#define DL_MSDC_SDC_ARG        0x038
++#define DL_MSDC_SDC_STS        0x03C
++#define DL_MSDC_RESP0          0x040
++#define DL_MSDC_BLK_NUM        0x050
++
++#define DL_CFG_PIO             (1u << 3)
++#define DL_CFG_CKSTB           (1u << 7)
++#define DL_STS_SDCBUSY         (1u << 0)
++#define DL_STS_CMDBUSY         (1u << 1)
++#define DL_INT_CMDRDY          (1u << 8)
++#define DL_INT_CMDTMO          (1u << 9)
++#define DL_INT_RSPCRCERR       (1u << 10)
++#define DL_INT_XFER_COMPL      (1u << 12)
++#define DL_INT_DATTMO          (1u << 14)
++#define DL_INT_DATCRCERR       (1u << 15)
++#define DL_INT_CMD_ALL         (DL_INT_CMDRDY | DL_INT_CMDTMO | DL_INT_RSPCRCERR)
++#define DL_INT_DAT_ALL         (DL_INT_XFER_COMPL | DL_INT_DATTMO | DL_INT_DATCRCERR)
++#define DL_FIFOCS_TXCNT(x)     (((x) >> 16) & 0xFFu)
++#define DL_FIFOCS_CLR          (1u << 31)
++#define DL_FIFO_DEPTH          128u
++#define DL_CMD13_W             0x0000008Du
++#define DL_CMD24_W             0x02002898u
++#define DL_R1_READY_FOR_DATA   (1u << 8)
++#define DL_R1_STATE(s)         (((s) >> 9) & 0xFu)
++#define DL_R1_STATE_TRAN       4u
++#define DL_R1_FATAL_MASK       0xFFFFA080u
++
++/* log block header offsets, identical to bootshim/log_block.h */
++#define DL_LOG_MAGIC           "DLXLOG01"
++#define DL_LOG_VERSION         1
++#define DL_LOG_SLOT_SIZE       (64 * 1024)
++#define DL_LOG_SLOTS           8
++#define DL_LOG_OFF_MAGIC       0x00
++#define DL_LOG_OFF_VERSION     0x08
++#define DL_LOG_OFF_HDR_BYTES   0x0C
++#define DL_LOG_OFF_BOOT        0x10
++#define DL_LOG_OFF_SLOT_COUNT  0x14
++#define DL_LOG_OFF_SLOT_SIZE   0x18
++#define DL_LOG_OFF_NEXT_SLOT   0x1C
++#define DL_LOG_OFF_TEXT_BYTES  0x20
++#define DL_LOG_OFF_CNTPCT      0x24
++#define DL_LOG_OFF_CNTFRQ      0x2C
++
++extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++
++static volatile unsigned int *dl_emmc_reg;
++static uint32_t dl_emmc_lba;
++static uint32_t dl_emmc_sectors;
++static uint32_t dl_emmc_index;          /* sector index in the text area */
++static uint32_t dl_emmc_used;           /* bytes used in that sector     */
++static int dl_emmc_ready;
++static int dl_emmc_failed;
++static unsigned char dl_emmc_sector[DL_EMMC_SECTOR] __attribute__((aligned(64)));
++static unsigned char dl_emmc_ring[DL_EMMC_RING] __attribute__((aligned(64)));
++static unsigned int dl_emmc_ring_len;
++
++static uint32_t
++dl_emmc_rd(unsigned int off)
++{
++	return dl_emmc_reg[off >> 2];
++}
++
++static void
++dl_emmc_wr(unsigned int off, uint32_t value)
++{
++	dl_emmc_reg[off >> 2] = value;
++	__asm__ volatile("dsb sy" ::: "memory");
++}
++
++/* Same trick as the shim: the generic counter is the only clock that is
++ * guaranteed to be running this early. */
++static uint64_t
++dl_emmc_now_ms(void)
++{
++	uint64_t count, freq;
++
++	__asm__ volatile("mrs %0, cntfrq_el0" : "=r"(freq));
++	__asm__ volatile("mrs %0, cntpct_el0" : "=r"(count));
++	if (freq == 0) {
++		return count / 10000;
++	}
++	return (count / freq) * 1000 + ((count % freq) * 1000) / freq;
++}
++
++/* The staging buffers are ordinary memory and the FIFO is a device, so every
++ * line has to be made visible to the card before it is handed over. */
++static void
++dl_emmc_clean(const void *addr, unsigned long bytes)
++{
++	unsigned long start = (unsigned long)addr & ~63UL;
++	unsigned long end = ((unsigned long)addr + bytes + 63UL) & ~63UL;
++	unsigned long p;
++
++	for (p = start; p < end; p += 64) {
++		__asm__ volatile("dc civac, %0" :: "r"(p) : "memory");
++	}
++	__asm__ volatile("dsb sy" ::: "memory");
++}
++
++static int
++dl_emmc_wait_sts(uint32_t mask, uint32_t ms)
++{
++	uint64_t deadline = dl_emmc_now_ms() + ms;
++
++	while (dl_emmc_rd(DL_MSDC_SDC_STS) & mask) {
++		if (dl_emmc_now_ms() > deadline) {
++			return -1;
++		}
++	}
++	return 0;
++}
++
++static int
++dl_emmc_fifo_clear(void)
++{
++	uint64_t deadline = dl_emmc_now_ms() + 20;
++
++	dl_emmc_wr(DL_MSDC_FIFOCS, dl_emmc_rd(DL_MSDC_FIFOCS) | DL_FIFOCS_CLR);
++	while (dl_emmc_rd(DL_MSDC_FIFOCS) & DL_FIFOCS_CLR) {
++		if (dl_emmc_now_ms() > deadline) {
++			return -1;
++		}
++	}
++	return 0;
++}
++
++static int
++dl_emmc_cmd(uint32_t cmdw, uint32_t arg, uint32_t *r1, uint32_t ms)
++{
++	uint32_t opcode = cmdw & 0x3Fu;
++	uint64_t deadline;
++
++	if (dl_emmc_wait_sts((opcode == 13u) ? DL_STS_CMDBUSY : DL_STS_SDCBUSY,
++	    100)) {
++		return -1;
++	}
++
++	dl_emmc_wr(DL_MSDC_INT, DL_INT_CMD_ALL);
++	dl_emmc_wr(DL_MSDC_SDC_ARG, arg);
++	dl_emmc_wr(DL_MSDC_SDC_CMD, cmdw);
++
++	deadline = dl_emmc_now_ms() + ms;
++	for (;;) {
++		uint32_t status = dl_emmc_rd(DL_MSDC_INT) & DL_INT_CMD_ALL;
++
++		if (status) {
++			dl_emmc_wr(DL_MSDC_INT, status);
++			if (status & DL_INT_CMDTMO) {
++				return -2;
++			}
++			if (status & DL_INT_RSPCRCERR) {
++				return -3;
++			}
++			if (r1) {
++				*r1 = dl_emmc_rd(DL_MSDC_RESP0);
++			}
++			return 0;
++		}
++		if (dl_emmc_now_ms() > deadline) {
++			return -4;
++		}
++	}
++}
++
++static int
++dl_emmc_wait_ready(uint32_t ms)
++{
++	uint64_t deadline = dl_emmc_now_ms() + ms;
++
++	for (;;) {
++		uint32_t r1 = 0;
++
++		if (dl_emmc_cmd(DL_CMD13_W, 1u << 16, &r1, 50) == 0) {
++			if (r1 & DL_R1_FATAL_MASK) {
++				return -1;
++			}
++			if (DL_R1_STATE(r1) == DL_R1_STATE_TRAN &&
++			    (r1 & DL_R1_READY_FOR_DATA)) {
++				return 0;
++			}
++		}
++		if (dl_emmc_now_ms() > deadline) {
++			return -1;
++		}
++	}
++}
++
++/* One sector, one CMD24.  Multi-block would be faster, but the console
++ * produces a trickle and single-block removes the CMD12 state machine. */
++static int
++dl_emmc_write_block(uint32_t lba, const void *buf)
++{
++	const unsigned char *p = (const unsigned char *)buf;
++	uint32_t response = 0, status;
++	uint64_t deadline;
++	unsigned int sent = 0;
++
++	if (dl_emmc_wait_sts(DL_STS_SDCBUSY, 100) || dl_emmc_fifo_clear()) {
++		return -1;
++	}
++
++	dl_emmc_wr(DL_MSDC_BLK_NUM, 1);
++	dl_emmc_wr(DL_MSDC_INT, DL_INT_DAT_ALL);
++
++	if (dl_emmc_cmd(DL_CMD24_W, lba, &response, 200)) {
++		return -2;
++	}
++	if (response & DL_R1_FATAL_MASK) {
++		return -3;
++	}
++
++	deadline = dl_emmc_now_ms() + 2000;
++	for (;;) {
++		status = dl_emmc_rd(DL_MSDC_INT) & DL_INT_DAT_ALL;
++		if (status) {
++			dl_emmc_wr(DL_MSDC_INT, status);
++			if (status & (DL_INT_DATTMO | DL_INT_DATCRCERR)) {
++				return -4;
++			}
++			if (status & DL_INT_XFER_COMPL) {
++				break;
++			}
++		}
++		if (sent < DL_EMMC_SECTOR &&
++		    DL_FIFOCS_TXCNT(dl_emmc_rd(DL_MSDC_FIFOCS)) == 0) {
++			unsigned int burst = DL_EMMC_SECTOR - sent;
++
++			if (burst > DL_FIFO_DEPTH) {
++				burst = DL_FIFO_DEPTH;
++			}
++			for (unsigned int i = 0; i < burst; i += 4) {
++				uint32_t word;
++
++				__builtin_memcpy(&word, p + sent + i, 4);
++				dl_emmc_reg[DL_MSDC_TXDATA >> 2] = word;
++			}
++			__asm__ volatile("dsb sy" ::: "memory");
++			sent += burst;
++		}
++		if (dl_emmc_now_ms() > deadline) {
++			return -5;
++		}
++	}
++
++	deadline = dl_emmc_now_ms() + 500;
++	while (DL_FIFOCS_TXCNT(dl_emmc_rd(DL_MSDC_FIFOCS)) != 0) {
++		if (dl_emmc_now_ms() > deadline) {
++			return -6;
++		}
++	}
++
++	return dl_emmc_wait_ready(2000);
++}
++
++static void
++dl_put_le32(unsigned char *p, uint32_t v)
++{
++	p[0] = (unsigned char)v;
++	p[1] = (unsigned char)(v >> 8);
++	p[2] = (unsigned char)(v >> 16);
++	p[3] = (unsigned char)(v >> 24);
++}
++
++static void
++dl_put_le64(unsigned char *p, uint64_t v)
++{
++	dl_put_le32(p, (uint32_t)v);
++	dl_put_le32(p + 4, (uint32_t)(v >> 32));
++}
++
++static uint32_t
++dl_emmc_text_bytes(void)
++{
++	return dl_emmc_index * DL_EMMC_SECTOR + dl_emmc_used;
++}
++
++static void
++dl_emmc_write_header(void)
++{
++	unsigned char header[DL_EMMC_SECTOR] __attribute__((aligned(64)));
++	uint32_t text = dl_emmc_text_bytes();
++	uint64_t count, freq;
++	int i;
++
++	for (i = 0; i < DL_EMMC_SECTOR; i++) {
++		header[i] = 0;
++	}
++	for (i = 0; i < 8; i++) {
++		header[DL_LOG_OFF_MAGIC + i] = (unsigned char)DL_LOG_MAGIC[i];
++	}
++	dl_put_le32(header + DL_LOG_OFF_VERSION, DL_LOG_VERSION);
++	dl_put_le32(header + DL_LOG_OFF_HDR_BYTES, DL_EMMC_SECTOR);
++	dl_put_le32(header + DL_LOG_OFF_BOOT, 0);
++	dl_put_le32(header + DL_LOG_OFF_SLOT_COUNT, DL_LOG_SLOTS);
++	dl_put_le32(header + DL_LOG_OFF_SLOT_SIZE, DL_LOG_SLOT_SIZE);
++	dl_put_le32(header + DL_LOG_OFF_NEXT_SLOT,
++	    (text + DL_LOG_SLOT_SIZE - 1) / DL_LOG_SLOT_SIZE);
++	dl_put_le32(header + DL_LOG_OFF_TEXT_BYTES, text);
++	__asm__ volatile("mrs %0, cntpct_el0" : "=r"(count));
++	__asm__ volatile("mrs %0, cntfrq_el0" : "=r"(freq));
++	dl_put_le64(header + DL_LOG_OFF_CNTPCT, count);
++	dl_put_le64(header + DL_LOG_OFF_CNTFRQ, freq);
++
++	dl_emmc_clean(header, DL_EMMC_SECTOR);
++	(void)dl_emmc_write_block(dl_emmc_lba, header);
++}
++
++static void
++dl_emmc_flush_sector(void)
++{
++	unsigned int i;
++
++	if (dl_emmc_failed) {
++		return;
++	}
++	if (dl_emmc_index + 1 >= dl_emmc_sectors) {
++		dl_emmc_failed = 1;
++		return;
++	}
++
++	for (i = dl_emmc_used; i < DL_EMMC_SECTOR; i++) {
++		dl_emmc_sector[i] = 0;
++	}
++	dl_emmc_clean(dl_emmc_sector, DL_EMMC_SECTOR);
++	if (dl_emmc_write_block(dl_emmc_lba + 1 + dl_emmc_index,
++	    dl_emmc_sector) != 0) {
++		dl_emmc_failed = 1;
++		return;
++	}
++
++	if ((dl_emmc_index % DL_EMMC_HEADER_EVERY) == 0) {
++		dl_emmc_write_header();
++	}
++}
++
++void
++dandelion_emmc_putc(char c)
++{
++	if (!dl_emmc_ready) {
++		if (dl_emmc_ring_len < sizeof(dl_emmc_ring)) {
++			dl_emmc_ring[dl_emmc_ring_len++] = (unsigned char)c;
++		}
++		return;
++	}
++	if (dl_emmc_failed) {
++		return;
++	}
++
++	dl_emmc_sector[dl_emmc_used++] = (unsigned char)c;
++	if (dl_emmc_used == DL_EMMC_SECTOR) {
++		dl_emmc_flush_sector();
++		dl_emmc_index++;
++		dl_emmc_used = 0;
++		for (unsigned int i = 0; i < DL_EMMC_SECTOR; i++) {
++			dl_emmc_sector[i] = 0;
++		}
++	} else if (c == '\n') {
++		/* Flush on every completed line: the interesting thing about a
++		 * kernel that dies is the last line it managed to print. */
++		dl_emmc_flush_sector();
++	}
++}
++
++/*
++ * Called once the VM can map device memory (arm_vm_init, right after
++ * pmap_bootstrap).  Everything printed before that is held in the RAM ring
++ * and written here, so the earliest messages are not lost either.
++ */
++void
++dandelion_emmc_enable(void)
++{
++	struct dandelion_emmc_handoff *handoff;
++	vm_offset_t va;
++	unsigned int i;
++
++	if (dl_emmc_ready || dl_emmc_failed) {
++		return;
++	}
++
++	handoff = (struct dandelion_emmc_handoff *)phystokv(
++	    DANDELION_EMMC_HANDOFF_PA);
++	if (handoff->magic != DANDELION_EMMC_HANDOFF_MAGIC ||
++	    handoff->ok != 1 || handoff->sectors < 2) {
++		return;
++	}
++
++	va = ml_io_map(DANDELION_MSDC_BASE, DANDELION_MSDC_SIZE);
++	if (va == 0) {
++		return;
++	}
++	dl_emmc_reg = (volatile unsigned int *)va;
++
++	if ((dl_emmc_rd(DL_MSDC_CFG) & DL_CFG_CKSTB) == 0) {
++		dl_emmc_failed = 1;
++		return;
++	}
++	dl_emmc_wr(DL_MSDC_INTEN, 0);
++	dl_emmc_wr(DL_MSDC_INT, 0xFFFFFFFFu);
++	if ((dl_emmc_rd(DL_MSDC_CFG) & DL_CFG_PIO) == 0) {
++		dl_emmc_wr(DL_MSDC_CFG, dl_emmc_rd(DL_MSDC_CFG) | DL_CFG_PIO);
++	}
++
++	dl_emmc_lba = handoff->lba;
++	dl_emmc_sectors = handoff->sectors;
++	dl_emmc_index = 0;
++	dl_emmc_used = 0;
++	for (i = 0; i < DL_EMMC_SECTOR; i++) {
++		dl_emmc_sector[i] = 0;
++	}
++	dl_emmc_ready = 1;
++
++	dl_emmc_write_header();
++
++	for (i = 0; i < dl_emmc_ring_len; i++) {
++		dandelion_emmc_putc((char)dl_emmc_ring[i]);
++	}
++	dl_emmc_ring_len = 0;
++	dl_emmc_write_header();
++}
++
 +/*
 + * Console mirror: every character the kernel console emits is appended to
 + * the readback buffer and painted into the scrolling trace area, so the
@@ -843,6 +1308,7 @@ index e44008f..cc19d13 100644
 +{
 +	dandelion_trace_putc(c);
 +	dandelion_fb_putc(c);
++	dandelion_emmc_putc(c);
 +}
 +#endif /* DANDELION */
 +

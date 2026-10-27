@@ -69,6 +69,33 @@ def extract_text(data, header):
     return blob.split(b"\0", 1)[0]
 
 
+def scanned_text(data, header):
+    """Recover the text without trusting ``text_bytes``.
+
+    The kernel writer only refreshes the header every few sectors, and a kernel
+    that dies stops refreshing it at all, so the last few KiB would otherwise
+    be dropped.  Sectors that were never written are still uniformly 0x00
+    (flashinfo is zeroed) or 0xFF, so the text ends at the first wholly blank
+    sector.
+    """
+    start = header["header_bytes"] or HEADER_SIZE
+    slot_size = header["slot_size"] or SLOT_SIZE
+    slot_count = min(header["slot_count"] or SLOTS, SLOTS)
+    end = min(start + slot_count * slot_size, len(data))
+
+    chunks = []
+    offset = start
+    while offset < end:
+        chunk = data[offset:offset + SECTOR]
+        if not chunk:
+            break
+        if chunk == b"\x00" * len(chunk) or chunk == b"\xff" * len(chunk):
+            break
+        chunks.append(chunk)
+        offset += SECTOR
+    return b"".join(chunks).split(b"\0", 1)[0]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("dump")
@@ -76,6 +103,10 @@ def main():
                         help="print the undecoded bytes as latin-1")
     parser.add_argument("--header", action="store_true",
                         help="print the header fields as well")
+    parser.add_argument("--scan", action="store_true",
+                        help="ignore text_bytes and stop at the first blank "
+                             "sector (used for the kernel log, whose header is "
+                             "only refreshed periodically)")
     args = parser.parse_args()
 
     with open(args.dump, "rb") as handle:
@@ -103,6 +134,8 @@ def main():
         print()
 
     text = extract_text(data, header)
+    if args.scan or not header["text_bytes"]:
+        text = scanned_text(data, header)
     if args.raw:
         print(text.decode("latin-1", "replace"))
     else:

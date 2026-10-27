@@ -110,4 +110,11 @@ void msdc_report_print(const struct msdc_report *report);
 int msdc_write_sectors(uint32_t lba, const void *data, uint32_t bytes);
 int msdc_read_sectors(uint32_t lba, void *dst, uint32_t bytes);
 
+/* Claim the region the kernel streams its console into (read-only check). */
+int msdc_reserve_kernel_region(struct msdc_report *report, uint32_t *lba_out,
+			       uint32_t sectors);
+
+/* Publish (or invalidate, with ok = 0) the hand-off record for the kernel. */
+void msdc_publish(int ok, uint32_t lba, uint32_t sectors);
+
 #endif /* DANDELION_MSDC_H */

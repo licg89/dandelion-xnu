@@ -95,13 +95,30 @@ backup gpt header @ 0x747bfff 读到 EFI PART  →  高 LBA 读取可信
    也写进去，所以拿到的日志是自描述的（含 `commit rc`）。
    第二遍通过头里的 magic 认领同一槽位（`slot reused`），boot 计数不会重复加。
 
-## 还没做的：内核日志
+## 内核侧（同日实现，待真机验证）
 
-现在只捕获 shim。内核的输出仍只到 framebuffer。要拿到内核日志，需要把同一套
-轮询 PIO 搬进 XNU：
+`dandelion_console_putc()` 现在有三个去处：trace ring、framebuffer、eMMC。
 
-- MMU 开着 → bounce buffer 必须 `dc civac` + `dsb` 后再交给 FIFO
-- MSDC0 需要 `ml_io_map`；GIC 那次教训说明「内核碰某个 MMIO 会挂总线」，
-  但 MSDC 是普通外设（Android 自己一直用它），风险低
-- 在 `dandelion_console_putc` 里累积行缓冲，每 N 行刷一次到**另一个槽位**
-  （建议 `flashinfo + 2 MiB`，避开 shim 的槽）
+分工：
+
+| 阶段 | 谁做 | 为什么 |
+|---|---|---|
+| 卡 bring-up、GPT 查找、挑空闲区 | **shim** | 继承 LK 的卡状态只有一次机会，而 shim 是唯一还能在面板上报告失败的阶段 |
+| 把 LBA 交给内核 | `struct dandelion_emmc_handoff` @ `0x5FD00000`（`DANDELION.h`） | 两边共用同一个头文件，布局不会漂 |
+| 流式写日志 | **内核** `printf.c` | 只保留写的一半：`ml_io_map` + 单块 CMD24 |
+
+要点：
+
+- 内核日志固定放在 `flashinfo + 2 MiB`（`DANDELION_EMMC_KLOG_OFFSET = 4096` 扇区），
+  与 shim 的 `+1 MiB` 槽位不重叠
+- `dandelion_emmc_enable()` 在 `arm_vm_init()` 的 `pmap_bootstrap()` 之后调用
+  —— 这是 `ml_io_map()` 可用的最早时刻。**在那之前打印的所有内容保存在
+  16 KiB 的 RAM ring 里**，enable 时一次性补写，所以 `arm_init` / `arm_vm_init`
+  的输出不会丢
+- 只用单块 CMD24（每报文一个扇区）。多块要维护 CMD12 状态机，而控制台本来就是涓流
+- **每写完一行就刷一次**当前扇区（补零重写整个扇区，索引不前进）。代价是每行一次
+  ~1 ms 的写，换来「内核死前最后一行一定在介质上」
+- 头里的 `text_bytes` 每 8 个扇区刷新一次；内核猝死时它必然滞后，
+  所以解码要用 `read_log_block.py --scan`：忽略 `text_bytes`，扫到第一个全 0x00 /
+  全 0xFF 扇区为止
+- 缓冲区是普通内存、FIFO 是设备 → 每次交给 FIFO 前 `dc civac` + `dsb sy`

@@ -124,7 +124,9 @@ fbprobe)
 xnu)
 	# Real kernel: the payload travels in the boot image's ramdisk section
 	# and handoff.c loads it from the device tree's initrd properties.
-	EXTRA_CFLAGS="-DXNU_HANDOFF"
+	# MSDC_LOG stages the eMMC controller and publishes the kernel's log
+	# region before the jump (docs/EMMC-LOG.md).
+	EXTRA_CFLAGS="-DXNU_HANDOFF -DMSDC_LOG"
 	;;
 xnu-qemu)
 	# Same handoff, but for QEMU's virt machine: console on the PL011 and an
