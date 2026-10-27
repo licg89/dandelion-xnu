@@ -468,10 +468,10 @@ index 0a00656..aa4c197 100644
  	iotrace_disable();
  
 diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
-index e44008f..963b955 100644
+index e44008f..6987219 100644
 --- a/osfmk/kern/printf.c
 +++ b/osfmk/kern/printf.c
-@@ -908,6 +908,952 @@ vprintf(const char *fmt, va_list ap)
+@@ -908,6 +908,984 @@ vprintf(const char *fmt, va_list ap)
  	return vprintf_internal(fmt, ap, __builtin_return_address(0));
  }
  
@@ -1242,12 +1242,42 @@ index e44008f..963b955 100644
 +}
 +
 +/*
++ * Full card re-initialisation.
++ *
++ * The CMD12 trick only helps when the card is merely stuck in the receive
++ * state.  If the card was reset, or dropped out of the transfer state during a
++ * long idle stretch, nothing short of going back to idle and re-selecting it
++ * brings PIO back.  The clock is already at the shim's identify rate, so this
++ * is the same sequence the shim used while looking for free space.
++ */
++static int
++dl_emmc_card_reset(void)
++{
++	uint32_t response = 0;
++	int i;
++
++	(void)dl_emmc_cmd(0x00000000u, 0, NULL, 500);             /* CMD0  */
++	for (i = 0; i < 100; i++) {
++		response = 0;
++		if (dl_emmc_cmd(0x00000181u, 0x40FF8080u, &response, 200) == 0 &&
++		    (response & 0x80000000u) == 0) {
++			break;
++		}
++	}
++	(void)dl_emmc_cmd(0x00000102u, 0, &response, 500);        /* CMD2  */
++	(void)dl_emmc_cmd(0x00000083u, 1u << 16, &response, 500); /* CMD3  */
++	(void)dl_emmc_cmd(0x00000087u, 1u << 16, &response, 500); /* CMD7  */
++	return dl_emmc_wait_ready(2000);
++}
++
++/*
 + * Recover from a failed transfer.
 + *
 + * A single-block write that fails leaves the card in the receive state, where
 + * every later command is answered with ILLEGAL_COMMAND.  A CMD12 followed by
 + * CMD13 is the documented way out, and without it one transient error would
-+ * silence the log for the rest of the boot.
++ * silence the log for the rest of the boot.  If even that does not bring the
++ * card back, re-initialise it.
 + */
 +static void
 +dl_emmc_recover(void)
@@ -1257,7 +1287,9 @@ index e44008f..963b955 100644
 +	(void)dl_emmc_cmd(0x0000438Cu /* CMD12, R1b + stop */, 0, &response, 250);
 +	dl_emmc_wr(DL_MSDC_INT, 0xFFFFFFFFu);
 +	(void)dl_emmc_fifo_clear();
-+	(void)dl_emmc_wait_ready(1000);
++	if (dl_emmc_wait_ready(1000) != 0) {
++		(void)dl_emmc_card_reset();
++	}
 +}
 +
 +static void
@@ -1425,7 +1457,7 @@ index e44008f..963b955 100644
  consdebug_putc(char c)
  {
 diff --git a/osfmk/kern/startup.c b/osfmk/kern/startup.c
-index bec97fb..bde87a1 100644
+index bec97fb..6c326c4 100644
 --- a/osfmk/kern/startup.c
 +++ b/osfmk/kern/startup.c
 @@ -221,6 +221,12 @@ TUNABLE(startup_debug_t, startup_debug, "startup_debug", 0);
@@ -1482,7 +1514,15 @@ index bec97fb..bde87a1 100644
  	kernel_bootstrap_log("trust_cache_init");
  
  	/* Initialize the runtime for the trust cache interface */
-@@ -753,11 +777,15 @@ kernel_bootstrap_thread(void)
+@@ -745,6 +769,7 @@ kernel_bootstrap_thread(void)
+ #endif
+ 
+ 	kernel_startup_initialize_upto(STARTUP_SUB_LOCKDOWN);
++	DL_MARK("lockdown phase returned");
+ 
+ 	/*
+ 	 * Get rid of segments used to bootstrap kext loading. This removes
+@@ -753,11 +778,15 @@ kernel_bootstrap_thread(void)
  	 * the static KVA mappings used for the jettisoned bootstrap segments.
  	 */
  	kernel_bootstrap_log("OSKextRemoveKextBootstrap");
@@ -1498,7 +1538,7 @@ index bec97fb..bde87a1 100644
  
  #ifdef CONFIG_XNUPOST
  	kern_return_t result = kernel_list_tests();
-@@ -786,6 +814,7 @@ kernel_bootstrap_thread(void)
+@@ -786,6 +815,7 @@ kernel_bootstrap_thread(void)
  	/*
  	 *	Start the user bootstrap.
  	 */
