@@ -1,5 +1,5 @@
 diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
-index c40c6ea..eb1fd78 100644
+index c40c6ea..d4acb1e 100644
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
 @@ -1857,7 +1857,31 @@ sleh_irq(arm_saved_state_t *state)
@@ -35,18 +35,32 @@ index c40c6ea..eb1fd78 100644
  	PE_handle_ext_interrupt();
  #else
  	/* Run the registered interrupt handler. */
-@@ -1920,7 +1944,9 @@ sleh_fiq(arm_saved_state_t *state)
+@@ -1920,7 +1944,23 @@ sleh_fiq(arm_saved_state_t *state)
  
  	sleh_interrupt_handler_prologue(state, type);
  
 -#if APPLEVIRTUALPLATFORM
 +#if defined(DANDELION)
 +	uint32_t iar = dandelion_gic_ack();
++
++	/*
++	 * A spurious acknowledgement (1020..1023) means there was nothing to
++	 * service: the CPU interface was not ready, or a second interrupt
++	 * arrived after the acknowledgement.  Falling through to the timer path
++	 * with such a value makes rtclock_intr() run against uninitialised
++	 * per-CPU state, which is exactly what a first interrupt-enabled moment
++	 * would hit.  Nothing to do, so acknowledge and return.
++	 */
++	if (iar >= 1020u) {
++		dandelion_gic_eoi(iar);
++		sleh_interrupt_handler_epilogue();
++		return;
++	}
 +#elif APPLEVIRTUALPLATFORM || HAS_GIC_V3
  	uint64_t iar = __builtin_arm_rsr64("ICC_IAR0_EL1");
  #endif
  
-@@ -1966,7 +1992,11 @@ sleh_fiq(arm_saved_state_t *state)
+@@ -1966,7 +2006,11 @@ sleh_fiq(arm_saved_state_t *state)
  		INTERRUPT_MASKED_DEBUG_END();
  	}
  
