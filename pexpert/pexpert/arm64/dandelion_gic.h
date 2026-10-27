@@ -688,10 +688,21 @@ dgic_cpuif_init(struct dgic *g)
 		__asm__ volatile("msr ICC_IGRPEN1_EL1, %0" : : "r"(1ul) : "memory");
 	}
 	dgic_isb();
-	DGIC_TRACE("gic: readback");
+	DGIC_TRACE("gic: read ctlr");
 	g->icc_ctlr = dgic_icc_ctlr_read();
+	DGIC_TRACE("gic: read pmr");
 	__asm__ volatile("mrs %0, ICC_PMR_EL1" : "=r"(g->icc_pmr));
-	__asm__ volatile("mrs %0, ICC_IGRPEN0_EL1" : "=r"(g->icc_igrpen0));
+	/*
+	 * Do NOT read ICC_IGRPEN0_EL1 here.  When the GIC has two security
+	 * states (GICD_TYPER.SecurityExtn == 1) and the kernel runs non-secure,
+	 * every Group 0 system register is UNDEFINED - and on this SoC that
+	 * takes the machine down with no output at all, which is exactly how
+	 * the boot used to end right here.  Group 0 belongs to EL3; report it
+	 * as disabled rather than asking.
+	 */
+	DGIC_TRACE("gic: igrpen0 assumed 0 (Group 0 is EL3)");
+	g->icc_igrpen0 = 0;
+	DGIC_TRACE("gic: read igrpen1");
 	__asm__ volatile("mrs %0, ICC_IGRPEN1_EL1" : "=r"(g->icc_igrpen1));
 	DGIC_TRACE("gic: cpuif init ok");
 	return DGIC_OK;
