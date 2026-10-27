@@ -35,7 +35,9 @@
 #include <AsmMacroLib.h>
 
 //
-// EDK2 preprocesses .S with $(CC) $(CC_FLAGS), so -DSOC_TYPE reaches this file.
+// EDK2 preprocesses .S with "$(PP)" $(PP_FLAGS), which for CLANGPDB is a
+// separate clang -E pass that does not inherit CC_FLAGS; MT6765Pkg.dsc.inc
+// therefore sets -DSOC_TYPE in *_*_AARCH64_PP_FLAGS as well as in CC_FLAGS.
 // Assert it, because if it ever stops arriving the timer setup below is
 // silently compiled out and the failure shows up much later, as a hang.
 //

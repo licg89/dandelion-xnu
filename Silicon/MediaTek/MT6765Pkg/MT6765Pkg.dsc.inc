@@ -59,7 +59,17 @@
   #    If a future MT676x variant in this package is ARMv8.2, this line has
   #    to become conditional.
   #
-  *_*_AARCH64_CC_FLAGS = -march=armv8-a+crc -DSOC_TYPE=$(SOC_TYPE)
+  # 3. SOC_TYPE also has to reach the AArch64 .S preprocessor.
+  #    CC_FLAGS alone is NOT enough: build_rule.txt preprocesses *.S with
+  #    "$(PP)" $(PP_FLAGS), and for CLANGPDB that is a separate clang -E
+  #    invocation that never sees CC_FLAGS. Without this line
+  #    PlatformSecLib/AArch64/PlatformHelper.S trips its own
+  #    "#if !defined (SOC_TYPE) #error" guard (observed 2026-10-28).
+  #    PP_FLAGS is platform-wide here on purpose: the define is inert for
+  #    every other AARCH64 module.
+  #
+  *_*_AARCH64_CC_FLAGS  = -march=armv8-a+crc -DSOC_TYPE=$(SOC_TYPE)
+  *_*_AARCH64_PP_FLAGS  = -DSOC_TYPE=$(SOC_TYPE)
 
 [PcdsFixedAtBuild]
   #

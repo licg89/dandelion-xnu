@@ -75,6 +75,27 @@ e02 CNTP30 ctl 0x5 ispender 0x41000000 hppir1 0x1e
 
 **结论：内核 dispatch 必须认 27；30 若进来必须被显式屏蔽或作为第二个源处理。**
 
+## C6. 「`*.fd` 出不来是因为 submodule 目录布局，要先 `git submodule update`」——**错**
+
+旧结论（`docs/HANDOVER-UEFI-1028.md` §已验证的事实、§下一步）：
+> 依赖是 zip 解压进树的、不是 git submodule 检出，所以 stuart / build_uefi.py 建不起 workspace；
+> 先跑 `git submodule update --init --recursive` 就能解决。
+
+实测（2026-10-28 01:44，`SILICIUM_UEFI.fd` 产出后回看）：
+- 顶层 `git submodule update` **根本不需要**：`Mu_Basecore` / `Common/Mu` 作为普通目录
+  照样被 `PACKAGES_PATH` 接受，meta-data 阶段能正常解析
+- 真正的错是 `MdePkg.dec(33)` 那条 `[Includes]`：
+  `Library/MipiSysTLib/mipisyst/library/include` **目录是空的** ——
+  `mu_basecore` 里 `MdePkg/Library/MipiSysTLib/mipisyst` 是一个**嵌套子模块**，
+  zip 包不含它，所以目录在、内容空
+- 同一个坑还有三个（`.dec` 的 `[Includes]` 会逐个校验）：`MdeModulePkg/.../brotli`、
+  `SecurityPkg/.../libspdm`，以及作为源码用的 `MdePkg/Library/BaseFdtLib/libfdt`
+- 「lancelot 报同样的错 ⇒ 问题在环境不在我们的包」：**结论对、归因错** ——
+  环境确实有问题，但不是 workspace 布局，是四个没被填上的嵌套子模块
+
+**结论：恢复方式是按 `mu_basecore@3c9c7b2` 的 pin 补齐这四个嵌套子模块，
+不是重做顶层 submodule 检出。** 命令见 `HANDOVER-UEFI-1028.md` §结果。
+
 ## 仍然成立的旧结论（不要删）
 
 - `fastboot boot` 不可用（MTK LK 限制）
