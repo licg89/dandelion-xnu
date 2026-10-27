@@ -1457,7 +1457,7 @@ index e44008f..6987219 100644
  consdebug_putc(char c)
  {
 diff --git a/osfmk/kern/startup.c b/osfmk/kern/startup.c
-index bec97fb..c26a6b8 100644
+index bec97fb..a12e94a 100644
 --- a/osfmk/kern/startup.c
 +++ b/osfmk/kern/startup.c
 @@ -221,6 +221,12 @@ TUNABLE(startup_debug_t, startup_debug, "startup_debug", 0);
@@ -1535,7 +1535,7 @@ index bec97fb..c26a6b8 100644
  }
  
  void
-@@ -696,17 +736,22 @@ kernel_bootstrap_thread(void)
+@@ -696,17 +736,29 @@ kernel_bootstrap_thread(void)
  	 * interrupts or preemption enabled may begin enforcement.
  	 */
  	kernel_startup_initialize_upto(STARTUP_SUB_EARLY_BOOT);
@@ -1546,7 +1546,14 @@ index bec97fb..c26a6b8 100644
  	ml_spin_debug_clear_self();
  #endif
 +	DL_MARK("early_boot: spllo next");
++/* Experiment switch: 1 = keep interrupts masked at this point, 0 = normal. */
++#define DANDELION_HOLD_INTERRUPTS 1
++#if DANDELION_HOLD_INTERRUPTS
++	/* One-shot experiment: stay masked and see whether the boot moves on. */
++	DL_MARK("early_boot: spllo SKIPPED (DANDELION_HOLD_INTERRUPTS)");
++#else
  	(void) spllo();         /* Allow interruptions */
++#endif
 +	DL_MARK("early_boot: spllo returned");
  
  	/*
@@ -1558,7 +1565,7 @@ index bec97fb..c26a6b8 100644
  
  	/*
  	 *	Initialize the shared region module.
-@@ -734,7 +779,12 @@ kernel_bootstrap_thread(void)
+@@ -734,7 +786,12 @@ kernel_bootstrap_thread(void)
  	csm_initialize_provisioning_profiles();
  #endif
  
@@ -1572,7 +1579,7 @@ index bec97fb..c26a6b8 100644
  	kernel_bootstrap_log("trust_cache_init");
  
  	/* Initialize the runtime for the trust cache interface */
-@@ -744,7 +794,15 @@ kernel_bootstrap_thread(void)
+@@ -744,7 +801,15 @@ kernel_bootstrap_thread(void)
  	load_static_trust_cache();
  #endif
  
@@ -1588,7 +1595,7 @@ index bec97fb..c26a6b8 100644
  
  	/*
  	 * Get rid of segments used to bootstrap kext loading. This removes
-@@ -753,11 +811,15 @@ kernel_bootstrap_thread(void)
+@@ -753,11 +818,15 @@ kernel_bootstrap_thread(void)
  	 * the static KVA mappings used for the jettisoned bootstrap segments.
  	 */
  	kernel_bootstrap_log("OSKextRemoveKextBootstrap");
@@ -1604,7 +1611,7 @@ index bec97fb..c26a6b8 100644
  
  #ifdef CONFIG_XNUPOST
  	kern_return_t result = kernel_list_tests();
-@@ -786,6 +848,7 @@ kernel_bootstrap_thread(void)
+@@ -786,6 +855,7 @@ kernel_bootstrap_thread(void)
  	/*
  	 *	Start the user bootstrap.
  	 */
