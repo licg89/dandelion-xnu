@@ -1,8 +1,78 @@
 # R1：GIC 两安全态，实验计划（含回滚）
 
-> 目标：让 dandelion 的非安全态内核**真的收到中断**。
-> 这是全项目唯一的 go/no-go 风险：没有 tick 就进不了 iOS 用户态，
-> 无论 UEFI 层做得多完整。
+> **2026-10-27 重大更正（E0 结果）**
+>
+> **「非安全态拿不到中断」这个结论是错的。** Android 在同一颗芯片、同样非安全态下
+> 正常工作：
+>
+> ```
+>            CPU0    CPU1  ...  CPU7
+> 3:        14328   13395  ...  11431   GICv3 30 Level  arch_timer
+> ```
+>
+> Android 的 dmesg 也确认了 redistributor 布局与我们读到的一致：
+>
+> ```
+> GICv3: CPU0: found redistributor 0   region 0:0x000000000c100000
+> GICv3: CPU1: found redistributor 1   region 0:0x000000000c120000
+> ...
+> GICv3: CPU7: found redistributor 103 region 0:0x000000000c1e0000
+> ```
+>
+> 所以 `0xc100000` 是对的，**我们探针在那一帧读到 `GICR_TYPER = 0` 是访问方式的问题**，
+> 不是硬件不可用。R1 从「可能无解的固件墙」降级为「我们的配置/访问方式有 bug」。
+>
+> 下面第 1 节的表格保留作历史记录，其中「SPI/PPI 都收不到」的**解释**是错的：
+> 它们收不到，是因为我们那一侧的配置不对，而不是硬件不给。
+
+---
+
+## 0. E0 结果（2026-10-27 实测）
+
+```
+boot mpidr 0x80000000  affinity 0x0
+frame 0xc100000 typer 0x0          aff 0x0   <- self   ← 两次读仍为 0
+frame 0xc120000 typer 0x100000100  aff 0x1
+frame 0xc140000 typer 0x200000200  aff 0x2
+frame 0xc160000 typer 0x300000300  aff 0x3
+frame 0xc180000 typer 0x10000000400 aff 0x100
+frame 0xc1a0000 typer 0x10100000500 aff 0x101
+frame 0xc1c0000 typer 0x10200000600 aff 0x102
+frame 0xc1e0000 typer 0x10300000710 aff 0x103
+```
+
+- 启动 CPU 亲和度 = `0x0`，`<- self` 正确标在 `0xc100000`
+- 布局与 Linux 完全一致 → 地址没错
+- **唯一异常**：CPU0 那一帧的 `GICR_TYPER` 两次读都是 0，而其它 7 帧正常
+
+结论：不是地址错，是**我们读/配这一帧的方式**有问题。下一步就查它。
+
+---
+
+## 0.1 下一步（取代原来的 E1）
+
+按代价排序：
+
+1. **在 self 帧上重做一次最小配置并逐项回读**（shim，零风险）：
+   - 用 32 位读替代 `dgic_read64` 读 `GICR_TYPER`（高/低半字分开），确认是否为
+     64 位访问在该帧上的问题
+   - 打印 `GICR_IGROUPR0` / `GICR_ISENABLER0` / `GICR_ISPENDR0` / `GICR_IPRIORITYR`
+     的原始值，以及**写入后**的回读
+   - 重点：`IGROUPR0` 之前写 `0xffffffff` 回读 0。若真是「NS 对 Group 0 位只读」，
+     那 Android 也应该是 0 —— 但 Android 能用 PPI，说明这些位在 Android 启动时
+     已经是 **Group 1**。**那就意味着有人在我们之前把它们设成 Group 1 了，
+     我们要找的是「为什么我们这次没被设置」。**
+2. **确认 PPI 是否真的 pending**：`GICR_ISPENDR0` 在 `CNTP_CTL.ISTATUS=1` 之后应该
+   有 bit30。若没有 → 定时器到 redistributor 这一段不通；若有但 `HPPIR` 仍 1020
+   → 是 CPU 接口/优先级/分组的问题。
+3. **对比 Android 的启动参数**：`dmesg | grep -i gic` 已有；再看 LK 是否根据
+   启动目标做不同配置（`fastboot flash boot` + 正常启动，与 Android 相同路径）。
+
+只有在上面都排除后，才考虑动 EL3/LK。
+
+---
+
+## 1. 早期记录（部分解释已被 E0 推翻）
 
 ---
 
