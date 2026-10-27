@@ -31,6 +31,20 @@
 #ifndef _PEXPERT_ARM64_DANDELION_GIC_H
 #define _PEXPERT_ARM64_DANDELION_GIC_H
 
+/*
+ * Step trace.
+ *
+ * This header is shared with the boot shim, which has no console, so the
+ * default is a no-op.  pexpert/arm/pe_fiq.c redefines it to kprintf before
+ * including the header, which turns the CPU-interface bring-up into a step by
+ * step record: on this SoC one of the ICC_* accesses below stops the machine
+ * dead with no output at all, and the only way to find out which one is to
+ * announce each one before it happens.
+ */
+#ifndef DGIC_TRACE
+#define DGIC_TRACE(step) do { } while (0)
+#endif
+
 /* ---------------------------------------------------------------------- */
 /* Distributor (GICD)                                                      */
 /* ---------------------------------------------------------------------- */
@@ -649,26 +663,37 @@ dgic_cpuif_init(struct dgic *g)
 		return DGIC_ERR_SRE;
 	}
 
+	DGIC_TRACE("gic: after sre");
 	g->icc_iidr = dgic_icc_iidr_read();
 
 	if (g->group == DGIC_GROUP0) {
+		DGIC_TRACE("gic: bpr0");
 		__asm__ volatile("msr ICC_BPR0_EL1, %0" : : "r"(0ul) : "memory");
+		DGIC_TRACE("gic: pmr");
 		__asm__ volatile("msr ICC_PMR_EL1, %0" : : "r"(0xfful) : "memory");
+		DGIC_TRACE("gic: ctlr");
 		__asm__ volatile("msr ICC_CTLR_EL1, %0" : : "r"(0ul) : "memory");
 		dgic_isb();
+		DGIC_TRACE("gic: igrpen0");
 		__asm__ volatile("msr ICC_IGRPEN0_EL1, %0" : : "r"(1ul) : "memory");
 	} else {
+		DGIC_TRACE("gic: bpr1");
 		__asm__ volatile("msr ICC_BPR1_EL1, %0" : : "r"(0ul) : "memory");
+		DGIC_TRACE("gic: pmr");
 		__asm__ volatile("msr ICC_PMR_EL1, %0" : : "r"(0xfful) : "memory");
+		DGIC_TRACE("gic: ctlr");
 		__asm__ volatile("msr ICC_CTLR_EL1, %0" : : "r"(0ul) : "memory");
 		dgic_isb();
+		DGIC_TRACE("gic: igrpen1");
 		__asm__ volatile("msr ICC_IGRPEN1_EL1, %0" : : "r"(1ul) : "memory");
 	}
 	dgic_isb();
+	DGIC_TRACE("gic: readback");
 	g->icc_ctlr = dgic_icc_ctlr_read();
 	__asm__ volatile("mrs %0, ICC_PMR_EL1" : "=r"(g->icc_pmr));
 	__asm__ volatile("mrs %0, ICC_IGRPEN0_EL1" : "=r"(g->icc_igrpen0));
 	__asm__ volatile("mrs %0, ICC_IGRPEN1_EL1" : "=r"(g->icc_igrpen1));
+	DGIC_TRACE("gic: cpuif init ok");
 	return DGIC_OK;
 }
 

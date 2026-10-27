@@ -1,5 +1,5 @@
 diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
-index e26a1d7..f6048fd 100644
+index e26a1d7..797d033 100644
 --- a/osfmk/arm/arm_init.c
 +++ b/osfmk/arm/arm_init.c
 @@ -76,6 +76,25 @@
@@ -159,7 +159,7 @@ index e26a1d7..f6048fd 100644
  
  #if APPLE_ARM64_ARCH_FAMILY
  	configure_late_apple_regs();
-@@ -598,6 +663,7 @@ arm_init(
+@@ -598,14 +663,23 @@ arm_init(
  #endif
  
  	cpu_timebase_init(TRUE);
@@ -167,17 +167,23 @@ index e26a1d7..f6048fd 100644
  
  #if KPERF
  	/* kptimer_curcpu_up() must be called after cpu_timebase_init */
-@@ -605,7 +671,9 @@ arm_init(
++	kprintf("arm_init: kptimer_curcpu_up ...\n");
+ 	kptimer_curcpu_up();
++	kprintf("arm_init: kptimer_curcpu_up ok\n");
  #endif /* KPERF */
  
++	kprintf("arm_init: PE_init_cpu ...\n");
  	PE_init_cpu();
++	kprintf("arm_init: PE_init_cpu ok\n");
 +	DANDELION_TRACE("arm_init: PE_init_cpu\n");
++	kprintf("arm_init: fiq_context_init ...\n");
  	fiq_context_init(TRUE);
++	kprintf("arm_init: fiq_context_init ok\n");
 +	DANDELION_TRACE("arm_init: fiq_context_init\n");
  
  
  #if HIBERNATION
-@@ -634,6 +702,7 @@ arm_init(
+@@ -634,6 +708,7 @@ arm_init(
  
  	gDramBase = *dram_base;
  	gDramSize = *dram_size;
