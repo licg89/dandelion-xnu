@@ -274,6 +274,98 @@ redist_self_test(unsigned long self)
 }
 
 /*
+ * E0.2 of docs/R1-GIC-PLAN.md.
+ *
+ * Forcing a PPI pending through GICR_ISPENDR0 reaches the CPU interface, but a
+ * timer that expires on its own does not.  Arm each architectural timer, then
+ * watch the redistributor's pending register and the CPU interface: whichever
+ * of the two never sees INTID 27/30 tells us where the link is broken.
+ */
+static void
+timer_ppi_test(unsigned long self)
+{
+	uint64_t frequency;
+	unsigned int i;
+
+	if (self == 0) {
+		return;
+	}
+
+	__asm__ volatile("mrs %0, cntfrq_el0" : "=r"(frequency));
+	if (frequency == 0) {
+		return;
+	}
+
+	dgic_write32(self, DGICR_ISENABLER0, (1ul << 30) | (1ul << 27));
+	dgic_isb();
+
+	/* Physical timer, ~2 ms out. */
+	{
+		uint64_t tval = frequency / 500;
+		unsigned long ctl = 0, ispender = 0, hppir = 0;
+
+		__asm__ volatile("msr cntp_tval_el0, %0" :: "r"(tval));
+		__asm__ volatile("msr cntp_ctl_el0, %0" :: "r"(1ul));
+
+		for (i = 0; i < 40000; i++) {
+			ispender = dgic_read32(self, DGICR_ISPENDR0);
+			__asm__ volatile("mrs %0, icc_hppir1_el1" : "=r"(hppir));
+			if ((ispender & (1ul << 30)) != 0 ||
+			    (hppir & 0xFFFFFFul) == 30) {
+				break;
+			}
+		}
+		__asm__ volatile("mrs %0, cntp_ctl_el0" : "=r"(ctl));
+
+		out("  e02 CNTP30 ctl ", CLR_CYAN);
+		outhex(ctl);
+		out(" ispender ", CLR_CYAN);
+		outhex(ispender);
+		out(" hppir1 ", CLR_CYAN);
+		outhex(hppir);
+		out((ispender & (1ul << 30)) != 0 ? "  GIC saw it" : "  GIC did NOT see it",
+		    (ispender & (1ul << 30)) != 0 ? CLR_GREEN : CLR_RED);
+		fb_newline();
+	}
+
+	/* Virtual timer, same idea (INTID 27). */
+	{
+		uint64_t tval = frequency / 500;
+		unsigned long ctl = 0, ispender = 0, hppir = 0;
+
+		__asm__ volatile("msr cntv_tval_el0, %0" :: "r"(tval));
+		__asm__ volatile("msr cntv_ctl_el0, %0" :: "r"(1ul));
+
+		for (i = 0; i < 40000; i++) {
+			ispender = dgic_read32(self, DGICR_ISPENDR0);
+			__asm__ volatile("mrs %0, icc_hppir1_el1" : "=r"(hppir));
+			if ((ispender & (1ul << 27)) != 0 ||
+			    (hppir & 0xFFFFFFul) == 27) {
+				break;
+			}
+		}
+		__asm__ volatile("mrs %0, cntv_ctl_el0" : "=r"(ctl));
+
+		out("  e02 CNTV27 ctl ", CLR_CYAN);
+		outhex(ctl);
+		out(" ispender ", CLR_CYAN);
+		outhex(ispender);
+		out(" hppir1 ", CLR_CYAN);
+		outhex(hppir);
+		out((ispender & (1ul << 27)) != 0 ? "  GIC saw it" : "  GIC did NOT see it",
+		    (ispender & (1ul << 27)) != 0 ? CLR_GREEN : CLR_RED);
+		fb_newline();
+	}
+
+	/* Leave both timers disarmed and the pendings cleared. */
+	__asm__ volatile("msr cntp_ctl_el0, %0" :: "r"(0ul));
+	__asm__ volatile("msr cntv_ctl_el0, %0" :: "r"(0ul));
+	dgic_write32(self, DGICR_ICPENDR0, (1ul << 30) | (1ul << 27));
+	dgic_write32(self, DGICR_ICENABLER0, (1ul << 30) | (1ul << 27));
+	dgic_isb();
+}
+
+/*
  * Send ourselves an SGI and see whether it reaches the CPU interface.  This
  * separates the two halves of the path: if an SGI arrives but the timer PPI
  * does not, the distributor and CPU interface are fine and the problem is on
@@ -547,6 +639,7 @@ gic_probe_run(const struct fdt_platform *platform, struct gic_probe_result *r)
 		r->self_redist = dgic_find_redist(&r->gic);
 		field_hex("self redist", r->self_redist);
 		redist_self_test(r->self_redist);
+		timer_ppi_test(r->self_redist);
 	}
 
 	/*
