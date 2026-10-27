@@ -462,10 +462,10 @@ index 0a00656..aa4c197 100644
  	iotrace_disable();
  
 diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
-index e44008f..7ef5758 100644
+index e44008f..6a72457 100644
 --- a/osfmk/kern/printf.c
 +++ b/osfmk/kern/printf.c
-@@ -908,6 +908,880 @@ vprintf(const char *fmt, va_list ap)
+@@ -908,6 +908,891 @@ vprintf(const char *fmt, va_list ap)
  	return vprintf_internal(fmt, ap, __builtin_return_address(0));
  }
  
@@ -773,6 +773,10 @@ index e44008f..7ef5758 100644
 +    (volatile unsigned char *)DANDELION_TRACE_PA;
 +static volatile unsigned int dandelion_trace_len;
 +
++/* Defined with the eMMC channel below.  Safe to call at any time: before the
++ * channel is up it only appends to a RAM ring. */
++void dandelion_emmc_putc(char c);
++
 +void
 +dandelion_trace_attach(void)
 +{
@@ -844,6 +848,13 @@ index e44008f..7ef5758 100644
 +
 +		dandelion_trace_putc(c);
 +		dandelion_fb_putc(c);
++		/*
++		 * Checkpoints are the only output that exists before the console
++		 * does, so they go to the log channel too.  Before it is up this
++		 * only appends to its RAM ring; once it is up every checkpoint
++		 * lands on the medium.
++		 */
++		dandelion_emmc_putc(c);
 +	}
 +}
 +
