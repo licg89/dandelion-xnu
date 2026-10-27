@@ -28,7 +28,7 @@ on:
       - "patches/**"
 
 concurrency:
-  group: build-xnu-${{ github.ref }}-${{ inputs.machine || 'bcm2837' }}-${{ inputs.kernel || 'DEVELOPMENT' }}
+  group: build-xnu-${{ github.ref }}-${{ inputs.machine || 'dandelion' }}-${{ inputs.kernel || 'DEVELOPMENT' }}
   cancel-in-progress: true
 
 env:
@@ -40,7 +40,7 @@ jobs:
     timeout-minutes: 240
 
     env:
-      MACHINE: ${{ inputs.machine || 'bcm2837' }}
+      MACHINE: ${{ inputs.machine || 'dandelion' }}
       KERNEL_CONFIG: ${{ inputs.kernel || 'DEVELOPMENT' }}
       XNU_SRC: ${{ github.workspace }}/.xnu-src
       BUILD_ROOT: ${{ github.workspace }}/build
