@@ -153,7 +153,7 @@ PlatformProgressDxeEntryPoint (
   DandelionDrawString (16, 56,  "DXE OK", 0x0000FF00, 0x00000000);
   DandelionDrawString (16, 88,  (SystemTable->ConOut != NULL) ? "CONOUT YES" : "CONOUT NO", 0x00FFFF00, 0x00000000);
   DandelionDrawString (16, 120, "FD 40080000", 0x00AAAAAA, 0x00000000);
-  DandelionPaintBand (0x00FFFFFF, 200);
+  DandelionPaintBand (0x00FFFFFF, 1560);
 
   //
   // Is there a GOP at all?  SimpleFbDxe is already in the build, so if this
@@ -211,10 +211,29 @@ PlatformProgressDxeEntryPoint (
       gBS->FreePool (GopHandles);
     }
 
-    SystemTable->ConOut->OutputString (
-      SystemTable->ConOut,
-      L"\r\n\r\nCONOUT REACHES PANEL\r\n"
-      );
+    SystemTable->ConOut->SetAttribute (SystemTable->ConOut, EFI_BLACK | EFI_BACKGROUND_LIGHTGRAY);
+    SystemTable->ConOut->SetCursorPosition (SystemTable->ConOut, 0, 50);
+    SystemTable->ConOut->OutputString (SystemTable->ConOut, L"CONOUT REACHES PANEL");
+
+    //
+    // And report what the console thinks it is.  "MODE X" means
+    // ConOut->Mode->Mode is -1, i.e. no output device is attached at all and
+    // OutputString is a no-op -- which rules out "it is drawn but hidden".
+    //
+    {
+      INT32  Mode;
+      CHAR8  Buf[8];
+
+      Mode = (SystemTable->ConOut->Mode != NULL) ? (INT32)SystemTable->ConOut->Mode->Mode : -1;
+      Buf[0] = 'M';
+      Buf[1] = 'O';
+      Buf[2] = 'D';
+      Buf[3] = 'E';
+      Buf[4] = ' ';
+      Buf[5] = ((Mode >= 0) && (Mode <= 9)) ? (CHAR8)('0' + Mode) : 'X';
+      Buf[6] = '\0';
+      DandelionDrawString (16, 216, Buf, 0x00FF8000, 0x00000000);
+    }
   }
 
   // Disarm first: WDT_MODE with only the key clears ENABLE.
