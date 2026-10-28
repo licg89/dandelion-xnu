@@ -28,12 +28,18 @@
   UefiBootServicesTableLib
   UefiDriverEntryPoint
   BaseLib
+  BaseMemoryLib
   DebugLib
 
 [Protocols]
   gEfiSimpleFileSystemProtocolGuid   ## CONSUMES
   gEfiFirmwareVolume2ProtocolGuid    ## CONSUMES
   gDandelionLogProtocolGuid          ## CONSUMES
+  #
+  # Raw block access, used only to park the firmware log in free space inside the
+  # flashinfo partition (see FlushLogToFlash).
+  #
+  gEfiBlockIoProtocolGuid            ## CONSUMES
 
 #
 # The file-system path needs EFI_FILE_INFO to size a file before reading it, and

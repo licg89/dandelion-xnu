@@ -30,8 +30,8 @@ cd D:\aios\dandelion-xnu
 
 | 文件 | 大小 | sha256 |
 |---|---|---|
-| `SILICIUM_UEFI.fd` | 2,097,152 | `28a5a267…d9aa7` |
-| `boot-uefi-m5-log.img` | 16,099,328 | `7fb490f0…d3964` |
+| `SILICIUM_UEFI.fd` | 2,097,152 | `79cdc3ce…95735` |
+| `boot-uefi-m5-log.img` | 16,099,328 | `0c14e210…5ec7a` |
 
 恢复原厂：`fastboot flash boot D:\aios\artifacts\boot_backup.img`。
 
@@ -52,7 +52,8 @@ DCRC=…               BLKN=…
 | 橙 | 正在找 payload |
 | 绿 | payload 被 LoadImage + StartImage 且返回成功（**M5 链路通了**） |
 | 红 | 没找到 / 启动失败（M4 没好时这是**正常**的） |
-| 右端白色小方块 | 设备树已作为 EFI 配置表发布 |
+| **右端**白色小方块 | 设备树已作为 EFI 配置表发布 |
+| **左端**白色小方块 | **固件日志已写进 flash 的 flashinfo 空闲区**（M4 通了才会出现） |
 
 ## 判读表（照这个看 `INTR` 和 `R1`）
 
@@ -102,6 +103,31 @@ DCRC=…               BLKN=…
 - 下一步（等 M4）：把这 64 KiB 写进 eMMC 一个确认全 `0xFF` 的区域，
   回 Android 侧 dump 出来 —— `bootshim/msdc.c` 已经把"找一块空区域再写"的整套逻辑验证过了，
   照搬即可。
+
+### 4b. 已经写好了：日志落到 flash（M4 一通就生效）
+
+`PayloadBootDxe` 在启动 payload 之前会做第 4 件事：**把这份日志写进 flash**。
+位置和做法完全照搬线 A 已经验证过的方案：
+
+1. 读 LBA1 解析 GPT，**只认 `flashinfo` 分区**；
+2. 目标位置 = 分区起点 + 1 MiB，长度 64 KiB；
+3. **写之前先读回来判断是否空闲**：整段必须是全 `0xFF` 或全 `0x00`（厂商把这个分区
+   清零过一次，所以是 `0x00`），否则一个字节都不写，直接放弃；
+4. 写完再读回来比对 magic；
+5. 成功就在 y 1570 横条**左端**画一个白色方块。
+
+配套取回工具：`tools/extract_log_block.py`（已带离线自测
+`tools/test_extract_log_block.py`，格式、校验和、CLI、长度全部验证过）：
+
+```powershell
+# 手机进 Android 后（需要 root）
+adb shell su -c 'dd if=/dev/block/by-name/flashinfo of=/sdcard/flashinfo.img'
+adb pull /sdcard/flashinfo.img
+python tools\extract_log_block.py flashinfo.img --out last-boot.log --verbose
+```
+
+这样"日志"就不再是 68 行文字区的照片，而是**完整的、可 grep 的文本**。
+在 M4 通之前这套代码是安全的空转：没有块设备就不会执行。
 
 ### 5. 文档
 | 文件 | 内容 |

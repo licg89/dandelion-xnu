@@ -36,6 +36,7 @@
 #include <Uefi.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/BaseLib.h>
+#include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
 
 #include <Pi/PiFirmwareVolume.h>
@@ -44,6 +45,7 @@
 #include <Protocol/SimpleFileSystem.h>
 #include <Protocol/FirmwareVolume2.h>
 #include <Protocol/LoadedImage.h>
+#include <Protocol/BlockIo.h>
 #include <Protocol/DandelionLog.h>
 
 #include <Guid/FileInfo.h>
@@ -371,6 +373,30 @@ TickBar (
 }
 
 /**
+  Draw a white block at the left end of the bar.
+
+  Second mark, second meaning: the firmware log was written to flash.  Left and
+  right are deliberately far apart in the photo.
+**/
+STATIC
+VOID
+TickBarLeft (
+  VOID
+  )
+{
+  volatile UINT32  *Row;
+  UINTN            X;
+  UINTN            Y;
+
+  for (Y = PAYLOAD_BAR_TOP; Y < PAYLOAD_BAR_TOP + PAYLOAD_BAR_HEIGHT; Y++) {
+    Row = (volatile UINT32 *)(UINTN)(PAYLOAD_FB_BASE + (UINT64)Y * PAYLOAD_FB_STRIDE);
+    for (X = 0; X < 24; X++) {
+      Row[X] = 0x00FFFFFF;
+    }
+  }
+}
+
+/**
   Publish the device tree as an EFI configuration table.
 
   DarwinBoot and UniXNU find the device tree through gFdtTableGuid, so the
@@ -456,9 +482,388 @@ PublishDeviceTree (
   return EFI_NOT_FOUND;
 }
 
+/*
+  Writing the log to flash.
+
+  This is the answer to the real complaint: console text is one photograph away
+  from useless, and the ring only lives in RAM.  The moment a block device exists
+  the log goes into unused space inside the 'flashinfo' partition -- the same
+  place, found the same way, as bootshim/msdc.c already does on this phone, so the
+  region is known to be free and the recovery path is known to work.
+
+  Three guards, each of them load-bearing:
+
+    1. only the flashinfo partition is ever written, found through the GPT;
+    2. the target span must read back as all-0xFF or all-0x00 before a single byte
+       is written -- anything else is somebody's data and we do nothing at all;
+    3. what was written is read back and compared, and the result is painted on
+       the panel, so a silent failure cannot happen.
+*/
+#define LOG_MAGIC             "DDNLOG01"
+#define LOG_HEADER_VERSION    1
+#define LOG_WRITE_SECTORS     128        // 64 KiB, one ring's worth
+#define LOG_PARTITION_NAME     L"flashinfo"
+#define LOG_PARTITION_OFFSET   2048      // 1 MiB in, as the line-A shim does
+#define LOG_SECTOR            512
+
+STATIC
+UINT32
+ReadLe32 (
+  IN CONST UINT8  *P
+  )
+{
+  return (UINT32)P[0] | ((UINT32)P[1] << 8) | ((UINT32)P[2] << 16) | ((UINT32)P[3] << 24);
+}
+
+STATIC
+UINT64
+ReadLe64 (
+  IN CONST UINT8  *P
+  )
+{
+  return (UINT64)ReadLe32 (P) | ((UINT64)ReadLe32 (P + 4) << 32);
+}
+
+/**
+  Little-endian writers.
+
+  Hand-rolled rather than WriteUnaligned32/64 because this tree's BaseLib declares
+  those with UINTN-sized arguments, and the block layout is a byte string anyway.
+**/
+STATIC
+VOID
+PutLe32 (
+  OUT UINT8   *P,
+  IN  UINT32  Value
+  )
+{
+  P[0] = (UINT8)(Value & 0xFF);
+  P[1] = (UINT8)((Value >> 8) & 0xFF);
+  P[2] = (UINT8)((Value >> 16) & 0xFF);
+  P[3] = (UINT8)((Value >> 24) & 0xFF);
+}
+
+STATIC
+VOID
+PutLe64 (
+  OUT UINT8   *P,
+  IN  UINT64  Value
+  )
+{
+  PutLe32 (P, (UINT32)(Value & 0xFFFFFFFF));
+  PutLe32 (P + 4, (UINT32)(Value >> 32));
+}
+
+/**
+  Compare a GPT partition name (36 UTF-16LE units, NUL padded) with an ASCII
+  literal.  Only the ASCII subset is supported, which is all a partition name
+  from a MediaTek layout ever uses.
+**/
+STATIC
+BOOLEAN
+PartitionNameEquals (
+  IN CONST UINT8   *Entry,
+  IN CONST CHAR16  *Name
+  )
+{
+  UINTN  Index;
+
+  for (Index = 0; Name[Index] != L'\0'; Index++) {
+    UINT16  Unit;
+
+    CopyMem (&Unit, Entry + 56 + Index * 2, sizeof (Unit));
+    if (Unit != (UINT16)Name[Index]) {
+      return FALSE;
+    }
+  }
+
+  return TRUE;
+}
+
+/**
+  Is [Lba, Lba+Sectors) free space?
+
+  Free means every byte is 0xFF (never written) or every byte is 0x00 (a
+  partition that was zeroed once and never used since -- which is what flashinfo
+  on this device turned out to look like, despite an earlier note claiming 0xFF).
+  Anything else is somebody's data.
+**/
+STATIC
+BOOLEAN
+SpanIsFree (
+  IN  EFI_BLOCK_IO_PROTOCOL  *BlockIo,
+  IN  EFI_LBA                Lba,
+  IN  UINT32                 Sectors
+  )
+{
+  UINT8   Chunk[4096];
+  UINT32  Pattern;
+  UINT32  Done;
+
+  Pattern = 0;
+  for (Done = 0; Done < Sectors; ) {
+    UINT32  Take;
+    UINT32  Size;
+    UINT32  Index;
+    BOOLEAN AllFf;
+    BOOLEAN All00;
+
+    Take = ((Sectors - Done) > 8) ? 8 : (Sectors - Done);
+    Size = Take * LOG_SECTOR;
+
+    if (EFI_ERROR (BlockIo->ReadBlocks (BlockIo, BlockIo->Media->MediaId, Lba + Done, Size, Chunk))) {
+      return FALSE;
+    }
+
+    AllFf = TRUE;
+    All00 = TRUE;
+    for (Index = 0; Index < Size; Index++) {
+      if (Chunk[Index] != 0xFF) {
+        AllFf = FALSE;
+      }
+
+      if (Chunk[Index] != 0x00) {
+        All00 = FALSE;
+      }
+
+      if (!AllFf && !All00) {
+        return FALSE;
+      }
+    }
+
+    if (Pattern == 0) {
+      Pattern = AllFf ? 0xFF : 0x00;
+    }
+
+    Done += Take;
+  }
+
+  return TRUE;
+}
+
+/**
+  Find the flashinfo partition and write the log into free space inside it.
+**/
+STATIC
+EFI_STATUS
+FlushLogToFlash (
+  VOID
+  )
+{
+  EFI_STATUS             Status;
+  EFI_HANDLE             *Handles;
+  UINTN                  HandleCount;
+  UINTN                  Index;
+  EFI_BLOCK_IO_PROTOCOL  *BlockIo;
+  UINT8                  Header[LOG_SECTOR];
+  UINT8                  *Table;
+  UINTN                  TableSize;
+  UINT32                 EntryCount;
+  UINT32                 EntrySize;
+  UINT64                 FlashInfoStart;
+  UINT64                 FlashInfoLast;
+  EFI_LBA                Target;
+  UINT8                  *Sectors;
+  UINTN                  LogSize;
+  UINT32                 TextSize;
+  UINT32                 Sum;
+  UINT32                 Written;
+  DANDELION_LOG_PROTOCOL *Log;
+  CHAR8                  *Text;
+
+  Log = NULL;
+  Status = gBS->LocateProtocol (&gDandelionLogProtocolGuid, NULL, (VOID **)&Log);
+  if (EFI_ERROR (Status) || (Log == NULL)) {
+    return EFI_NOT_FOUND;
+  }
+
+  LogSize = 0;
+  Status  = Log->Dump (Log, NULL, &LogSize);
+  if ((Status != EFI_BUFFER_TOO_SMALL) || (LogSize == 0)) {
+    return EFI_NOT_FOUND;
+  }
+
+  if (LogSize > (LOG_WRITE_SECTORS - 1) * LOG_SECTOR) {
+    LogSize = (LOG_WRITE_SECTORS - 1) * LOG_SECTOR;
+  }
+
+  Status = gBS->AllocatePool (EfiBootServicesData, LogSize, (VOID **)&Text);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Status = Log->Dump (Log, Text, &LogSize);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  TextSize = (UINT32)LogSize;
+
+  Handles     = NULL;
+  HandleCount = 0;
+  Status      = gBS->LocateHandleBuffer (
+                       ByProtocol,
+                       &gEfiBlockIoProtocolGuid,
+                       NULL,
+                       &HandleCount,
+                       &Handles
+                       );
+  if (EFI_ERROR (Status)) {
+    return EFI_NOT_FOUND;
+  }
+
+  for (Index = 0; Index < HandleCount; Index++) {
+    Status = gBS->HandleProtocol (Handles[Index], &gEfiBlockIoProtocolGuid, (VOID **)&BlockIo);
+    if (EFI_ERROR (Status)) {
+      continue;
+    }
+
+    //
+    // Whole devices only, 512-byte sectors only: a partition handle's LBAs are
+    // relative to the partition, and a GPT lookup through one would read the
+    // wrong sectors.
+    //
+    if ((BlockIo->Media == NULL) || !BlockIo->Media->MediaPresent ||
+        BlockIo->Media->LogicalPartition || (BlockIo->Media->BlockSize != LOG_SECTOR))
+    {
+      continue;
+    }
+
+    if (EFI_ERROR (BlockIo->ReadBlocks (BlockIo, BlockIo->Media->MediaId, 1, LOG_SECTOR, Header))) {
+      continue;
+    }
+
+    if (CompareMem (Header, "EFI PART", 8) != 0) {
+      continue;
+    }
+
+    EntryCount = ReadLe32 (Header + 80);
+    EntrySize  = ReadLe32 (Header + 84);
+    if ((EntryCount == 0) || (EntryCount > 128) || (EntrySize < 128) || (EntrySize > 512)) {
+      continue;
+    }
+
+    TableSize = EntryCount * EntrySize;
+    TableSize = (TableSize + LOG_SECTOR - 1) & ~(UINTN)(LOG_SECTOR - 1);
+    Status    = gBS->AllocatePool (EfiBootServicesData, TableSize, (VOID **)&Table);
+    if (EFI_ERROR (Status)) {
+      continue;
+    }
+
+    if (EFI_ERROR (BlockIo->ReadBlocks (
+                            BlockIo,
+                            BlockIo->Media->MediaId,
+                            (EFI_LBA)ReadLe64 (Header + 72),
+                            TableSize,
+                            Table
+                            )))
+    {
+      continue;
+    }
+
+    FlashInfoStart = 0;
+    FlashInfoLast  = 0;
+    for (Written = 0; Written < EntryCount; Written++) {
+      if (PartitionNameEquals (Table + Written * EntrySize, LOG_PARTITION_NAME)) {
+        FlashInfoStart = ReadLe64 (Table + Written * EntrySize + 32);
+        FlashInfoLast  = ReadLe64 (Table + Written * EntrySize + 40);
+        break;
+      }
+    }
+
+    if ((FlashInfoStart == 0) || (FlashInfoLast <= FlashInfoStart)) {
+      continue;
+    }
+
+    //
+    // Stay inside the partition with room to spare on both sides.  If the
+    // partition is too small for 1 MiB of lead-in plus 64 KiB, skip it rather
+    // than write anywhere else.
+    //
+    if ((FlashInfoStart + LOG_PARTITION_OFFSET + LOG_WRITE_SECTORS) > FlashInfoLast) {
+      continue;
+    }
+
+    Target = (EFI_LBA)(FlashInfoStart + LOG_PARTITION_OFFSET);
+
+    if (!SpanIsFree (BlockIo, Target, LOG_WRITE_SECTORS)) {
+      DEBUG ((DEBUG_ERROR, "PayloadBoot: log span at LBA %lu is not free, refusing\n", (UINT64)Target));
+      continue;
+    }
+
+    //
+    // Build the block: one header sector, then the text, zero padded to a whole
+    // number of sectors.  The sum is a cheap integrity check for the reader.
+    //
+    Status = gBS->AllocatePool (EfiBootServicesData, LOG_WRITE_SECTORS * LOG_SECTOR, (VOID **)&Sectors);
+    if (EFI_ERROR (Status)) {
+      continue;
+    }
+
+    ZeroMem (Sectors, LOG_WRITE_SECTORS * LOG_SECTOR);
+    CopyMem (Sectors, LOG_MAGIC, 8);
+    PutLe32 (Sectors + 8, LOG_HEADER_VERSION);
+    PutLe32 (Sectors + 12, TextSize);
+    PutLe32 (Sectors + 16, LOG_WRITE_SECTORS);
+    PutLe64 (Sectors + 24, (UINT64)Target);
+
+    Sum = 0;
+    for (Written = 0; Written < TextSize; Written++) {
+      Sum = Sum * 31 + (UINT8)Text[Written];
+    }
+
+    PutLe32 (Sectors + 20, Sum);
+    CopyMem (Sectors + LOG_SECTOR, Text, TextSize);
+
+    Status = BlockIo->WriteBlocks (
+                        BlockIo,
+                        BlockIo->Media->MediaId,
+                        Target,
+                        LOG_WRITE_SECTORS * LOG_SECTOR,
+                        Sectors
+                        );
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "PayloadBoot: log write failed %r\n", Status));
+      continue;
+    }
+
+    //
+    // Read it back.  A write that returns success and did not happen is a real
+    // failure mode on a bus that is being brought up, and the only way to know
+    // is to look.
+    //
+    ZeroMem (Sectors, LOG_WRITE_SECTORS * LOG_SECTOR);
+    if (EFI_ERROR (BlockIo->ReadBlocks (
+                            BlockIo,
+                            BlockIo->Media->MediaId,
+                            Target,
+                            LOG_WRITE_SECTORS * LOG_SECTOR,
+                            Sectors
+                            )))
+    {
+      continue;
+    }
+
+    if (CompareMem (Sectors, LOG_MAGIC, 8) != 0) {
+      DEBUG ((DEBUG_ERROR, "PayloadBoot: log read-back magic mismatch\n"));
+      continue;
+    }
+
+    DEBUG ((
+      DEBUG_ERROR,
+      "PayloadBoot: firmware log written to LBA %lu (%u bytes)\n",
+      (UINT64)Target,
+      TextSize
+      ));
+    TickBarLeft ();
+    return EFI_SUCCESS;
+  }
+
+  return EFI_NOT_FOUND;
+}
+
 /**
   Hand the firmware's own text log to the payload, as a configuration table.
-
   The console driver keeps a 64 KiB ring of everything the firmware printed --
   DEBUG() included, because DebugLib is redirected to ConOut on this board.  That
   is the difference between "a photo of the last 68 lines" and "the whole log":
@@ -553,6 +958,16 @@ PayloadBootEntryPoint (
   //
   if (!EFI_ERROR (PublishLog ())) {
     Say (L"PayloadBoot: firmware log published as an EFI configuration table\r\n");
+  }
+
+  //
+  // And put it somewhere that survives the phone: unused space inside the
+  // 'flashinfo' partition.  Needs a block device, so before M4 this simply does
+  // not run -- which is why the whole thing is guarded and painted instead of
+  // asserted.
+  //
+  if (!EFI_ERROR (FlushLogToFlash ())) {
+    Say (L"PayloadBoot: firmware log written to flash\r\n");
   }
 
   Say (L"PayloadBoot: looking for a payload (FAT first, then FV)\r\n");
