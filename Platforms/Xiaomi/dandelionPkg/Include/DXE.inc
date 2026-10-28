@@ -13,7 +13,7 @@
   INF MdeModulePkg/Universal/StatusCodeHandler/RuntimeDxe/StatusCodeHandlerRuntimeDxe.inf
   INF MdeModulePkg/Universal/Variable/RuntimeDxe/VariableRuntimeDxe.inf
   INF EmbeddedPkg/EmbeddedMonotonicCounter/EmbeddedMonotonicCounter.inf
-  INF EmbeddedPkg/SimpleTextInOutSerial/SimpleTextInOutSerial.inf
+# INF EmbeddedPkg/SimpleTextInOutSerial/SimpleTextInOutSerial.inf   # dandelion has no UART; see APRIORI.inc
   INF MdeModulePkg/Universal/ResetSystemRuntimeDxe/ResetSystemRuntimeDxe.inf
   INF EmbeddedPkg/RealTimeClockRuntimeDxe/RealTimeClockRuntimeDxe.inf
   INF EmbeddedPkg/MetronomeDxe/MetronomeDxe.inf
@@ -36,6 +36,8 @@
   INF MediaTekPkg/Drivers/MT6358PmicDxe/MT6358PmicDxe.inf
 
   INF MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.inf
+  # M4 beacon: only dispatched when a SimpleFileSystem exists (see the .inf Depex).
+  INF dandelionPkg/Drivers/StorageBeaconDxe/StorageBeaconDxe.inf
 
   INF MdeModulePkg/Bus/Sd/EmmcDxe/EmmcDxe.inf
   INF MdeModulePkg/Bus/Sd/SdDxe/SdDxe.inf

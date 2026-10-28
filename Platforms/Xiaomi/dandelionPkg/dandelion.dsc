@@ -120,3 +120,9 @@
   #
   dandelionPkg/Drivers/PlatformProgressDxe/PlatformProgressDxe.inf
   dandelionPkg/Drivers/DandelionConsoleDxe/DandelionConsoleDxe.inf
+
+  #
+  # M4 storage beacon: [Depex] gEfiSimpleFileSystemProtocolGuid, so it only
+  # runs once FAT has a volume.  Its line on the panel is the M4 criterion.
+  #
+  dandelionPkg/Drivers/StorageBeaconDxe/StorageBeaconDxe.inf

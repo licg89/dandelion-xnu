@@ -381,6 +381,36 @@ DandelionConsoleDxeEntryPoint (
   DandelionClearScreen (&mTextOut);
 
   //
+  // Self test, 2026-10-28 19:1x: two lines through our own OutputString, at a
+  // row nothing else touches (row 43/44 = y 688..720, between the 5x "UEFI"
+  // at 560..640 and the progress driver's band at 1560).
+  //
+  // Purpose: separate "our console cannot render" from "BDS never reaches our
+  // console".  These two lines do not depend on ConSplitter, on BDS, or on any
+  // protocol: they are the same code path BDS would use, driven directly.
+  //
+  //   crisp  -> our renderer is fine, so anything smeared later comes from a
+  //             different writer, or from BDS not being connected to us
+  //   smeared-> the bug is in this driver
+  //
+  mMode.CursorColumn = 0;
+  mMode.CursorRow    = 43;
+  DandelionOutputString (&mTextOut, L"SELFTEST 0123456789");
+  mMode.CursorColumn = 0;
+  mMode.CursorRow    = 44;
+  DandelionOutputString (&mTextOut, L"ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+
+  //
+  // Control line for the A/B test in PlatformProgressDxe: same digits, same
+  // row spacing, written by the same OutputString -- but called directly here
+  // instead of through ConOut.  Row 48 is deliberately one row below where
+  // PlatformProgressDxe writes its ConOut probe (row 46).
+  //
+  mMode.CursorColumn = 0;
+  mMode.CursorRow    = 48;
+  DandelionOutputString (&mTextOut, L"DIRECT CALL 0123456789");
+
+  //
   // Unmissable proof that this driver actually executed: two solid bars at the
   // bottom of the panel.  If they are absent, the DXE dispatcher never ran us
   // and the noise on screen comes from somewhere else entirely.
@@ -415,6 +445,91 @@ DandelionConsoleDxeEntryPoint (
                   NULL,
                   NULL
                   );
+
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  //
+  // Ask the driver model to bind us right now instead of waiting for BDS's
+  // ConnectAll().  Measured 2026-10-28 19:4x: with this driver only present in
+  // the FV body, PlatformProgressDxe's ConOut probe produced no output while a
+  // direct OutputString call rendered fine -- i.e. ConSplitter had no
+  // framebuffer child yet, because BdsDxe had already been dispatched (its
+  // dependency was satisfied by SimpleTextInOutSerial's 80x25 serial console)
+  // and had printed everything to the serial port.
+  //
+  // Two things fix that together: this file is now listed in APRIORI.inc right
+  // after ConSplitterDxe, and the connect below makes ConPlatformDxe attach us
+  // immediately so ConOut works from the next statement onwards.
+  //
+  gBS->ConnectController (Handle, NULL, NULL, TRUE);
+
+  //
+  // Did that actually put us into ConSplitter?  Ask ConOut itself and draw the
+  // answer with our own OutputString, so a single photo settles it:
+  //
+  //   "COUT K" followed by two hex bytes  -> ConOut answered
+  //   "COUT X"                            -> ConOut has no mode / refused
+  //   "VIA CONOUT ..." appears            -> ConSplitter really forwards to us
+  //   "VIA CONOUT ..." missing            -> it does not, despite the connect
+  //
+  {
+    static CONST CHAR8 Hex[] = "0123456789ABCDEF";
+    CHAR8              Report[16];
+    EFI_STATUS         QStatus;
+    UINTN              Cols;
+    UINTN              Rows;
+    INT32              Mode;
+    UINTN              Digit;
+
+    Cols   = 0;
+    Rows   = 0;
+    Mode   = -1;
+    QStatus = EFI_UNSUPPORTED;
+
+    if ((gST->ConOut != NULL) && (gST->ConOut->Mode != NULL)) {
+      Mode    = gST->ConOut->Mode->Mode;
+      QStatus = gST->ConOut->QueryMode (
+                               gST->ConOut,
+                               (Mode >= 0) ? (UINTN)Mode : 0,
+                               &Cols,
+                               &Rows
+                               );
+    }
+
+    Report[0] = 'C';
+    Report[1] = 'O';
+    Report[2] = 'U';
+    Report[3] = 'T';
+    Report[4] = ' ';
+    Report[5] = EFI_ERROR (QStatus) ? 'X' : (CHAR8)('0' + ((Mode >= 0) && (Mode <= 9) ? Mode : 0));
+    Report[6] = ' ';
+    Report[7] = EFI_ERROR (QStatus) ? '-' : Hex[(Cols >> 4) & 0xF];
+    Report[8] = EFI_ERROR (QStatus) ? '-' : Hex[Cols & 0xF];
+    Report[9] = 'x';
+    Report[10] = EFI_ERROR (QStatus) ? '-' : Hex[(Rows >> 4) & 0xF];
+    Report[11] = EFI_ERROR (QStatus) ? '-' : Hex[Rows & 0xF];
+    Report[12] = '\0';
+
+    mMode.CursorColumn = 0;
+    mMode.CursorRow    = 52;
+    {
+      CHAR16  Wide[16];
+
+      for (Digit = 0; (Digit < 15) && (Report[Digit] != '\0'); Digit++) {
+        Wide[Digit] = (CHAR16)Report[Digit];
+      }
+
+      Wide[Digit] = L'\0';
+      DandelionOutputString (&mTextOut, Wide);
+    }
+
+    if (gST->ConOut != NULL) {
+      gST->ConOut->SetCursorPosition (gST->ConOut, 0, 54);
+      gST->ConOut->OutputString (gST->ConOut, L"VIA CONOUT 0123456789");
+    }
+  }
 
   return Status;
 }

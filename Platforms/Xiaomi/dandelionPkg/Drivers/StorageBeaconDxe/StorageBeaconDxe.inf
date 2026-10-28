@@ -1,0 +1,33 @@
+##
+#  M4 storage beacon: dispatched only when a SimpleFileSystem exists, so the
+#  line it prints is proof that eMMC -> BlockIo -> partition -> FAT works.
+#
+#  Copyright (c) Microsoft Corporation.
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = StorageBeaconDxe
+  FILE_GUID                      = 3C7A9E10-5B24-4D86-8F01-6E2B4C9D7A38
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = StorageBeaconDxeEntryPoint
+
+[Sources]
+  StorageBeaconDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+
+[Protocols]
+  gEfiSimpleFileSystemProtocolGuid   ## CONSUMES
+
+#
+# The dependency IS the test: no filesystem, no dispatch, no line on the panel.
+#
+[Depex]
+  gEfiSimpleFileSystemProtocolGuid

@@ -59,6 +59,7 @@
 #define DANDELION_FB_BASE    0x7EC50000ULL
 #define DANDELION_FB_STRIDE  2944
 #define DANDELION_FB_WIDTH   720
+#define DANDELION_FB_HEIGHT  1600
 
 #include "DandelionFont.h"
 
@@ -236,6 +237,24 @@ PlatformProgressDxeEntryPoint (
   }
 
   //
+  // Experiment 2026-10-28 19:0x: wipe the WHOLE panel before drawing anything.
+  //
+  // The previous boot showed ~800 rows of 720-pitch streaks between this
+  // driver's text and the console bars, yet the fd contains no 720-pitch
+  // writer (GraphicsConsoleDxe's file GUID is absent from the decompressed
+  // FVMAIN) and DandelionConsoleDxe draws with 2944 by construction.  Two
+  // explanations remain: (a) the streaks are DRAM leftovers from an earlier
+  // boot that survive a warm reset, or (b) something writes them after this
+  // driver.  Filling every row here separates the two: leftovers disappear,
+  // a live writer comes back.
+  //
+  // If the streaks vanish, the follow-up question is what happens to BDS
+  // output; if they survive this fill, the writer runs later and the next
+  // experiment is to drop BdsDxe from APRIORI.inc and look again.
+  //
+  DandelionFillRect (0, 0, DANDELION_FB_WIDTH, DANDELION_FB_HEIGHT, 0x00000000);
+
+  //
   // Real text now: clear the top of the panel and write what we know.
   // There is no GOP and no ConSplitter on this board yet, so this is the same
   // direct framebuffer trick the bootshim uses -- and it means the DXE stage
@@ -314,9 +333,24 @@ PlatformProgressDxeEntryPoint (
       gBS->FreePool (GopHandles);
     }
 
-    SystemTable->ConOut->SetAttribute (SystemTable->ConOut, EFI_BLACK | EFI_BACKGROUND_LIGHTGRAY);
-    SystemTable->ConOut->SetCursorPosition (SystemTable->ConOut, 0, 50);
-    SystemTable->ConOut->OutputString (SystemTable->ConOut, L"CONOUT REACHES PANEL");
+    //
+    // A/B test (2026-10-28 19:2x): is ConOut wired to OUR console?
+    //
+    // Line at row 46 goes through ConOut -> ConSplitter -> whichever console
+    // devices are attached.  Line at row 48 is written by DandelionConsoleDxe
+    // itself and is known good (the SELFTEST lines at rows 43/44 came out
+    // crisp).  Comparing the two answers the only remaining question:
+    //
+    //   both crisp      -> ConOut reaches us, M3.5 is done
+    //   only row 48     -> ConSplitter never adopted our console, and whatever
+    //                      draws the smeared line is a different device
+    //
+    // Row 46/48 (y 736..784) sits between the SELFTEST lines and the smeared
+    // line near y 1150, so nothing else overwrites it.
+    //
+    SystemTable->ConOut->SetAttribute (SystemTable->ConOut, EFI_LIGHTGRAY | EFI_BACKGROUND_BLACK);
+    SystemTable->ConOut->SetCursorPosition (SystemTable->ConOut, 0, 46);
+    SystemTable->ConOut->OutputString (SystemTable->ConOut, L"CONOUT VIA SPLITTER 0123456789");
 
     //
     // And report what the console thinks it is.  "MODE X" means

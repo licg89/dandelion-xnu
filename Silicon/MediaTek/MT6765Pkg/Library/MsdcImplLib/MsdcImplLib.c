@@ -233,34 +233,34 @@ PowerControl (
   UINT32 Index,
   BOOLEAN Enable)
 {
-  EFI_STATUS Status;
+  //
+  // 2026-10-28: deliberately does NOT touch the PMIC yet.
+  //
+  // The inherited body called mPmic->RegulatorSetEnable("ldo_vemc") and
+  // friends, but those names resolve to MT6358 register addresses inside
+  // MediaTekPkg/Drivers/MT6358PmicDxe.  Dandelion carries an MT6357, so those
+  // writes would land on the wrong registers -- the failure mode is a wrong
+  // rail voltage, not an error code, which is exactly the kind of thing that
+  // damages hardware.
+  //
+  // What makes skipping safe: the eMMC is LK's own boot device.  LK powers it
+  // up, reads from it and hands over with the rails still on, so the card is
+  // alive when DXE reaches MsdcDxe.  The SD/MMC stack only needs host
+  // initialisation (GPIO, clock, controller reset) to talk to it.
+  //
+  // If the card turns out to be unresponsive, the follow-up is to fork the
+  // PMIC driver for MT6357 (regulator table from the vendor kernel's
+  // mt6357-regulator.c) rather than to guess addresses here.
+  //
+  (VOID)Index;
+  (VOID)Enable;
 
-  // TODO(MT6765): these regulator names resolve to MT6358 register addresses
-  // inside MediaTekPkg/Drivers/MT6358PmicDxe. Dandelion's PMIC is MT6357, so
-  // this is wrong on real hardware until that driver is forked. See the
-  // header comment.
-  if (Index == 0 && FixedPcdGetBool(PcdStorageIsEMMC)) {
-    // Enable VEMC LDO
-    Status = mPmic->RegulatorSetEnable("ldo_vemc", Enable);
-    if (EFI_ERROR (Status)) {
-      DEBUG ((DEBUG_ERROR, "Failed to Enable LDO VEMC! Status = %r\n", Status));
-      ASSERT_EFI_ERROR (Status);
-    }
-  } else {
-    // Enable VMCH LDO
-    Status = mPmic->RegulatorSetEnable("ldo_vmch", Enable);
-    if (EFI_ERROR (Status)) {
-      DEBUG ((DEBUG_ERROR, "Failed to Enable LDO VMCH! Status = %r\n", Status));
-      ASSERT_EFI_ERROR (Status);
-    }
-
-    // Enable VMC LDO
-    Status = mPmic->RegulatorSetEnable("ldo_vmc", Enable);
-    if (EFI_ERROR (Status)) {
-      DEBUG ((DEBUG_ERROR, "Failed to Enable LDO VMC! Status = %r\n", Status));
-      ASSERT_EFI_ERROR (Status);
-    }
-  }
+  DEBUG ((
+    DEBUG_INFO,
+    "MT6765: PowerControl(%d, %d) skipped - MT6357 PMIC not supported yet\n",
+    Index,
+    Enable
+    ));
 }
 
 VOID

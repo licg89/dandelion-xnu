@@ -62,6 +62,49 @@ GOP 可用、framebuffer 参数全部实测确认；**唯一未完成的是让 U
 
 ## 5. 下一步（按顺序做，都很小）
 
+### 5.0 2026-10-28 晚：三个结构性发现（先看这一节）
+
+这一小时里最值钱的不是某个 bug 的修法，而是三条关于**调度顺序**的事实。
+
+#### (a) `BdsDxe` 在 `APRIORI.inc` 里 = 后面的驱动全部不跑
+
+`BdsEntry` **永不返回**（它就是 boot manager，在等输入）。它原本排在
+`APRIORI.inc` 第 36 行；一旦某个真控制台满足了它的依赖，它立刻被调度并接管，
+于是排在 FV 主体里的 `PlatformProgressDxe`、`MsdcDxe`、`FatPkg`、
+`StorageBeaconDxe` **一个都不会运行**。
+
+现象很好认：屏幕上有我们自己控制台的 `SELFTEST` 行，但**没有** `PlatformProgressDxe`
+的彩色诊断。
+
+**处理**：把 `INF ... BdsDxe.inf` 从 `APRIORI.inc` 注释掉。它在 `DXE.inc`
+末尾本来就有，那才是它该待的位置 —— 平台需要的所有东西都在它之前调度完。
+
+#### (b) `SimpleTextInOutSerial` 是块"幽灵控制台"
+
+这块板没有 UART，但 `SimpleTextInOutSerial` 会往 ConSplitter 里塞一个 **80×25**
+的文本设备（诊断里 `COLS 0050 ROWS 0019` 就是它）。后果：
+
+- BDS 的依赖被它先满足，于是 BDS 抢在真有显示能力的控制台之前跑完，
+  把 `Volume Up` / `boot manager` / `failed to find an operating system`
+  全打到不存在的串口上；
+- ConSplitter 的文本模式被它拉成 80×25，和 720×1600 的面板完全不匹配。
+
+**处理**：`APRIORI.inc` 和 `DXE.inc` 两处都注释掉。
+
+#### (c) 我们的控制台装上了，但 `ConOut` 不往它送
+
+`PlatformProgressDxe` 里那句走 `ConOut` 的探针**没有任何输出**，而同一时刻
+用 `DandelionConsoleDxe` 自己的 `OutputString` 直接写的 `SELFTEST` /
+`DIRECT CALL` 都**清晰可读**。
+
+结论：渲染没问题，是 **ConSplitter 没把我们的设备加进它的 console 列表**。
+当前正在用控制台入口的自检行定位：`COUT <mode> <cols>x<rows>` +
+`VIA CONOUT ...`（前者是我们自己画的报告，后者是经 ConOut 回环）。
+
+- 如果 `COUT` 报 `5A x 64`（90×100）且 `VIA CONOUT` 出现 → 已经接上了
+- 如果 `COUT X` 或列行数是 80×25 → 还没接上，下一步是直接替换
+  `gST->ConOut` 为我们的实例（bring-up 阶段的务实做法，之后再回头修 ConSplitter）
+
 ### 5.1 把 `GraphicsConsoleDxe` 从 FV 里摘掉（**改的是 `APRIORI.inc`，不是 DSC**）
 
 > 2026-10-28 实测更正：原先以为「DSC 里还在编，FV 可能仍包含它」——

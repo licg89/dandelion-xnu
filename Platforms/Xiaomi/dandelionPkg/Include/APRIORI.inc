@@ -33,7 +33,20 @@ APRIORI DXE {
   INF MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf
   INF MdeModulePkg/Universal/CapsuleRuntimeDxe/CapsuleRuntimeDxe.inf
   INF MdeModulePkg/Universal/HiiDatabaseDxe/HiiDatabaseDxe.inf
-  INF MdeModulePkg/Universal/BdsDxe/BdsDxe.inf
+  #
+  # BdsDxe is deliberately NOT in this list any more (2026-10-28 20:2x).
+  #
+  # BdsEntry never returns: it is the boot manager, it waits for input.  While
+  # it sat here, the moment a real console satisfied its dependency it was
+  # dispatched and took over -- and every driver still queued in the FV body
+  # (PlatformProgressDxe, MsdcDxe, FatPkg, StorageBeaconDxe) never ran.  That
+  # is why a build with the console in APRIORI showed the console's own
+  # SELFTEST lines and nothing else.
+  #
+  # It is still in DXE.inc, at the end of the FV, which is where a boot manager
+  # belongs: everything the platform needs is dispatched before it.
+  #
+# INF MdeModulePkg/Universal/BdsDxe/BdsDxe.inf
 
 !if $(USE_CUSTOM_DISPLAY_DRIVER) == 0
   INF SiliciumPkg/Drivers/SimpleFbDxe/SimpleFbDxe.inf
@@ -41,9 +54,33 @@ APRIORI DXE {
   INF SiliciumPkg/Drivers/KeypadDeviceDxe/KeypadDeviceDxe.inf
   INF SiliciumPkg/Drivers/KeypadDxe/KeypadDxe.inf
 
-  INF EmbeddedPkg/SimpleTextInOutSerial/SimpleTextInOutSerial.inf
+  #
+  # SimpleTextInOutSerial is deliberately gone.  It was inherited from the
+  # A04BR3 tablet, which has a UART; dandelion has no UART pads at all.  What
+  # it did here was add a phantom 80x25 text device to ConSplitter -- visible
+  # in PlatformProgressDxe's dump as "COLS 0050 ROWS 0019" -- which satisfied
+  # BdsDxe's console dependency before any real framebuffer console existed,
+  # so BDS printed its messages into the bit bucket while the panel showed
+  # whichever 720-pitch renderer happened to be attached.
+  #
+  # With it gone, ConSplitter has exactly one text child: DandelionConsoleDxe.
+  #
+# INF EmbeddedPkg/SimpleTextInOutSerial/SimpleTextInOutSerial.inf
   INF MdeModulePkg/Universal/Console/ConPlatformDxe/ConPlatformDxe.inf
   INF MdeModulePkg/Universal/Console/ConSplitterDxe/ConSplitterDxe.inf
+  #
+  # Our framebuffer console has to be dispatched in THIS pass, after
+  # ConSplitterDxe, and therefore before BdsDxe gets its retry.
+  #
+  # Measured 2026-10-28 19:4x: with the console only in the FV body, the ConOut
+  # probe in PlatformProgressDxe printed nothing while a direct call to the same
+  # OutputString printed fine.  So ConSplitter had no framebuffer child when
+  # ConOut was used: BdsDxe's dependency was already satisfied by
+  # SimpleTextInOutSerial (an 80x25 serial console), so BDS ran first and its
+  # messages -- "Volume Up", "boot manager", "failed to find an operating
+  # system" -- went to the serial port and never to the panel.
+  #
+  INF dandelionPkg/Drivers/DandelionConsoleDxe/DandelionConsoleDxe.inf
   #
   # GraphicsConsoleDxe is deliberately NOT here any more.
   #
