@@ -41,10 +41,14 @@ gMemoryDescriptor[] = {
   //            re-derived from dandelion's DT reserved-memory nodes.
   //            TODO(MT6765): re-derive before any of this is flashed.
   //            "UEFI FD" here must equal [uefi_fd].base in
-  //            Resources/Configs/dandelion.toml (the shim copies the FD there),
-  //            and "DXE Heap" must start at that base + FD size.
+  //            Resources/Configs/dandelion.toml, and must equal what LK
+  //            actually uses: 0x40080000 (measured 2026-10-28, see
+  //            CORRECTIONS.md C8).  It is deliberately NOT base+FD-size
+  //            arithmetic for "DXE Heap": the heap and the decompressed
+  //            FVMAIN stay in the 0x48xxxxxx window, only the FD image itself
+  //            has to sit where LK drops it.
   {"UEFI Stack",         0x48000000, 0x00040000, AddMem, SYS_MEM, SYS_MEM_CAP, BsData, WRITE_BACK},
-  {"UEFI FD",            0x48880000, 0x00200000, AddMem, SYS_MEM, SYS_MEM_CAP, BsData, WRITE_BACK},
+  {"UEFI FD",            0x40080000, 0x00200000, AddMem, SYS_MEM, SYS_MEM_CAP, BsData, WRITE_BACK},
   {"DXE Heap",           0x48A80000, 0x03C00000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv,   WRITE_BACK},
   {"ATF Reserved",       0x4CE00000, 0x00060000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_BACK}, // [INHERITED]
   {"TEE Reserved",       0x70000000, 0x05000000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_BACK}, // [INHERITED]

@@ -130,3 +130,42 @@ Resources/Configs/dandelion.toml
 **处理**：以 `MemoryMapLib.c` 的 `0x48880000` 为准，把 toml 改过来；
 并且核对 `bootshim/patch_boot.py` 里 payload 的落地地址与之相同。
 刷机前必须三处一致。
+
+
+## C8. `0x48880000` 是错的：LK 只会在 `0x40080000` 执行 kernel 段（2026-10-28 刷机实测）
+
+C7 的结论「以 `MemoryMapLib.c` 的 `0x48880000` 为准」**是错的**。C7 只核对了三处
+*一致性*，没有验证 LK 到底把 kernel 放到哪。刷机实测：
+
+| # | 实验 | 结果 |
+|---|---|---|
+| 1 | 原 FD（内部基址 `0x48880000`），`kernel_addr=0x48880000` | Redmi logo → 稳定 **~10 s** 复位，循环 |
+| 2 | 同一 FD，`kernel_addr=0x40080000` | 同上（入口 stub 从错误地址解压） |
+| 3 | **位置无关的 bootshim**（`shim.ld` 里 `. = 0`），`kernel_addr=0x48880000` | 同上，代码根本没跑 |
+| 4 | 同一 bootshim，`kernel_addr=0x40080000` | ✅ 正常（线 A 一直如此） |
+| 5 | FD 里两处 `0x48880000` 改成 `0x40080000`，`kernel_addr=0x40080000` | 复位时间 10 s → **~60 s** |
+
+实验 3/4 是判定性的：同一个位置无关镜像，只改 `kernel_addr`，`0x40080000`
+能跑、`0x48880000` 不能 → **LK 只认 `0x40080000`**。
+
+实验 5 说明 SEC 真的执行了：LK 自己武装的 10 s 看门狗被改写，复位时间变成别的值。
+**M2 一直卡在地址上，不是 SEC/PEI 的代码。**
+
+**正确配置**（已改回）：
+
+| 位置 | 值 |
+|---|---|
+| `Resources/Configs/dandelion.toml` → `[uefi_fd].base` | `0x40080000` |
+| 同上 → `[boot_image].base` | `0x40000000`（+ `kernel_offset 0x80000`） |
+| `MemoryMapLib.c` → `"UEFI FD"` | `0x40080000`，`0x200000` |
+| `patch_boot.py --kernel-addr` | `0x40080000` |
+
+`PcdSystemMemoryBase = 0x48000000` **不需要跟着改**：FD 镜像本身可以待在系统内存
+之外，只有解压出来的 FVMAIN 和 DXE heap 需要在 `0x48xxxxxx` 里（它们本来就在）。
+
+**教训**：`PcdFdBaseAddress` 必须等于 LK 真实的加载地址，这个值只能刷机测，
+不能靠「哪份 toml 抄得更像」推。
+
+**遗留**：`~60 s` 和信标表里的 20 s / 30 s / 2 s 都不吻合。要么是掐表误差
+（PEI 的 30 s 加上 LK 阶段），要么是 WDT 的时钟倍率与 vendor 公式不符。
+下一次用 `Seconds=6` 的单级信标就能一次定标。
