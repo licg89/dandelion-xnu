@@ -8,16 +8,18 @@ checkout 完整复现。构建与打包的完整环境见
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
-| `boot-uefi-pagelog-pio2.img` | 16,099,328 B | **当前上机版**（分页日志 + PIO 读重写） |
-| `boot-uefi-pagelog-pio2.img` | 16,099,328 B（上一版，留作对照） | 状态格子版 |
+| `boot-uefi-m5-log.img` | 16,099,328 B | **当前上机版**：M4 卡状态修复 + M5 装载器 + 设备树 + 日志 |
+| `boot-uefi-pagelog-pio2.img` | 16,099,328 B（上一版，留作对照） | 分页日志 + PIO 读重写 |
+| `panel-preview.png` | 720×1600 | `tools/render_panel_preview.py` 渲染的仪表区，**不用刷机就能看布局** |
 
-> 更早的几版（`boot-uefi-console.img` 等）不再跟着仓库一起变大：它们仍在 git 历史里，
-> 需要时 `git log -- artifacts/` 取。仓库里只保留"当前版 + 上一版"。
+> 更早的几版（`boot-uefi-stagecells.img`、`boot-uefi-console.img` 等）不再跟着仓库一起变大：
+> 它们仍在 git 历史里，需要时 `git log -- artifacts/` 取。仓库里只保留"当前版 + 上一版"。
 
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-67932474c0c04e0b3eacda5ea574f646b2e4a9ccb7dbc0d96a17b85e53c10a48  SILICIUM_UEFI.fd
+28a5a2672c2494422d7fb51f43624d159c7f29d8484d3b2fc5b6a5bebacd9aa7  SILICIUM_UEFI.fd
+7fb490f0cdc8e463ec65958d6e7f3cd3cee24ce9a0a46432499ec5adbf2d3964  boot-uefi-m5-log.img
 2e31075180b4545eba11860541288c80ad79a36efe7a237eddcea0e53f60eb33  boot-uefi-pagelog-pio2.img
 ```
 

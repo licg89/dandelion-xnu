@@ -24,6 +24,7 @@
 
 #include <Protocol/DevicePath.h>
 #include <Protocol/SimpleTextOut.h>
+#include <Protocol/DandelionLog.h>
 
 #include "DandelionFont.h"
 
@@ -73,6 +74,86 @@ STATIC UINT32  mBg = 0x00000000;
 // would leave the tail of the old one behind.
 //
 STATIC BOOLEAN  mRowNeedsClear = FALSE;
+
+/*
+  Text log ring.
+
+  Every character that reaches this console is also appended here, because the
+  panel is the only channel this board has and a photo of 68 rows is not a log.
+  DEBUG() output arrives through ConOut as well (DebugLib is UefiDebugLibConOut,
+  see dandelion.dsc), so this captures the whole firmware's diagnostics, not just
+  what our own drivers print.
+
+  64 KiB is roughly 700 lines of 90 columns: several times what a photo can show,
+  and small enough to stay comfortably inside DXE's pool.
+*/
+#define DANDELION_LOG_CAPACITY  (64 * 1024)
+
+STATIC CHAR8   *mLogBuffer   = NULL;
+STATIC UINTN   mLogWrite     = 0;    // next slot to write
+STATIC UINTN   mLogFill      = 0;    // valid bytes, saturates at capacity
+STATIC UINT64  mLogTotal     = 0;    // monotonic count of bytes ever appended
+
+STATIC DANDELION_LOG_PROTOCOL  mLogProtocol = {
+  DANDELION_LOG_SIGNATURE,
+  DANDELION_LOG_VERSION,
+  DANDELION_LOG_CAPACITY,
+  NULL
+};
+
+STATIC
+VOID
+LogChar (
+  IN CHAR8  C
+  )
+{
+  if (mLogBuffer == NULL) {
+    return;
+  }
+
+  mLogBuffer[mLogWrite] = C;
+  mLogWrite             = (mLogWrite + 1) % DANDELION_LOG_CAPACITY;
+  if (mLogFill < DANDELION_LOG_CAPACITY) {
+    mLogFill++;
+  }
+
+  mLogTotal++;
+}
+
+STATIC
+EFI_STATUS
+EFIAPI
+DandelionLogDump (
+  IN     DANDELION_LOG_PROTOCOL  *This,
+  OUT    CHAR8                   *Buffer OPTIONAL,
+  IN OUT UINTN                   *Size
+  )
+{
+  UINTN  Oldest;
+  UINTN  Index;
+
+  if (Size == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  if ((Buffer == NULL) || (*Size < mLogFill)) {
+    *Size = mLogFill;
+    return EFI_BUFFER_TOO_SMALL;
+  }
+
+  //
+  // Oldest byte sits mLogFill entries behind the write pointer.  When the ring
+  // has not wrapped yet that is simply offset 0.
+  //
+  Oldest = (mLogWrite + DANDELION_LOG_CAPACITY - mLogFill) % DANDELION_LOG_CAPACITY;
+
+  for (Index = 0; Index < mLogFill; Index++) {
+    Buffer[Index] = mLogBuffer[(Oldest + Index) % DANDELION_LOG_CAPACITY];
+  }
+
+  *Size = mLogFill;
+  return EFI_SUCCESS;
+}
 
 typedef struct {
   VENDOR_DEVICE_PATH        Vendor;
@@ -235,6 +316,13 @@ DandelionOutputString (
   }
 
   for ( ; *String != L'\0'; String++) {
+    //
+    // Keep a copy of everything the firmware prints.  Non-ASCII becomes '?'
+    // rather than being dropped, so column counts in the log still match what
+    // was on screen.
+    //
+    LogChar ((*String < 0x80) ? (CHAR8)*String : '?');
+
     switch (*String) {
       case L'\r':
         mMode.CursorColumn = 0;
@@ -477,6 +565,19 @@ DandelionConsoleDxeEntryPoint (
   Handle = NULL;
 
   //
+  // Allocate the text log ring before anything can print, so the very first
+  // line this console renders is also the first line in the log.  A failed
+  // allocation is not fatal: LogChar() checks for NULL and the console keeps
+  // working, just without the log.
+  //
+  Status = gBS->AllocatePool (EfiBootServicesData, DANDELION_LOG_CAPACITY, (VOID **)&mLogBuffer);
+  if (EFI_ERROR (Status)) {
+    mLogBuffer = NULL;
+  } else {
+    ZeroMem (mLogBuffer, DANDELION_LOG_CAPACITY);
+  }
+
+  //
   // One-time full wipe of everything the instrument strip does not own.
   //
   // DandelionClearScreen() only covers the text area (y 0..1087) now, because
@@ -611,6 +712,22 @@ DandelionConsoleDxeEntryPoint (
 
   if (EFI_ERROR (Status)) {
     return Status;
+  }
+
+  //
+  // Publish the text log.  Separate from the console protocols on purpose: a
+  // consumer that only wants the log (the payload loader, a future eMMC log
+  // writer) should not have to open SimpleTextOut, and this way the log is
+  // already available to anything dispatched after this driver.
+  //
+  if (mLogBuffer != NULL) {
+    mLogProtocol.Dump = DandelionLogDump;
+    gBS->InstallProtocolInterface (
+           &Handle,
+           &gDandelionLogProtocolGuid,
+           EFI_NATIVE_INTERFACE,
+           &mLogProtocol
+           );
   }
 
   //

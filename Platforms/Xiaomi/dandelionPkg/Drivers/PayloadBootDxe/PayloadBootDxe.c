@@ -44,6 +44,7 @@
 #include <Protocol/SimpleFileSystem.h>
 #include <Protocol/FirmwareVolume2.h>
 #include <Protocol/LoadedImage.h>
+#include <Protocol/DandelionLog.h>
 
 #include <Guid/FileInfo.h>
 
@@ -455,6 +456,76 @@ PublishDeviceTree (
   return EFI_NOT_FOUND;
 }
 
+/**
+  Hand the firmware's own text log to the payload, as a configuration table.
+
+  The console driver keeps a 64 KiB ring of everything the firmware printed --
+  DEBUG() included, because DebugLib is redirected to ConOut on this board.  That
+  is the difference between "a photo of the last 68 lines" and "the whole log":
+  whatever runs next can persist it, search it, or print it on a working console.
+
+  The copy is allocated as EfiRuntimeServicesData on purpose.  DarwinBoot reads
+  the log across ExitBootServices, and a BootServicesData buffer would be gone by
+  then.
+
+  Best effort: if there is no log protocol (a build without the console, say) the
+  payload simply does not get one.
+**/
+STATIC EFI_STATUS
+PublishLog (
+  VOID
+  )
+{
+  EFI_STATUS             Status;
+  DANDELION_LOG_PROTOCOL *Log;
+  UINTN                  Size;
+  DANDELION_LOG_TABLE    *Table;
+  CHAR8                  *Copy;
+
+  Log = NULL;
+  Status = gBS->LocateProtocol (&gDandelionLogProtocolGuid, NULL, (VOID **)&Log);
+  if (EFI_ERROR (Status) || (Log == NULL)) {
+    return EFI_NOT_FOUND;
+  }
+
+  Size   = 0;
+  Status = Log->Dump (Log, NULL, &Size);
+  if ((Status != EFI_BUFFER_TOO_SMALL) || (Size == 0)) {
+    return EFI_NOT_FOUND;
+  }
+
+  Status = gBS->AllocatePool (EfiRuntimeServicesData, Size + 1, (VOID **)&Copy);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Status = Log->Dump (Log, Copy, &Size);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Copy[Size] = '\0';
+
+  Status = gBS->AllocatePool (EfiRuntimeServicesData, sizeof (*Table), (VOID **)&Table);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Table->Signature = DANDELION_LOG_TABLE_SIGNATURE;
+  Table->Version   = DANDELION_LOG_TABLE_VERSION;
+  Table->Size      = (UINT32)Size;
+  Table->Reserved  = 0;
+  Table->Text      = (UINT64)(UINTN)Copy;
+
+  Status = gBS->InstallConfigurationTable (&gDandelionLogTableGuid, Table);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  DEBUG ((DEBUG_ERROR, "PayloadBoot: firmware log handed over, %u bytes\n", (UINT32)Size));
+  return EFI_SUCCESS;
+}
+
 EFI_STATUS
 EFIAPI
 PayloadBootEntryPoint (
@@ -475,6 +546,13 @@ PayloadBootEntryPoint (
   if (!EFI_ERROR (PublishDeviceTree ())) {
     Say (L"PayloadBoot: device tree published as an EFI configuration table\r\n");
     TickBar ();
+  }
+
+  //
+  // Then the log, so the payload can report what the firmware did before it.
+  //
+  if (!EFI_ERROR (PublishLog ())) {
+    Say (L"PayloadBoot: firmware log published as an EFI configuration table\r\n");
   }
 
   Say (L"PayloadBoot: looking for a payload (FAT first, then FV)\r\n");

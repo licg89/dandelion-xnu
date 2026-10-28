@@ -22,6 +22,7 @@
 
 [Packages]
   MdePkg/MdePkg.dec
+  dandelionPkg/dandelion.dec
 
 [LibraryClasses]
   UefiBootServicesTableLib
@@ -32,12 +33,15 @@
 [Protocols]
   gEfiSimpleFileSystemProtocolGuid   ## CONSUMES
   gEfiFirmwareVolume2ProtocolGuid    ## CONSUMES
+  gDandelionLogProtocolGuid          ## CONSUMES
 
 #
-# The file-system path needs EFI_FILE_INFO to size a file before reading it.
+# The file-system path needs EFI_FILE_INFO to size a file before reading it, and
+# the log table is published under a GUID of our own.
 #
 [Guids]
   gEfiFileInfoGuid                   ## SOMETIMES_CONSUMES
+  gDandelionLogTableGuid             ## PRODUCES
 
 #
 # Always dispatched: "no payload found" is a result worth painting, and a depex

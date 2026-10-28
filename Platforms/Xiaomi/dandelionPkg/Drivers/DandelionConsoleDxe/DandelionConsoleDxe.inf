@@ -21,6 +21,7 @@
 [Packages]
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
+  dandelionPkg/dandelion.dec
 
 [LibraryClasses]
   BaseMemoryLib
@@ -30,6 +31,11 @@
 [Protocols]
   gEfiDevicePathProtocolGuid        ## PRODUCES
   gEfiSimpleTextOutProtocolGuid     ## PRODUCES
+  #
+  # The text log ring: everything printed through this console, in order, so a
+  # payload can read the firmware's own log instead of a photograph of 68 rows.
+  #
+  gDandelionLogProtocolGuid         ## PRODUCES
 
 [Guids]
   gEfiConsoleOutDeviceGuid          ## PRODUCES
