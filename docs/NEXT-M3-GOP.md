@@ -84,3 +84,45 @@ gBS->ConnectController (GopHandle, NULL, NULL, TRUE) before writing to
 ConOut, or move the driver after GraphicsConsoleDxe in the FVDXE list.
 
 
+
+## Measured: the GOP is drawing into the wrong memory (same day, later)
+
+On-screen dump from PlatformProgressDxe:
+
+    MODE 0
+    FB     7D9B0000      <- not our panel (0x7EC50000)
+    STRIDE 02D0 (720)    <- real panel pitch is 02E0 (736)
+    COLS 0050 ROWS 0019  <- 80x25 text console, GraphicsConsoleDxe never attached
+    CUR  0000 0014
+
+Root cause, from upstream SimpleFb.c
+(Silicon/Silicium/SiliciumPkg/Drivers/SimpleFbDxe/SimpleFb.c):
+
+    LocateMemoryRegionByName ("Display Reserved", &FrameBufferRegion);
+    LocateMemoryRegionByName ("Display_Reserved", &FrameBufferRegion);
+    if (!FrameBufferRegion.Address) { ...fall back to an allocation... }
+
+dandelion's memory map has no region with either name, so SimpleFbDxe
+allocates a scratch buffer (0x7D9B0000) and reports it as the framebuffer.
+Every pixel the UEFI console draws lands in DRAM.  That is why
+"CONOUT REACHES PANEL" never appears and why ConOut falls back to an empty
+80x25 mode: GraphicsConsoleDxe does attach, but its output goes nowhere
+visible.
+
+Second problem in the same file:
+
+    Info->PixelsPerScanLine = Width;
+
+i.e. it assumes pitch == width.  dandelion's panel pitch is 736 px
+(2944 bytes), so even with the right base the console output would be sheared
+by 16 px per row.
+
+Fix plan (both small, neither is a driver port):
+
+1. Add a memory region named "Display Reserved" at 0x7EC50000, size 4710400
+   (736 * 1600 * 4) to the MT6765 MemoryMapLib that dandelion uses.
+2. Patch SimpleFb.c through Resources/MuPatches (the CI already applies these
+   with absolute paths) so PixelsPerScanLine is 736 instead of Width, e.g. via
+   a new PcdFrameBufferStride in SiliciumPkg.dec + dandelion.dsc.
+
+After both, ConOut will draw on the real panel and M3 is done.
