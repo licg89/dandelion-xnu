@@ -8,6 +8,12 @@
 Image
 out/
 
+# ...except the deliverables under artifacts/: these are the actual flashable
+# UEFI images for dandelion, kept in git on purpose so a flash is reproducible
+# from a checkout. See artifacts/README.md for how they were built.
+!artifacts/*.img
+!artifacts/*.fd
+
 # OS files
 .DS_Store
 Thumbs.db
