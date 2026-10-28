@@ -1,15 +1,23 @@
-# 换机交接（2026-10-28 最终状态）
+# 换机交接
 
-> 这份文件是**唯一入口**。换电脑后先读它，再读文末列出的三份历史文档。
+> 这份文件是**唯一入口**。换电脑后先读它，再读文末列出的历史文档。
 > 所有内容都已推到 GitHub，`main` 分支即最新。
+>
+> **2026-10-29 凌晨之后先读这两份**：
+> [`NIGHT-1029.md`](NIGHT-1029.md)（这一夜做了什么、早上刷哪个镜像、怎么判读）、
+> [`ANALYSIS-EMMC-DATA-PATH.md`](ANALYSIS-EMMC-DATA-PATH.md)（eMMC 数据通路的
+> 三份实现对照与判读表）。
 
 ---
 
 ## 1. 一句话现状
 
 固件已能在 Redmi 9A（dandelion / MT6762G）真机上从 **SEC → PEI → DXE → BDS** 完整跑起来，
-GOP 可用、framebuffer 参数全部实测确认；**唯一未完成的是让 UEFI 控制台的文字正常显示**
-（现在能画，但按 720 的 pitch 画到 736 的面板上，糊成横纹）。
+有自己的 framebuffer 控制台（文字清晰、不再滚动糊屏）、有面板上的永久数字读数条、
+有 64 KiB 的内存日志（可写进 flash 再用脚本取回）、能**找 payload 并 LoadImage/StartImage**、
+能**把设备树作为 EFI 配置表发布**。
+**唯一还差的是 eMMC 的数据传输**：卡识别全过、命令全通，但第一个 512 字节读
+永远是 `DATTMO`（卡不发数据）；这一版同时试 PIO 和 DMA 两条通路。
 
 ---
 
@@ -19,9 +27,11 @@ GOP 可用、framebuffer 参数全部实测确认；**唯一未完成的是让 U
 |---|---|---|
 | M1 编出 FD | ✅ | GitHub Actions `build-uefi-dandelion.yml` |
 | M2 SEC / PEI / DXE | ✅ | 绿带 / 蓝带 / 屏幕文字 |
-| M3 GOP + ConOut 到面板 | ✅ | `GOP FOUND` + `GOP 720 OK`，BDS 文字确实出现在面板上 |
-| M3.5 UEFI 文字可读 | 🔄 | 见第 5 节，只差把 `GraphicsConsoleDxe` 摘掉 |
-| M4 eMMC(FAT) + `UniXNU.efi` | ⬜ | 阻塞：MT6357 vs MT6358 的 PMIC/eMMC 上电时序 |
+| M3 GOP + ConOut 到面板 | ✅ | `GOP FOUND` + `GOP 720 OK` |
+| M3.5 UEFI 文字可读 | ✅ | `DandelionConsoleDxe`：2944 stride、不滚动、永久读数条 |
+| M4 eMMC → BlockIo → FAT | 🔄 | 卡识别通、数据读 `DATTMO`；见 `ANALYSIS-EMMC-DATA-PATH.md` |
+| M5 找 payload 并启动 | 🔄 | `PayloadBootDxe` + FV 内嵌 `PayloadHello`（真 `UniXNU.efi` 还没产出） |
+| M6 DarwinBoot → XNU | ⬜ | 缺 `UniXNUDxe` / `DarwinBoot` / `UniXNURamDiskDxe` 源码，见 `M5-M6-PLAN.md` |
 
 ---
 

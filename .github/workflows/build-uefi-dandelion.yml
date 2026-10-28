@@ -66,6 +66,15 @@ jobs:
           echo "MT6765Pkg: $(find "$WORK/Silicon/MediaTek/MT6765Pkg" -type f | wc -l) files"
           echo "dandelionPkg: $(find "$WORK/Platforms/Xiaomi/dandelionPkg" -type f | wc -l) files"
 
+      - name: Check that the three module lists agree
+        # A module ships only when dandelion.dsc [Components] (compiled),
+        # Include/DXE.inc (placed in the FV) and Include/APRIORI.inc (dispatch
+        # order) agree.  Getting one wrong fails silently: the build succeeds and
+        # the module is simply absent (CORRECTIONS C13).  Costs a second.
+        run: |
+          set -e
+          python3 "$GITHUB_WORKSPACE"/dandelion-xnu/tools/check_modules.py
+
       - name: Apply our patches to the EDK2 base
         # MediaTekPkg and friends live in the upstream fork, so the fixes we
         # need there are kept as patches in Resources/MuPatches and applied
