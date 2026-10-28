@@ -154,6 +154,19 @@ PlatformProgressDxeEntryPoint (
   DandelionDrawString (16, 120, "FD 40080000", 0x00AAAAAA, 0x00000000);
   DandelionPaintBand (0x00FFFFFF, 200);
 
+  //
+  // ConOut exists either way (ConSplitter always creates it), so the only real
+  // test of "is there a working console on this board" is to write through it
+  // and look at the panel.  If this text shows up, every later UEFI stage --
+  // UniXNU.efi, DarwinBoot -- can print normally.
+  //
+  if (SystemTable->ConOut != NULL) {
+    SystemTable->ConOut->OutputString (
+      SystemTable->ConOut,
+      L"\r\n\r\nCONOUT REACHES PANEL\r\n"
+      );
+  }
+
   // Disarm first: WDT_MODE with only the key clears ENABLE.
   MmioWrite32 (TOPRGU_BASE + WDT_MODE_OFFSET, WDT_MODE_KEY);
 
