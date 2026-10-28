@@ -274,3 +274,26 @@ M2 ✅ 完成 → 下一步是 M3（文字控制台）与 M4（FAT 卷）。
    状态字，仍然不经过 GOP。
 3. 之后才是 `GraphicsConsoleDxe` + GOP，把 UEFI 自己的 `ConOut` 接上。
 4. M4：`MsdcDxe` + FAT，让 `UniXNU.efi` 能被加载。
+
+
+## 实测补充（同日，第二次上机）
+
+设备停在蓝白两条带上不动，**约 10 秒后复位**。
+
+- 10 s 是 LK 那个看门狗的值，不是我们 DXE 里的 2 s → **`SetWatchdogBeacon()` 的写
+  并没有生效**（TOPRGU 基址在 MT6765 上可能不是这几处代码假设的那个）。三级信标
+  方案作废，改用屏幕 postcode。
+- 关键结论不变：白条出现，DXE core + dispatcher + FV 都工作。
+
+### 下一个动作（不用再碰看门狗）
+
+DXE 已经能跑我们自己的驱动，所以文字控制台可以直接做：
+
+1. 把 `bootshim/font.h` 的 8x16 点阵抄进 `PlatformProgressDxe.c`（同文件，避免
+   include 路径问题），写一个 `DrawString()`，直接画到 `0x7EC50000`。
+2. 在 DXE 里打印真正有用的东西：内存映射条目、`PcdFdBaseAddress`、`ConOut`
+   是否可用、以及 `gBS->LocateProtocol` 的结果。
+3. 之后把 `PlatformSecLib` / `PlatformPeiLib` 的色带也换成一行字。
+4. 再往后才是 GOP：`GraphicsConsoleDxe` 需要一个 MT6765 的 GOP 生产者。
+
+注意：10 秒的复位窗口足够画完几十行字，不影响使用。
