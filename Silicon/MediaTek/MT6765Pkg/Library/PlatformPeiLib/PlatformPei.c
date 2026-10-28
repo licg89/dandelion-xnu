@@ -74,12 +74,43 @@ SetWatchdogBeacon (
     );
 }
 
+//
+// M2 screen postcode, stage 2: blue band just under SEC's green one.
+// Same direct framebuffer write as PlatformSecLib (see the comment there);
+// this proves PEI was reached without needing a console stack.
+//
+#define DANDELION_FB_BASE    0x7EC50000ULL
+#define DANDELION_FB_STRIDE  2944
+#define DANDELION_FB_WIDTH   720
+
+STATIC
+VOID
+DandelionPaintBand (
+  UINT32  Color,
+  UINTN   Top
+  )
+{
+  volatile UINT32  *Row;
+  UINTN            X;
+  UINTN            Y;
+
+  for (Y = Top; Y < Top + 32; Y++) {
+    Row = (volatile UINT32 *)(UINTN)(DANDELION_FB_BASE + Y * DANDELION_FB_STRIDE);
+    for (X = 0; X < DANDELION_FB_WIDTH; X++) {
+      Row[X] = Color;
+    }
+  }
+}
+
 EFI_STATUS
 EFIAPI
 PlatformPeim ()
 {
   // Build FV HOB - required, same as the Null instance.
   BuildFvHob (PcdGet64 (PcdFvBaseAddress), PcdGet32 (PcdFvSize));
+
+  // Blue band under SEC's green one: "PEI ran".
+  DandelionPaintBand (0x000000FF, 32);
 
   // M2 progress beacon, stage 2 of 3.
   SetWatchdogBeacon (30);

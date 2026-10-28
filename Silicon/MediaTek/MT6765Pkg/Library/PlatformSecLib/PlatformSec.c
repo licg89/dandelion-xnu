@@ -108,9 +108,44 @@ EnableConstantBlending ()
   MmioOr32 (OvlRegion.Address + OVL_PITCH_OFFSET (0), OVL_CONST_BLEND);
 }
 
+//
+// M2 screen postcode: paint a band straight into the framebuffer LK already
+// set up.  No GOP, no graphics stack, no DXE -- just a write loop, so it works
+// from SEC onwards.  [MEASURED] base/stride/resolution come from bootshim/fb.h,
+// which draws on this exact device every day.
+//
+#define DANDELION_FB_BASE    0x7EC50000ULL
+#define DANDELION_FB_STRIDE  2944
+#define DANDELION_FB_WIDTH   720
+
+STATIC
+VOID
+DandelionPaintBand (
+  UINT32  Color,
+  UINTN   Top
+  )
+{
+  volatile UINT32  *Row;
+  UINTN            X;
+  UINTN            Y;
+
+  for (Y = Top; Y < Top + 32; Y++) {
+    Row = (volatile UINT32 *)(UINTN)(DANDELION_FB_BASE + Y * DANDELION_FB_STRIDE);
+    for (X = 0; X < DANDELION_FB_WIDTH; X++) {
+      Row[X] = Color;
+    }
+  }
+}
+
 VOID
 PlatformInitialize ()
 {
+  //
+  // Green band at the very top: "SEC ran".  Do this before anything that can
+  // hang, it is the cheapest possible proof of execution.
+  //
+  DandelionPaintBand (0x0000FF00, 0);
+
   //
   // M2 progress beacon, stage 1 of 3: this is the first code we own in SEC.
   // 20 s so it cannot be confused with the ~10 s watchdog LK is believed to

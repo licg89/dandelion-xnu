@@ -50,6 +50,34 @@
 
 #define BEACON_SECONDS      2
 
+//
+// M2 screen postcode, stage 3: white band under PEI's blue one.  If this band
+// appears, the DXE core, the dispatcher and our FV all work -- which is the
+// real M2 question, and it answers it without any console stack.
+//
+#define DANDELION_FB_BASE    0x7EC50000ULL
+#define DANDELION_FB_STRIDE  2944
+#define DANDELION_FB_WIDTH   720
+
+STATIC
+VOID
+DandelionPaintBand (
+  UINT32  Color,
+  UINTN   Top
+  )
+{
+  volatile UINT32  *Row;
+  UINTN            X;
+  UINTN            Y;
+
+  for (Y = Top; Y < Top + 32; Y++) {
+    Row = (volatile UINT32 *)(UINTN)(DANDELION_FB_BASE + Y * DANDELION_FB_STRIDE);
+    for (X = 0; X < DANDELION_FB_WIDTH; X++) {
+      Row[X] = Color;
+    }
+  }
+}
+
 EFI_STATUS
 EFIAPI
 PlatformProgressDxeEntryPoint (
@@ -58,6 +86,9 @@ PlatformProgressDxeEntryPoint (
   )
 {
   UINT32  Length;
+
+  // White band under PEI's blue one: "DXE dispatched us".
+  DandelionPaintBand (0x00FFFFFF, 64);
 
   // Disarm first: WDT_MODE with only the key clears ENABLE.
   MmioWrite32 (TOPRGU_BASE + WDT_MODE_OFFSET, WDT_MODE_KEY);
