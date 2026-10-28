@@ -150,3 +150,35 @@ sed never touched.
 Also confirmed by the same boot:
   - SEC band and PEI band still draw (top of the panel)
   - BDS runs to completion and asks for a boot device: M4 is now the only work
+
+## Resolved: the GOP is fine, GraphicsConsoleDxe is not
+
+A 5x scaled diagnostic (40x80 pixel digits) drawn straight into the
+framebuffer, after the console output, reads **02E0 and is perfectly crisp** on
+the panel.  So, at the same moment:
+
+  - our own path (base 0x7EC50000, stride 2944)  -> crisp
+  - GOP Mode->Info->PixelsPerScanLine          -> 0x02E0 (736)
+  - everything GraphicsConsoleDxe draws        -> sheared by 16 px per row
+
+The CI log proves only one SimpleFb.c exists, that it was patched to 736, and
+that the compiled INF was that file, so the firmware really does report 736.
+The mismatch is therefore inside the console path (its own FrameBufferBltLib
+configuration or its connection to a different GOP handle), not in the GOP.
+
+Decision: stop fixing GraphicsConsoleDxe.  We already have a renderer that is
+proven correct on this panel (DandelionDrawString, 8x16 font, stride 2944).
+The next step is our own EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL driver:
+
+  DandelionConsoleDxe
+    - base 0x7EC50000, stride 2944, 720x1600, 8x16 font from DandelionFont.h
+    - text mode 90 x 84 (720/8, 1600/19 -> use 84 rows of 16 px = 1344, fine)
+    - OutputString with \r \n \b, SetCursorPosition, ClearScreen, SetAttribute
+    - installs gEfiConsoleOutDeviceGuid so ConSplitter adopts it, which makes
+      BDS / UiApp / BootManagerMenu text crisp for free
+
+That also gives M4 something to debug against: once the console is ours, every
+UEFI message is readable without photographs of small text.
+
+Status: M3 (console reaches the panel) is DONE.  The remaining display work is
+cosmetic for us and functional for BDS.
