@@ -133,6 +133,27 @@ DandelionDrawString (
   }
 }
 
+STATIC
+VOID
+DandelionDrawHex (
+  UINTN   X,
+  UINTN   Y,
+  UINT64  Value,
+  UINTN   Digits,
+  UINT32  Fg
+  )
+{
+  CHAR8  Buf[20];
+  UINTN  I;
+
+  for (I = 0; I < Digits; I++) {
+    Buf[I] = "0123456789ABCDEF"[(Value >> ((Digits - 1 - I) * 4)) & 0xF];
+  }
+
+  Buf[Digits] = '\0';
+  DandelionDrawString (X, Y, Buf, Fg, 0x00000000);
+}
+
 EFI_STATUS
 EFIAPI
 PlatformProgressDxeEntryPoint (
@@ -172,6 +193,16 @@ PlatformProgressDxeEntryPoint (
         (Gop->Mode->Info->HorizontalResolution == 720) ? "GOP 720 OK" : "GOP RES BAD",
         0x00FF00FF, 0x00000000
         );
+
+      //
+      // Where does the GOP say the pixels live?  If this is not 0x7EC50000 the
+      // console is drawing into memory nobody can see, and no amount of
+      // console plumbing will fix it.
+      //
+      DandelionDrawString (16, 248, "FB", 0x00FF8000, 0x00000000);
+      DandelionDrawHex (48, 248, (UINT64)Gop->Mode->FrameBufferBase, 8, 0x00FF8000);
+      DandelionDrawString (16, 280, "STRIDE", 0x00FF8000, 0x00000000);
+      DandelionDrawHex (96, 280, (UINT64)Gop->Mode->Info->PixelsPerScanLine, 4, 0x00FF8000);
     }
   }
 
@@ -234,6 +265,18 @@ PlatformProgressDxeEntryPoint (
       Buf[6] = '\0';
       DandelionDrawString (16, 216, Buf, 0x00FF8000, 0x00000000);
     }
+
+    //
+    // 90 x 84 means a real graphics console; 80 x 25 means ConOut is backed by
+    // a text-only device (serial) and nothing can ever reach the panel.
+    //
+    DandelionDrawString (16, 312, "COLS", 0x00FF8000, 0x00000000);
+    DandelionDrawHex (64, 312, (UINT64)SystemTable->ConOut->Mode->Columns, 4, 0x00FF8000);
+    DandelionDrawString (120, 312, "ROWS", 0x00FF8000, 0x00000000);
+    DandelionDrawHex (168, 312, (UINT64)SystemTable->ConOut->Mode->Rows, 4, 0x00FF8000);
+    DandelionDrawString (16, 344, "CUR", 0x00FF8000, 0x00000000);
+    DandelionDrawHex (64, 344, (UINT64)SystemTable->ConOut->Mode->CursorRow, 4, 0x00FF8000);
+    DandelionDrawHex (112, 344, (UINT64)SystemTable->ConOut->Mode->CursorColumn, 4, 0x00FF8000);
   }
 
   // Disarm first: WDT_MODE with only the key clears ENABLE.
