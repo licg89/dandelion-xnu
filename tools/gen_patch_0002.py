@@ -171,10 +171,12 @@ text = insert_after(
 # point already works at.
 OLD_MCLK = "MsdcSetMclk(Private, 50 * 1000 * 1000);"
 NEW_MCLK = ("  //\n"
-            "  // dandelion: stay at default-speed 26 MHz instead of 50 MHz.\n"
-            "  // 50 MHz is where the DATA path (not the command path) started failing.\n"
+            "  // dandelion: drop to ~385 kHz (divider 260) for data traffic.\n"
+            "  // This is the clock the line-A driver (bootshim/msdc.c) uses for\n"
+            "  // every data transfer on this phone, and the only data path here\n"
+            "  // that is known to work.\n"
             "  //\n"
-            "  MsdcSetMclk(Private, 26 * 1000 * 1000);")
+            "  MsdcSetMclk(Private, 400 * 1000);")
 if OLD_MCLK not in text:
     sys.exit("clock line not found")
 text = text.replace(OLD_MCLK, NEW_MCLK)
@@ -452,17 +454,12 @@ OLD_CLRINT = "MsdcClrBits (Private, MSDC_INTEN, MSDC_INT_CMDSTS);"
 NEW_CLRINT = (
     "MsdcClrBits (Private, MSDC_INTEN, MSDC_INT_CMDSTS);\n"
     "\n"
-    "  {\n"
-    "    UINT32  StaleInt;\n"
-    "\n"
-    "    //\n"
-    "    // dandelion: clear whatever an earlier command left latched.\n"
-    "    //\n"
-    "    MsdcRead (Private, MSDC_INT, &StaleInt);\n"
-    "    if (StaleInt != 0) {\n"
-    "      MsdcWrite (Private, MSDC_INT, StaleInt);\n"
-    "    }\n"
-    "  }"
+    "  //\n"
+    "  // dandelion: clear every latched interrupt, not just the one bit we are\n"
+    "  // about to wait for.  Writing 1s is how MSDC_INT is acknowledged, and the\n"
+    "  // line-A driver does the same (wr(R_INT, 0xFFFFFFFF)) before every command.\n"
+    "  //\n"
+    "  MsdcWrite (Private, MSDC_INT, 0xFFFFFFFF);"
 )
 if text.count(OLD_CLRINT) != 1:
     sys.exit("interrupt-disable anchor appears %d times" % text.count(OLD_CLRINT))
@@ -621,6 +618,108 @@ if text.count(OLD_SDIO) != 1:
     sys.exit("SDC_CFG_SDIO anchor appears %d times" % text.count(OLD_SDIO))
 text = text.replace(OLD_SDIO, NEW_SDIO)
 
+
+# Park the data command's response in the text log as well, so the fixed
+# readout and the console cannot disagree.
+OLD_R1SRC = "      MsdcPanelValue (6, SdMmcStatusBlk->Resp0);"
+NEW_R1SRC = (
+    "      MsdcPanelValue (6, SdMmcStatusBlk->Resp0);\n"
+    "      DEBUG ((\n"
+    "        DEBUG_ERROR,\n"
+    "        \"ddn data cmd=%u r1=%08x len=%u\\n\",\n"
+    "        CommandBlk->CommandIndex,\n"
+    "        SdMmcStatusBlk->Resp0,\n"
+    "        Packet->InTransferLength\n"
+    "        ));"
+)
+if text.count(OLD_R1SRC) != 1:
+    sys.exit("panel R1 anchor appears %d times" % text.count(OLD_R1SRC))
+text = text.replace(OLD_R1SRC, NEW_R1SRC)
+
+# ---------------------------------------------------------------------------
+# Make the card's state canonical before the first data transfer.
+#
+# EXT_CSD[183] (BUS_WIDTH) is sticky: it survives from whatever the last
+# Android boot left there, while the host side is 1-bit
+# (MsdcSetBusWidth (Private, 1)).  A card in 8-bit mode and a host reading
+# 1-bit cannot complete a data phase.  CMD6 SWITCH with value 0 forces 1-bit and
+# is a no-op when the card is already there.
+OLD_SWITCH = """    //
+    // dandelion: skip HS_TIMING=1.  The card would switch to high speed
+    // while the host timing stays at default, which is the most likely
+    // reason a data read fails where every command succeeds.
+    //
+    Status = EFI_SUCCESS;
+    if (EFI_ERROR(Status))
+    {"""
+NEW_SWITCH = """    //
+    // dandelion: HS_TIMING=1 stays skipped -- the card would switch to high
+    // speed while the host timing stays at default, and the line-A driver
+    // (bootshim/msdc.c, which does move data on this phone) keeps the
+    // inherited timing for exactly that reason.
+    //
+    Status = EFI_SUCCESS;
+
+    //
+    // dandelion: put the card back into the timing mode this host is
+    // actually running, instead of leaving it wherever the previous boot
+    // left it.
+    //
+    // "Skip HS_TIMING" was wrong reasoning: skipping does not mean
+    // "default speed", it means "keep whatever is in the card".
+    // EXT_CSD[185] (HS_TIMING) and EXT_CSD[183] (BUS_WIDTH) are only reset
+    // by a power cycle, not by CMD0 -- so after Android has run, the card is
+    // very likely in HS_TIMING=2 (HS200) with BUS_WIDTH=2 (8-bit) while this
+    // driver talks to it at default speed on one data line.  A card in HS200
+    // clocked like a default-speed card answers commands and never sends
+    // data, which is exactly what the panel shows.
+    //
+    // Order matters: leave HS200 before narrowing the bus.
+    //
+    Status = EMMCSwitch (PassThru, 3, 185, 0, 0);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "MsdcDxe: HS_TIMING=0 failed %r\\n", Status));
+      return Status;
+    }
+
+    //
+    // dandelion: and force the bus to 1-bit, which is what the host side is
+    // configured for (MsdcSetBusWidth (Private, 1)).  No-op if already 1-bit.
+    //
+    Status = EMMCSwitch (PassThru, 3, 183, 0, 0);
+    if (EFI_ERROR(Status))
+    {"""
+if OLD_SWITCH in text:
+    text = text.replace(OLD_SWITCH, NEW_SWITCH)
+else:
+    sys.exit("HS_TIMING block not found")
+
+# ---------------------------------------------------------------------------
+# Hardware data timeout at its maximum, as the line-A shim does (DTOC 0xff,
+# WRDTOC 0x1fff).  A timeout derived from the clock is the wrong thing to be
+# debugging against while data reads fail.
+OLD_TMO = "  MsdcSetTimeout (Private);"
+NEW_TMO = """  MsdcSetTimeout (Private);
+
+  {
+    UINT32  Tmo;
+
+    //
+    // dandelion: also pin the hardware data timeout at its maximum -- the
+    // line-A driver does this and it is a configuration known to move data on
+    // this eMMC.
+    //
+    MsdcRead (Private, SDC_CFG, &Tmo);
+    Tmo |= (0xff << 24) | (0x1fff << 2);
+    MsdcWrite (Private, SDC_CFG, Tmo);
+  }"""
+if text.count(OLD_TMO) != 1:
+    sys.exit("MsdcSetTimeout anchor appears %d times" % text.count(OLD_TMO))
+text = text.replace(OLD_TMO, NEW_TMO)
+
+# ---------------------------------------------------------------------------
+# Clear the whole interrupt register before a command, not just the bits that
+# happen to be latched when we look.  The line-A shim writes 0xFFFFFFFF.
 open(path, "w", encoding="utf-8", errors="surrogateescape", newline="").write(text)
 
 # Emit the patch: 0001-applied state -> final state.

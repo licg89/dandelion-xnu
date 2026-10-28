@@ -290,14 +290,21 @@ MsdcTrace (
 #define MSDC_PANEL_TOP    1244
 #define MSDC_PANEL_LEFT   8
 #define MSDC_PANEL_COL2   372
-#define MSDC_PANEL_ROW    26
+#define MSDC_PANEL_ROW    30
 #define MSDC_PANEL_SCALE  5
 #define MSDC_PANEL_FG     0x00FFFFFF
 #define MSDC_PANEL_BG     0x00000000
 
+//
+// Every label must be exactly four characters.  A shorter literal ("CFG", "R1")
+// puts a NUL into Text[] when it is copied, and MsdcPanelText() stops at that
+// NUL: the label is painted and the value silently is not.  Measured on
+// hardware 2026-10-29 (IMG_5723): the CFG and R1 rows came out as bare labels
+// with nothing after them, which is how this was found.
+//
 STATIC CONST CHAR8 *mMsdcPanelLabel[10] = {
-  "INTR", "CFG", "FIFO", "SSTS", "DCRC",
-  "LEFT", "R1", "SCMD", "SCFG", "BLKN"
+  "INTR", "MCFG", "FIFO", "SSTS", "DCRC",
+  "LEFT", "R1  ", "SCMD", "SCFG", "BLKN"
 };
 
 STATIC
