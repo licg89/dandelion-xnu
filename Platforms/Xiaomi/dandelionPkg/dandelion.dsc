@@ -87,6 +87,23 @@
   #
   gMediaTekPkgTokenSpaceGuid.PcdStorageIsEMMC|TRUE
 
+  #
+  # Debug output
+  #
+  # 2026-10-29: DEBUG() used to go to a PL011 UART that this board does not
+  # have, i.e. into the void, which is why every failure on this platform had to
+  # be reverse-engineered from coloured cells.  With DebugLib pointing at ConOut
+  # (below) the messages land on the panel, so the only question left is how
+  # much of it to print.
+  #
+  # 0x80000040 = DEBUG_ERROR | DEBUG_INFO.  Bit definitions in MdePkg.dec
+  # (gEfiMdePkgTokenSpaceGuid.PcdDebugPrintErrorLevel).  INFO is what
+  # MdeModulePkg's EmmcDxe/SdMmc print for its identification steps, so keeping
+  # it is worth the noise; drop to 0x80000000 (errors only) if it scrolls too
+  # fast to photograph.
+  #
+  gEfiMdePkgTokenSpaceGuid.PcdDebugPrintErrorLevel|0x80000040
+
 [LibraryClasses]
   #
   # Memory Libraries
@@ -97,6 +114,43 @@
   # Input Libraries
   #
   KeypadDeviceLib|dandelionPkg/Library/KeypadDeviceLib/KeypadDeviceLib.inf
+
+#
+# DEBUG() goes to the panel, but only for boot-services drivers.
+#
+# Why per module type instead of one global entry: UefiDebugLibConOut needs
+# gST->ConOut, and SEC/PEI/RUNTIME modules either have no system table or are
+# not allowed to touch boot services, so a global override fails the build with
+# "Module type [SEC] is not supported by library instance
+# .../UefiDebugLibConOut.inf" (measured).  DXE_DRIVER covers MsdcDxe and our own
+# drivers; UEFI_DRIVER covers EmmcDxe/SdDxe/FatPkg, which are the ones whose
+# failures we cannot see any other way.
+#
+# Messages printed before DandelionConsoleDxe installs itself are dropped
+# (ConOut is NULL then), which is exactly the window that does not matter.
+#
+[LibraryClasses.common.DXE_DRIVER]
+  DebugLib|MdePkg/Library/UefiDebugLibConOut/UefiDebugLibConOut.inf
+
+[LibraryClasses.common.UEFI_DRIVER]
+  DebugLib|MdePkg/Library/UefiDebugLibConOut/UefiDebugLibConOut.inf
+
+#
+# Console geometry: say 90x100, because that is the only text mode this panel
+# has.
+#
+# Why it matters (2026-10-29, measured): ConSplitterDxe's
+# ConsplitterSetConsoleOutMode() looks for a text mode matching
+# PcdConOutColumn/PcdConOutRow (default 80x25) and, failing that, calls
+# SetMode (0xFF) on the text device and then ASSERT (!EFI_ERROR (Status)) on the
+# result.  With only a 90x100 mode advertised that ASSERT fires -- the panel
+# froze on "ASSERT [ConSplitterDxe] .../ConSplitter.c(2909)" and the watchdog
+# reset the phone.  Declaring the real geometry makes PreferMode resolve to our
+# single mode and the whole fallback path disappear.
+#
+[PcdsDynamicDefault]
+  gEfiMdeModulePkgTokenSpaceGuid.PcdConOutColumn|90
+  gEfiMdeModulePkgTokenSpaceGuid.PcdConOutRow|68
 
 [Components]
   #

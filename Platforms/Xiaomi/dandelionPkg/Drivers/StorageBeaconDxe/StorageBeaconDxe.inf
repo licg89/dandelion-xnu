@@ -1,6 +1,7 @@
 ##
-#  M4 storage beacon: dispatched only when a SimpleFileSystem exists, so the
-#  line it prints is proof that eMMC -> BlockIo -> partition -> FAT works.
+#  M4 storage beacon: dispatched as soon as MsdcDxe publishes the SD/MMC
+#  pass-through protocol, then does the ConnectController sweep itself and
+#  reports on the panel how far eMMC -> BlockIo -> partition -> FAT got.
 #
 #  Copyright (c) Microsoft Corporation.
 #  SPDX-License-Identifier: BSD-2-Clause-Patent
@@ -26,16 +27,30 @@
 [Protocols]
   gEfiBlockIoProtocolGuid            ## CONSUMES
   gEfiSimpleFileSystemProtocolGuid   ## CONSUMES
+  gEfiSdMmcPassThruProtocolGuid      ## CONSUMES
 
 #
-# Depend on BlockIo, not on SimpleFileSystem (2026-10-28 21:4x): with the
-# filesystem dependency this driver only ever appeared if FAT had bound a
-# volume, which told us "M4 works" but not WHERE it stopped when it didn't.
-# BlockIo is the first thing the eMMC stack produces, so:
+# Depend on the pass-through protocol (2026-10-29 00:3x).
 #
-#   nothing on screen   -> MsdcDxe/EmmcDxe never produced a block device
-#   "BLOCK OK" only     -> block device exists, partition/FAT is the problem
-#   "BLOCK OK" + "FAT n"-> M4 done
+# Two earlier choices were both wrong for different reasons:
+#
+#   SimpleFileSystem -> only ran once FAT had already bound a volume, i.e. it
+#                       could report success but never say where it stopped;
+#   BlockIo          -> ran only after EmmcDxe had bound, which is precisely the
+#                       binding that never happens on this platform: nothing
+#                       calls ConnectController for the pass-through handle
+#                       (BDS would, and BDS does not get that far here).
+#
+# Depending on SdMmcPassThru means this driver is dispatched the instant
+# MsdcDxe installs it -- early enough to run the connect sweep itself and
+# produce the BlockIo handle rather than wait for one.
+#
+# Cell map on the panel (y 1400, 80x80, pitch 88):
+#
+#   6 yellow  this driver ran -> the pass-through protocol exists
+#   4 purple  a BlockIo handle exists
+#   7 red     connect sweep finished with no block device
+#   5 green   a SimpleFileSystem mounted
 #
 [Depex]
-  gEfiBlockIoProtocolGuid
+  gEfiSdMmcPassThruProtocolGuid

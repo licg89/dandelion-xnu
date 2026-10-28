@@ -5,34 +5,44 @@ checkout 完整复现。构建与打包的完整环境见
 [`docs/UEFI-BUILD-AND-PACKAGING.md`](../docs/UEFI-BUILD-AND-PACKAGING.md)，
 换机交接见 [`docs/HANDOVER-CURRENT.md`](../docs/HANDOVER-CURRENT.md)。
 
-| 文件 | 大小 | sha256 |
+| 文件 | 大小 | 说明 |
 |---|---|---|
-| `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | `c46ca9ca…b5c57b` |
-| `boot-uefi-stagecells.img` | 16,099,328 B | `7dc21382…caf2e` |
-| `boot-uefi-console.img` | 16,099,328 B（上一版，留作对照） | `9731a982…741e431` |
+| `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
+| `boot-uefi-pagelog-pio2.img` | 16,099,328 B | **当前上机版**（分页日志 + PIO 读重写） |
+| `boot-uefi-pagelog-pio2.img` | 16,099,328 B（上一版，留作对照） | 状态格子版 |
+
+> 更早的几版（`boot-uefi-console.img` 等）不再跟着仓库一起变大：它们仍在 git 历史里，
+> 需要时 `git log -- artifacts/` 取。仓库里只保留"当前版 + 上一版"。
+
+sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-c46ca9ca5a02ea1691a0f8a3f06630b4be1ebf74961652d4731e1d4ddbb5c57b  SILICIUM_UEFI.fd
-7dc213820b7d69cfa3b3fe000985eac47ca163eb77504a54b4941cfe1fcaaf2e  boot-uefi-stagecells.img
+67932474c0c04e0b3eacda5ea574f646b2e4a9ccb7dbc0d96a17b85e53c10a48  SILICIUM_UEFI.fd
+2e31075180b4545eba11860541288c80ad79a36efe7a237eddcea0e53f60eb33  boot-uefi-pagelog-pio2.img
 ```
 
-## 这一版是什么（2026-10-29 00:0x）
+## 这一版是什么（2026-10-29 02:2x）
 
-**状态格子版。** 相对上一版改了三处，每一处都对应一个查实的 bug：
+**先修"能不能读到日志"，再修数据通路。** 两件事分开做：
 
-1. `DandelionConsoleDxe.c` 的 `FillRow()` 以前只写 1 行像素，`ClearScreen()` 于是
-   只清了扫描行 0,16,32,… —— 面板中段那片"白横纹"就是从来没被清掉的旧内容。
-   现在清满 16 行。**这一版屏幕应该是干净的**，看得见的都是驱动故意画的。
-2. `MsdcImplLib.c` 的 `MsdcSay()` 以前在 `gST->ConOut == NULL` 时直接 return，
-   连状态带都不画；而 `MsdcDxe` 排在控制台**之前**，所以 MSDC 一个标记都到不了屏幕。
-   现在先直写 framebuffer，再看有没有 ConOut。
-3. `MsdcDxe` 挪到控制台之后（`APRIORI.inc`），新增 `Resources/MuPatches/0002`
-   在卡识别路径里打点。
+1. **控制台不再滚动**（`DandelionConsoleDxe.c`）。旧 `ScrollUp()` 用 `CopyMem` 把
+   framebuffer 自己当源，而这块屏的 framebuffer **读回不可靠** → 每滚一次就多一层
+   错位重影，照片上半屏永远是一团乱码（`docs/CORRECTIONS.md` C11）。现在写满 68 行
+   就回到第 0 行覆盖最旧的一行，行首第一次写入前整行擦除。
+   **面板上出现的每一个字都是当前内容，不会再有重影。**
+2. **PIO 数据读重写**（`Resources/MuPatches/0002`）。旧 `MsdcPioRead()` 要 FIFO 攒够
+   128 字节才排一次（硬件阈值 64）→ 512 字节的 ext-CSD 读一个字节都读不出来；
+   另外每条命令前没有清 latched `MSDC_INT`，上一条命令留下的 `DATCRCERR` 会被下一次
+   数据读当成"立刻出错"。参照 `Platforms/Benesse/a04br3Pkg/Drivers/SdCardBlockIoDxe`
+   （本树里唯一在真机 MT6765 上跑通过数据传输的实现）重写。
+3. 失败时面板上会打出证据（两行，不会再被 90 列折行）：
+   `ddn pio-read FAIL int=… left=…` / `ddn  cfg=… fifo=… sts=… dcrc=…`；
+   成功时只打前两次 `ddn pio-read ok len=… fifo=…`。
 
 ### 怎么看屏幕（底部格子）
 
-底部有 **8 个 80×80 的格子**（y 1400..1480，间距 88）和第二排 5 个矮格子
-（y 1488..1543）。**格子存在 = 那个阶段到达过**，所以一张照片就是完整状态向量：
+底部有 **三排 8 个 80×80 的格子**（y 1400 / 1448 / 1496，间距 88，左边距 8）。
+**格子存在 = 那个阶段到达过**，所以一张照片就是完整状态向量：
 
 | 格子 | 颜色 | 含义 |
 |---|---|---|
@@ -41,15 +51,28 @@ c46ca9ca5a02ea1691a0f8a3f06630b4be1ebf74961652d4731e1d4ddbb5c57b  SILICIUM_UEFI.
 | 2 | 青（红=失败） | MSDC 时钟使能完成 |
 | 3 | 白（红=缺协议） | power / PMIC 路径走完 |
 | 4 | 紫 | 产生了 BlockIo（`StorageBeaconDxe`）← **M4 达成** |
-| 5 | 绿 | 挂上了文件系统 |
+| 5 | 绿 | 挂上了文件系统（FAT） |
+| 6 | 黄 | `StorageBeaconDxe` 起来了（拿到了 pass-thru） |
+| 7 | 红 | 一个块设备都没有 |
 | 8 | 绿 | msdc0 两段 MMIO 区间都解析成功 |
 | 9 | 黄 | 控制器复位完成（`MsdcReset` 返回了） |
 | 10 | 品红 | 识别阶段真的有一条命令上了总线 |
 | 11 | 青 | CMD1 有应答（OCR bit31 置位 = 卡上电了） |
 | 12 | 白 | CMD2+CMD3 过，`CardType = EmmcCard`（EmmcDxe 能绑上） |
+| 13 | 绿/红 | `CardSetBusMode`（CMD7 选择 + 总线时钟） |
+| 14 | 青 | 走到了 pass-thru 安装 |
+| 15 | 红 | 卡检测失败（host 1 = SD 槽，红是正常的） |
+| 16 | 黄 | 有人调 `BuildDevicePath`（= EmmcDxe 来看我们了） |
+| 17 | 青 | 识别之后又来了一条 pass-thru 命令 |
+| 18/19/20/21 | 黄/青/橙/白 | 驱动模型侧发的 CMD9 / CMD7 / CMD10 / CMD8 |
+| 22 | **绿/红** | **512 字节 PIO 数据读（M4 的关键格子）** |
+| 23 | 红 | 识别之后有命令报错 |
 
-另外：顶部第 26..33 行是"最后阶段"状态带；y 1200..1280 / 1300..1380 是控制台的
-两条自证条；y 1560 是 `PlatformProgressDxe` 的白条。
+另外：y 1100/1140 是 `StorageBeaconDxe` 的横幅，y 1190 是块设备/文件系统计数点；
+y 1560 是 `PlatformProgressDxe` 的白条。
+
+> 文字区只有 y 0..1087（68 行 × 90 列）。**不要**把任何证据画在 y ≥ 1088 之外又指望
+> 它出现在文字区里；反过来，文字区里出现的任何东西都是当前内容（C11 之后）。
 
 boot image 的 header：
 
@@ -68,7 +91,7 @@ kernel 段 = gzip(SILICIUM_UEFI.fd) 570,880 B
 
 ```powershell
 adb reboot bootloader
-fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-stagecells.img
+fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-pagelog-pio2.img
 fastboot reboot
 ```
 
@@ -93,5 +116,5 @@ wsl -d Ubuntu -e bash /mnt/d/aios/dandelion-xnu/tools/build-local.sh
 
 # 2. 打包 + 校验（读 toml 里的 base，自动断言 kernel_addr）
 cd /mnt/d/aios/dandelion-xnu
-python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-stagecells.img
+python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-pagelog-pio2.img
 ```

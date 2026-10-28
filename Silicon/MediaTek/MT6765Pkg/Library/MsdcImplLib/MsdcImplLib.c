@@ -200,12 +200,17 @@ STATIC MTK_PMIC_PROTOCOL *mPmic = NULL;
 #define MSDC_FB_BASE     0x7EC50000ULL
 #define MSDC_FB_STRIDE   2944
 #define MSDC_FB_PIXELS   736
-#define MSDC_STAGE_TOP   1400
+// Instrument strip: three rows of eight 80x44 cells on an 88-pixel pitch, at
+// y 1400 / 1448 / 1496.  Stages 0..7 in row A, 8..15 in row B, 16..23 in row C.
+// Everything stays inside the 1600-row panel -- an earlier probe at y 2000 was
+// off the panel entirely and wrote 117 KB past the end of the framebuffer.
 #define MSDC_STAGE_SIZE  80
-#define MSDC_STAGE_TOP2  1488
-#define MSDC_STAGE_SIZE2 56
+#define MSDC_STAGE_HIGH  44
 #define MSDC_STAGE_PITCH 88
 #define MSDC_STAGE_LEFT  8
+#define MSDC_ROW0_TOP    1400
+#define MSDC_ROW1_TOP    1448
+#define MSDC_ROW2_TOP    1496
 
 STATIC
 VOID
@@ -216,25 +221,24 @@ MsdcStage (
 {
   volatile UINT32  *Row;
   UINTN            Left;
-  UINTN            Size;
   UINTN            Top;
   UINTN            X;
   UINTN            Y;
 
-  if (Stage > 15) {
+  if (Stage > 23) {
     return;
   }
 
   if (Stage < 8) {
-    Top  = MSDC_STAGE_TOP;
-    Size = MSDC_STAGE_SIZE;
+    Top = MSDC_ROW0_TOP;
+  } else if (Stage < 16) {
+    Top = MSDC_ROW1_TOP;
   } else {
-    Top  = MSDC_STAGE_TOP2;
-    Size = MSDC_STAGE_SIZE2;
+    Top = MSDC_ROW2_TOP;
   }
 
   Left = MSDC_STAGE_LEFT + (Stage & 7) * MSDC_STAGE_PITCH;
-  for (Y = Top; Y < Top + Size; Y++) {
+  for (Y = Top; Y < Top + MSDC_STAGE_HIGH; Y++) {
     Row = (volatile UINT32 *)(UINTN)(MSDC_FB_BASE + (UINT64)Y * MSDC_FB_STRIDE) + Left;
     for (X = 0; X < MSDC_STAGE_SIZE; X++) {
       Row[X] = Colour;
@@ -280,10 +284,11 @@ MsdcSay (
   MsdcStage (Stage, Colour);
 
   //
-  // Status band: rows 26..33, full width including the 16 hidden pixels, so
-  // nothing old can bleed through from either side.
+  // Status band: y 40..47 (moved from 26..33, which overlapped the console
+  // driver's own header rows at y 16..31), full width including the 16 hidden
+  // pixels, so nothing old can bleed through from either side.
   //
-  for (Y = 26; Y < 34; Y++) {
+  for (Y = 40; Y < 48; Y++) {
     volatile UINT32  *Line32 = (volatile UINT32 *)(UINTN)(MSDC_FB_BASE + (UINT64)Y * MSDC_FB_STRIDE);
     for (X = 0; X < MSDC_FB_PIXELS; X++) {
       Line32[X] = Colour;

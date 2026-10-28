@@ -205,7 +205,11 @@ PlatformProgressDxeEntryPoint (
   IN EFI_SYSTEM_TABLE  *SystemTable
   )
 {
-  UINT32  Length;
+  //
+  // No local state: the watchdog is only disarmed now (see the end of this
+  // function), never programmed with a timeout, so WDT_LENGTH and the seconds
+  // value are gone.
+  //
 
   //
   // GraphicsConsoleDxe defaults to 80x25 with an 8x19 font, which occupies
@@ -439,18 +443,20 @@ PlatformProgressDxeEntryPoint (
     }
   }
 
-  // Disarm first: WDT_MODE with only the key clears ENABLE.
+  //
+  // Disarm, do not re-arm (2026-10-29).
+  //
+  // This used to leave the watchdog armed at BEACON_SECONDS so that a hang would
+  // reset the phone and could be timed.  Now that the boot gets far enough to
+  // print a screenful of DEBUG text, the watchdog is actively destructive: it
+  // resets the machine a few seconds after whatever went wrong, so the last page
+  // -- the only place the failure is written down -- is gone before it can be
+  // photographed.  With the watchdog off, a hang stays on screen indefinitely.
+  //
+  // WDT_MODE takes 0x22000000 as a key field; writing the key alone clears
+  // ENABLE and therefore stops the counter.
+  //
   MmioWrite32 (TOPRGU_BASE + WDT_MODE_OFFSET, WDT_MODE_KEY);
-
-  // WDT_LENGTH[15:5] = seconds * 64, [4:0] = key.
-  Length = (((UINT32)BEACON_SECONDS * 64) << 5) | WDT_LENGTH_KEY;
-  MmioWrite32 (TOPRGU_BASE + WDT_LENGTH_OFFSET, Length);
-
-  // Arm with external reset.
-  MmioWrite32 (
-    TOPRGU_BASE + WDT_MODE_OFFSET,
-    WDT_MODE_KEY | WDT_MODE_EXTEN | WDT_MODE_ENABLE
-    );
 
   return EFI_SUCCESS;
 }

@@ -40,6 +40,20 @@
 #define DANDELION_COLS       (DANDELION_FB_WIDTH / 8)    // 90
 #define DANDELION_ROWS       (DANDELION_FB_HEIGHT / 16)  // 100
 
+//
+// Text area = rows 0..67 (framebuffer y 0..1087).  Everything below is the
+// instrument strip and must survive ClearScreen, SetMode and ScrollUp, because
+// a photo of that strip is how this bring-up is measured:
+//
+//   y 1000..1030  magenta  console entry reached
+//   y 1040..1070  yellow   console entry returned
+//   y 1080..1088  green    (thin) entry point returned to the dispatcher
+//
+// and below that, MsdcImplLib/StorageBeaconDxe own y 1400..1540 for the stage
+// cells, PlatformProgressDxe owns the white band at y 1560.
+//
+#define DANDELION_CLEAR_ROWS  68
+
 STATIC EFI_SIMPLE_TEXT_OUTPUT_MODE  mMode = {
   1,                // MaxMode
   0,                // Mode
@@ -51,6 +65,14 @@ STATIC EFI_SIMPLE_TEXT_OUTPUT_MODE  mMode = {
 
 STATIC UINT32  mFg = 0x00FFFFFF;
 STATIC UINT32  mBg = 0x00000000;
+
+//
+// Set when the next character written to the current row must first erase that
+// row.  Only the wrap-around path needs it (see WrapToTop): after wrapping, row
+// 0 still holds the line that was printed a page ago, and a shorter new line
+// would leave the tail of the old one behind.
+//
+STATIC BOOLEAN  mRowNeedsClear = FALSE;
 
 typedef struct {
   VENDOR_DEVICE_PATH        Vendor;
@@ -124,17 +146,30 @@ FillRow (
   }
 }
 
+/**
+  Wrap the cursor back to the top of the TEXT area instead of scrolling.
+
+  Why not scroll (2026-10-29, second attempt): ScrollUp used CopyMem with the
+  framebuffer as *both* source and destination.  Reading this panel's
+  framebuffer back is not reliable -- the result was every scrolled line
+  rendered as a double image on top of its neighbour, which is exactly the
+  unreadable band across the top of every photo of this panel.  There is also no
+  way to tell from a photo which of the two images is current.
+
+  A RAM shadow would fix it (3 MB, one extra copy per line), but a page of text
+  here is 68 lines and the bring-up only ever looks at the tail of the log, so
+  the cheap correct answer is to wrap: row 0 overwrites the oldest line, and the
+  panel ends up holding the last DANDELION_CLEAR_ROWS lines, each rendered once.
+  The row is erased on first write (mRowNeedsClear) so old text cannot bleed
+  through.
+**/
 STATIC
 VOID
-ScrollUp (VOID)
+WrapToTop (VOID)
 {
-  CopyMem (
-    (VOID *)(UINTN)DANDELION_FB_BASE,
-    (VOID *)(UINTN)(DANDELION_FB_BASE + (UINT64)16 * DANDELION_FB_STRIDE),
-    (UINTN)(DANDELION_FB_HEIGHT - 16) * DANDELION_FB_STRIDE
-    );
-
-  FillRow (DANDELION_ROWS - 1, mBg);
+  mMode.CursorRow   = 0;
+  mMode.CursorColumn = 0;
+  mRowNeedsClear    = TRUE;
 }
 
 STATIC
@@ -207,8 +242,8 @@ DandelionOutputString (
 
       case L'\n':
         mMode.CursorColumn = 0;
-        if (mMode.CursorRow + 1 >= DANDELION_ROWS) {
-          ScrollUp ();
+        if (mMode.CursorRow + 1 >= DANDELION_CLEAR_ROWS) {
+          WrapToTop ();
         } else {
           mMode.CursorRow++;
         }
@@ -223,12 +258,17 @@ DandelionOutputString (
         break;
 
       default:
+        if (mRowNeedsClear) {
+          FillRow (mMode.CursorRow, mBg);
+          mRowNeedsClear = FALSE;
+        }
+
         DrawGlyph (mMode.CursorColumn, mMode.CursorRow, *String);
         mMode.CursorColumn++;
         if (mMode.CursorColumn >= DANDELION_COLS) {
           mMode.CursorColumn = 0;
-          if (mMode.CursorRow + 1 >= DANDELION_ROWS) {
-            ScrollUp ();
+          if (mMode.CursorRow + 1 >= DANDELION_CLEAR_ROWS) {
+            WrapToTop ();
           } else {
             mMode.CursorRow++;
           }
@@ -271,7 +311,7 @@ DandelionQueryMode (
   }
 
   *Columns = DANDELION_COLS;
-  *Rows    = DANDELION_ROWS;
+  *Rows    = DANDELION_CLEAR_ROWS;
   return EFI_SUCCESS;
 }
 
@@ -284,7 +324,30 @@ DandelionSetMode (
   )
 {
   if (ModeNumber >= mMode.MaxMode) {
-    return EFI_UNSUPPORTED;
+    //
+    // ConSplitterDxe does this, in ConsplitterSetConsoleOutMode():
+    //
+    //     Status = TextOut->SetMode (TextOut, PreferMode);   // 0xFF if no match
+    //     if (EFI_ERROR (Status)) {
+    //       Status = TextOut->SetMode (TextOut, BaseMode);   // 0xFF again
+    //       ASSERT (!EFI_ERROR (Status));                    // <- dead loop
+    //     }
+    //
+    // PreferMode is 0xFF whenever the platform asks for a mode we do not
+    // advertise (PcdConOutColumn/Row default to 80x25; this panel is 90x100),
+    // and BaseMode is 0xFF because no 80x25 mode exists here either.  So the
+    // spec-correct EFI_UNSUPPORTED below turned into
+    //
+    //     ASSERT [ConSplitterDxe] .../ConSplitter.c(2909): !EFI_ERROR(Status)
+    //
+    // on the panel, followed by a CpuDeadLoop and a watchdog reset -- measured
+    // on hardware 2026-10-29 01:0x.  Refusing an unknown mode is correct and
+    // useless; clamping to the only mode we have keeps the machine alive.
+    //
+    // The PCDs are also set to 90x100 in dandelion.dsc so this path should not
+    // be reached at all; this is the belt to that pair of braces.
+    //
+    ModeNumber = 0;
   }
 
   mMode.Mode         = (INT32)ModeNumber;
@@ -292,9 +355,16 @@ DandelionSetMode (
   mMode.CursorRow    = 0;
   ApplyAttribute (mMode.Attribute);
 
-  for (UINTN Row = 0; Row < DANDELION_ROWS; Row++) {
+  //
+  // Clear the TEXT area only: the instrument strip below it (status band, proof
+  // bars, stage cells) is the measurement, and a mode change from ConSplitter
+  // must not erase it.
+  //
+  for (UINTN Row = 0; Row < DANDELION_CLEAR_ROWS; Row++) {
     FillRow (Row, mBg);
   }
+
+  mRowNeedsClear = FALSE;
 
   return EFI_SUCCESS;
 }
@@ -312,6 +382,14 @@ DandelionSetAttribute (
   return EFI_SUCCESS;
 }
 
+/**
+  Clear the text area, but NOT the instrument strip at the bottom.
+
+  Why the exception: MsdcDxe dispatches before this driver (APRIORI order), and
+  its stage cells live at framebuffer y 1400..1540 -- below the text area.  A
+  full-panel clear here would erase the very measurements this bring-up is
+  waiting for.
+**/
 STATIC
 EFI_STATUS
 EFIAPI
@@ -321,9 +399,11 @@ DandelionClearScreen (
 {
   ApplyAttribute (mMode.Attribute);
 
-  for (UINTN Row = 0; Row < DANDELION_ROWS; Row++) {
+  for (UINTN Row = 0; Row < DANDELION_CLEAR_ROWS; Row++) {
     FillRow (Row, mBg);
   }
+
+  mRowNeedsClear = FALSE;
 
   mMode.CursorColumn = 0;
   mMode.CursorRow    = 0;
@@ -343,8 +423,19 @@ DandelionSetCursorPosition (
     return EFI_UNSUPPORTED;
   }
 
+  //
+  // Rows 0..67 are text; anything from 68 down is the instrument strip, and a
+  // caller that positions the cursor there would print over the measurements.
+  // Clamp instead of failing: BiSerial/ConSplitter do position the cursor, and
+  // an error here is another ASSERT (see DandelionSetMode).
+  //
+  if (Row >= DANDELION_CLEAR_ROWS) {
+    Row = DANDELION_CLEAR_ROWS - 1;
+  }
+
   mMode.CursorColumn = (INT32)Column;
   mMode.CursorRow    = (INT32)Row;
+  mRowNeedsClear     = TRUE;
   return EFI_SUCCESS;
 }
 
@@ -386,6 +477,33 @@ DandelionConsoleDxeEntryPoint (
   Handle = NULL;
 
   //
+  // One-time full wipe of everything the instrument strip does not own.
+  //
+  // DandelionClearScreen() only covers the text area (y 0..1087) now, because
+  // scrolling and mode changes must not touch the measurement strip.  But the
+  // panel still holds whatever PEI/LK left in DRAM on the first boot into this
+  // image, and that is what the "band of corrupted pixels" has been all along:
+  // stale pixels nobody ever wrote.  Measured 2026-10-29: shrinking the clear
+  // area brought that stale content straight back between y 1090 and y 1390.
+  //
+  // So wipe y 0..1391 once, here, and leave 1392..1599 alone: that is where
+  // MsdcImplLib's stage cells (y 1400, 1448, 1496) and PlatformProgressDxe's
+  // white band (y 1560) live, and MsdcDxe has already painted them by now.
+  //
+  {
+    volatile UINT32  *Line;
+    UINTN            Y;
+    UINTN            X;
+
+    for (Y = 0; Y < 1392; Y++) {
+      Line = (volatile UINT32 *)(UINTN)(DANDELION_FB_BASE + (UINT64)Y * DANDELION_FB_STRIDE);
+      for (X = 0; X < DANDELION_FB_STRIDE / 4; X++) {
+        Line[X] = 0x00000000;
+      }
+    }
+  }
+
+  //
   // Start from a known state: light gray on black, cleared, cursor at home.
   // This also erases whatever the earlier stages left on the panel, which
   // makes the first BDS message unambiguous.
@@ -407,17 +525,17 @@ DandelionConsoleDxeEntryPoint (
   //
   // Status band, stage marker: magenta = this console ran.
   //
-  // The band is rows 26..33, full width, and every later stage repaints it
-  // (MSDC yellow/orange/cyan, storage purple/green).  Reading a solid colour
-  // strip off a photograph is reliable; reading 8x16 text through this panel's
-  // corrupted band is not.
+  // The band is y 40..47 (was 26..33, which overlapped this driver's own header
+  // rows at y 16..31), full width, and every later stage repaints it (MSDC
+  // yellow/orange/cyan, storage purple/green).  Reading a solid colour strip off
+  // a photograph is reliable; reading 8x16 text through this panel is not.
   //
   {
     volatile UINT32  *Band;
     UINTN            Y;
     UINTN            X;
 
-    for (Y = 26; Y < 34; Y++) {
+    for (Y = 40; Y < 48; Y++) {
       Band = (volatile UINT32 *)(UINTN)(DANDELION_FB_BASE + (UINT64)Y * DANDELION_FB_STRIDE);
       for (X = 0; X < DANDELION_FB_STRIDE / 4; X++) {
         Band[X] = 0x00FF00FF;
@@ -465,14 +583,14 @@ DandelionConsoleDxeEntryPoint (
     UINTN            Y;
     UINTN            X;
 
-    for (Y = 1200; Y < 1280; Y++) {
+    for (Y = 1000; Y < 1030; Y++) {
       Line = (volatile UINT32 *)(UINTN)(DANDELION_FB_BASE + (UINT64)Y * DANDELION_FB_STRIDE);
       for (X = 0; X < DANDELION_FB_WIDTH; X++) {
         Line[X] = 0x00FF00FF;
       }
     }
 
-    for (Y = 1300; Y < 1380; Y++) {
+    for (Y = 1040; Y < 1070; Y++) {
       Line = (volatile UINT32 *)(UINTN)(DANDELION_FB_BASE + (UINT64)Y * DANDELION_FB_STRIDE);
       for (X = 0; X < DANDELION_FB_WIDTH; X++) {
         Line[X] = 0x00FFFF00;
@@ -578,6 +696,34 @@ DandelionConsoleDxeEntryPoint (
   //
   gST->ConOut = &mTextOut;
   gST->StdErr = &mTextOut;
+
+  //
+  // Proof that this entry point ran to the END, not just to the Install call.
+  //
+  // 2026-10-29: the previous build showed the two proof bars (drawn before the
+  // Install) and a dark patch where MsdcDxe's cells should have been, so the
+  // question became "did this function return at all?".  Thin green bar at
+  // y 1384..1394 = it returned.  If it is absent while the magenta/yellow bars
+  // are present, this driver dies between the Install and here, and that alone
+  // explains why nothing later in the dispatch ever ran.
+  //
+  // Note the y range: an earlier version of this probe used y 2000..2039, which
+  // is *below* the 1600-row panel -- it wrote 117 KB past the end of the
+  // framebuffer, i.e. into whatever memory follows the display carveout.  Every
+  // framebuffer probe in this project must stay inside 0 <= y < 1600.
+  //
+  {
+    volatile UINT32  *Line;
+    UINTN            Y;
+    UINTN            X;
+
+    for (Y = 1080; Y < 1089; Y++) {
+      Line = (volatile UINT32 *)(UINTN)(DANDELION_FB_BASE + (UINT64)Y * DANDELION_FB_STRIDE);
+      for (X = 0; X < DANDELION_FB_WIDTH; X++) {
+        Line[X] = 0x0000C000;
+      }
+    }
+  }
 
   return Status;
 }

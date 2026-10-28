@@ -183,6 +183,50 @@ for (X = 0; X < WIDTH; X++) Dst[X] = Color;   // 也只填这一行
 3. 只有到 3 时，才去动上游 `MsdcDxe.c`（用 `Resources/MuPatches` 加 `MsdcTrace` 钩子），
    在 CMD0/CMD1/ACMD41 上打点。
 
+### 5.6 2026-10-29 02:2x：先修好"能不能读到日志"，再修数据通路
+
+这一轮把两件事分开做：**诊断通道**和**被诊断的东西**。
+
+**(a) 诊断通道（这轮改的就是它）**
+
+1. `ScrollUp()` 用 framebuffer 当 memmove 的源 → 这块屏读回不可靠 → 每滚一次就多一层
+   错位重影，照片上半屏全是乱的（详见 `CORRECTIONS.md` C11）。现在**不滚动**：
+   写满 68 行就 `WrapToTop()` 覆盖最旧一行，行首第一次写入前整行擦除。
+2. 面板上只剩"最近 68 行"，所以关键诊断信息必须**短**：
+   `ddn pio-read FAIL int=%08x left=%u` + `ddn  cfg=... fifo=... sts=... dcrc=...`
+   两行，成功时只打前两次 `ddn pio-read ok len=%u fifo=%08x`。
+
+**(b) 数据通路（这轮真正的修复尝试）**
+
+上一张照片（`boot-uefi-pio-dbg.img`）里 cell 22 红、`BLOCK NONE`。
+
+**验证镜像里到底有什么：不要用字符串扫 `*.fd`。** 这一轮试过
+`IndexOf("pio-read")` / `IndexOf("BLOCK NONE")` / `IndexOf("DANDELION")`，结果全是 -1
+—— 连我们自己控制台里一定存在的字符串都扫不到，因为 FV 里的模块是**压缩存储**的
+（`_FVH` 在偏移 40，但模块正文不是明文）。唯一可靠的验证是：**构建完看构建树里的源文件**
+（`tools/build-local.sh` 第 2 步之后 `grep` 一下），或者看 `BUILDLOG_dandelionPkg.txt`
+里该模块的编译行。
+
+**教训：只能改 `Resources/MuPatches`，不能手改构建树** —— 第 2 步的 `git checkout --`
+会把手工改动擦掉，而"擦掉了"和"没擦掉"在压缩过的 FD 上肉眼/字符串都看不出来。
+
+这轮 0002 里已经包含的三处（都对得上 `Platforms/Benesse/a04br3Pkg/Drivers/SdCardBlockIoDxe`
+——本树里唯一在真机 MT6765 上跑通过数据传输的实现）：
+
+| 改动 | 理由 |
+|---|---|
+| `MsdcPioRead` 整个重写：按 `MSDC_FIFOCS` 实到的字节数排水，不再要求攒够 128 字节，不再 `ASSERT`，错误时打印寄存器 | 旧函数要 `RxBytes >= 128` 才排一次；硬件阈值是 64，永远凑不满 → 一个字节都读不出，`XFER_COMPL` 到时报 `EFI_ABORTED` |
+| 每条命令发出前 W1C 掉所有 latched `MSDC_INT` | `MSDC_INT` 是 latched 状态，旧代码只清它在等的那一位；上一条命令留下的 `DATCRCERR` 会被下一次数据读当成"立刻出错" |
+| `MSDC_PATCH_BIT2 = 0x3489180F`、数据命令前重新置 `MSDC_CFG_PIO` + 清 FIFO、26 MHz、跳过 `HS_TIMING` | 见 patch 内注释；PIO 位只在 `MsdcReset()` 之前设过一次，复位后可能已被清掉 |
+
+**(c) 刷完看什么**
+
+1. 面板文字区是否**干净、无重影**（这才是 (a) 是否生效）；
+2. 有没有 `ddn pio-read FAIL ...` / `ddn  cfg=...`：有就把这两行的四个寄存器贴出来，
+   `int` 的 bit14(`0x4000`)=DATTMO（数据根本没来）、bit15(`0x8000`)=DATCRCERR（来了但采样错），
+   `int` 里没有数据位而有别的位 → 就是 latched 残留；
+3. `ddn pio-read ok` 出现 + `BLOCK OK` + `FAT OK` → M4 达成，直接进 M5。
+
 ### 5.1 把 `GraphicsConsoleDxe` 从 FV 里摘掉（**改的是 `APRIORI.inc`，不是 DSC**）
 
 > 2026-10-28 实测更正：原先以为「DSC 里还在编，FV 可能仍包含它」——

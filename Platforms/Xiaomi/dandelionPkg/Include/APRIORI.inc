@@ -27,13 +27,17 @@ APRIORI DXE {
   INF MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
 
   #
-  # MsdcDxe used to sit here, i.e. before DandelionConsoleDxe.  That ordering
-  # silently discarded every MSDC marker: MsdcImplLib paints its stage band
-  # through gST->ConOut and ConOut was still NULL at this point, so a whole
-  # flash cycle produced one magenta band and zero information about storage.
-  # Moved below the console -- nothing here depends on the eMMC.
+  # 2026-10-29 01:0x -- MsdcDxe is back here, BEFORE the console, and this time
+  # it can stay: MsdcImplLib's markers no longer go through ConOut at all, they
+  # paint straight into the framebuffer (see MsdcStage/MsdcSay).  The previous
+  # build had it after the console for text output, and the panel showed the
+  # console's own proof bars but *no* MSDC cells whatsoever, i.e. the dispatcher
+  # never reached it.  Two candidates: BdsDxe takes over the moment a real
+  # SimpleTextOut appears (BdsEntry never returns), or the console's entry point
+  # dies before returning.  Putting storage first makes the eMMC result
+  # independent of that question -- which is the whole point of M4.
   #
-# INF MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.inf
+  INF MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.inf
 
   INF MdeModulePkg/Bus/Sd/EmmcDxe/EmmcDxe.inf
   INF MdeModulePkg/Bus/Sd/SdDxe/SdDxe.inf
@@ -97,10 +101,21 @@ APRIORI DXE {
   #
   INF dandelionPkg/Drivers/DandelionConsoleDxe/DandelionConsoleDxe.inf
   #
-  # Storage after the console, so MSDC's text markers land on a live ConOut
-  # (the stage cells work either way -- see MsdcImplLib.c).
+  # Storage connect sweep -- after the console on purpose (2026-10-29 01:0x).
   #
-  INF MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.inf
+  # This driver does the ConnectController sweep that BDS would normally do, and
+  # EmmcDxe is started from inside that sweep.  EmmcDxe explains its failures
+  # only through DEBUG(), so the sweep has to happen after a console exists or
+  # the explanation is thrown away -- measured: with this driver before the
+  # console, "EmmcDxe looked at us and sent commands" (cells 16/17) was all we
+  # could get, with no idea which step failed.
+  #
+  # Dispatch is safe to leave past the console: the console's own entry point
+  # now paints a bar at y 1384 when it returns, and on hardware that bar appears,
+  # so the dispatcher keeps going.  MsdcDxe (which must not depend on any of
+  # this) stays before the console.
+  #
+  INF dandelionPkg/Drivers/StorageBeaconDxe/StorageBeaconDxe.inf
   #
   # GraphicsConsoleDxe is deliberately NOT here any more.
   #

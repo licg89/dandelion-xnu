@@ -16,17 +16,220 @@
  MSDC_PRIVATE_DATA gMSDCPrivateDataTemplate = {
    MSDC_PRIVATE_SIGNATURE, // Signature
    NULL, // ControllerHandle
-@@ -691,6 +701,9 @@
+@@ -97,6 +107,9 @@
  
+   Private = MSDC_PRIVATE_FROM_THIS (This);
+ 
++  if (Private->SdInfo.CardType != UnknownCard) {
++    MsdcTrace (17, 0x0000FFFF);
++  }
+   return MsdcSendCmd (Private, Packet);
+ }
+ 
+@@ -136,6 +149,7 @@
+   }
+ 
+   Private = MSDC_PRIVATE_FROM_THIS (This);
++  MsdcTrace (16, 0x00FFFF00);
+ 
+   if (Private->SdInfo.CardType == EmmcCard) {
+     EmmcNode = AllocateCopyPool (sizeof (EMMC_DEVICE_PATH), &gEMMCDevicePathTemplate);
+@@ -494,42 +508,116 @@
+   VOID  *Buffer,
+   UINT32 BufferLength)
+ {
+-  UINT32 IntStatus, ChunkSize, RemainSize, RxBytes;
+-  UINT8 *ByteBuffer = (UINT8 *)Buffer;
++  UINT32  IntStatus, RemainSize, RxBytes, Words;
++  UINT32  Spins;
++  UINT8   *ByteBuffer = (UINT8 *)Buffer;
+ 
+   RemainSize = BufferLength;
++  Spins      = 0;
+ 
+   MsdcClrBits (Private, MSDC_INTEN, MSDC_INT_DATSTS);
+ 
+   while (TRUE) {
+     MsdcRead (Private, MSDC_INT, &IntStatus);
+ 
++    //
++    // Errors are checked before anything else, and every bit that was latched
++    // is cleared after handling, so the next command cannot inherit them.
++    //
+     if (IntStatus & (MSDC_INT_DATTMO | MSDC_INT_DATCRCERR | MSDC_INT_ACMDTMO | MSDC_INT_ACMDCRCERR)) {
++      UINT32  DbgCfg, DbgFifo, DbgSts, DbgDcrc;
++
++      //
++      // The panel is the only debug channel this board has: print the evidence
++      // rather than guessing which of the four error bits fired.  Two lines so
++      // nothing wraps at 90 columns.
++      //
++      MsdcRead (Private, MSDC_CFG, &DbgCfg);
++      MsdcRead (Private, MSDC_FIFOCS, &DbgFifo);
++      MsdcRead (Private, SDC_STS, &DbgSts);
++      MsdcRead (Private, SDC_DATCRC_STS, &DbgDcrc);
++      DEBUG ((
++        DEBUG_ERROR,
++        "ddn pio-read FAIL int=%08x left=%u\n",
++        IntStatus,
++        RemainSize
++        ));
++      DEBUG ((
++        DEBUG_ERROR,
++        "ddn  cfg=%08x fifo=%08x sts=%08x dcrc=%08x\n",
++        DbgCfg,
++        DbgFifo,
++        DbgSts,
++        DbgDcrc
++        ));
++      MsdcWrite (Private, MSDC_INT, IntStatus);
+       return MsdcIntTrackError (Private, MSDC_INT_DATSTS, IntStatus);
+     }
+ 
+-    ChunkSize = RemainSize > MSDC_FIFO_SIZE ? MSDC_FIFO_SIZE : RemainSize;
++    //
++    // Drain whatever the FIFO reports right now -- no threshold assumption.
++    // The old code waited for 128 bytes (MSDC_FIFO_SIZE) while the hardware
++    // reports at most the threshold (64), so it never drained at all.
++    //
+     MsdcFifoRxBytes (Private, &RxBytes);
++    Words = RxBytes / 4;
++    while ((Words > 0) && (RemainSize >= 4)) {
++      MsdcFifoRead (Private, ByteBuffer, 4);
++      ByteBuffer += 4;
++      RemainSize -= 4;
++      Words--;
++    }
++
++    //
++    // Tail: fewer than four bytes left in the buffer but the FIFO still holds
++    // data.  Read them one at a time so nothing is left behind.
++    //
++    while ((RxBytes >= 4) && (RemainSize > 0) && (RemainSize < 4)) {
++      MsdcFifoRead (Private, ByteBuffer, RemainSize);
++      ByteBuffer += RemainSize;
++      RemainSize  = 0;
++    }
+ 
+-    if (RemainSize == 0 && RxBytes) {
+-      ASSERT (FALSE);
++    if (IntStatus & MSDC_INT_XFER_COMPL) {
++      MsdcWrite (Private, MSDC_INT, IntStatus);
++      if (RemainSize == 0) {
++        break;
++      }
++      //
++      // Card finished but bytes are still queued: keep looping to drain them.
++      // Only give up if the FIFO stops moving entirely.
++      //
++    } else {
++      MsdcWrite (Private, MSDC_INT, IntStatus);
+     }
+ 
+-    if (RxBytes >= ChunkSize) {
+-      MsdcFifoRead (Private, ByteBuffer, ChunkSize);
+-      ByteBuffer += ChunkSize;
+-      RemainSize -= ChunkSize;
++    if (RemainSize == 0) {
++      //
++      // Everything the caller asked for has been read; the remaining FIFO bytes
++      // (if any) belong to nothing we need, so stop here rather than spin.
++      //
++      break;
+     }
+ 
+-    if (IntStatus & MSDC_INT_XFER_COMPL) {
+-      MsdcWrite (Private, MSDC_INT, IntStatus & MSDC_INT_XFER_COMPL);
++    if (++Spins > 2000000) {
++      DEBUG ((DEBUG_ERROR, "MsdcDxe: PIO read stalled with %u bytes left\n", RemainSize));
++      return EFI_TIMEOUT;
++    }
++  }
+ 
+-      if (RemainSize) {
+-        DEBUG ((DEBUG_ERROR, "MsdcDxe: Data not fully read!\n"));
+-        return EFI_ABORTED;
+-      }
++  //
++  // One line per read would drown the panel; the first two are enough to show
++  // that a transfer completed and how much was still sitting in the FIFO.
++  //
++  {
++    STATIC UINT32  DbgOk;
+ 
+-      break;
++    if (DbgOk < 2) {
++      UINT32  DbgFifo;
++
++      DbgOk++;
++      MsdcRead (Private, MSDC_FIFOCS, &DbgFifo);
++      DEBUG ((DEBUG_ERROR, "ddn pio-read ok len=%u fifo=%08x\n", BufferLength, DbgFifo));
+     }
+   }
+ 
+@@ -679,6 +767,13 @@
+   if (IsDataTransfer) {
+     RawCmd |= BLOCK_SIZE << SDC_CMD_BLK_SIZE_SHIFT;
+     MsdcWrite (Private, SDC_BLK_NUM, BlkLen);
++
++    //
++    // dandelion: re-assert PIO mode immediately before the command, and
++    // drop whatever is left in the FIFO from the previous transfer.
++    //
++    MsdcSetBits (Private, MSDC_CFG, MSDC_CFG_PIO);
++    MsdcSetBits (Private, MSDC_FIFOCS, MSDC_FIFOCS_CLR);
+   }
+ 
+   do {
+@@ -689,10 +784,37 @@
+   // Disable interrupts because we use polling way
+   MsdcClrBits (Private, MSDC_INTEN, MSDC_INT_CMDSTS);
+ 
++  {
++    UINT32  StaleInt;
++
++    //
++    // dandelion: clear whatever an earlier command left latched.
++    //
++    MsdcRead (Private, MSDC_INT, &StaleInt);
++    if (StaleInt != 0) {
++      MsdcWrite (Private, MSDC_INT, StaleInt);
++    }
++  }
++
    MsdcWrite (Private, SDC_ARG, CommandBlk->CommandArgument);
    MsdcWrite (Private, SDC_CMD, RawCmd);
 +  if (Private->SdInfo.CardType == UnknownCard) {
 +    MsdcTrace (10, 0x00FF00FF);
++  } else {
++    switch (CommandBlk->CommandIndex) {
++      case 7:  MsdcTrace (19, 0x0000FFFF); break;
++      case 8:  MsdcTrace (21, 0x00FFFFFF); break;
++      case 9:  MsdcTrace (18, 0x00FFFF00); break;
++      case 10: MsdcTrace (20, 0x00FF8000); break;
++      default: break;
++    }
 +  }
  
    Status = MsdcPollInterrupts (Private, MSDC_INT_CMDSTS, MSDC_INT_CMDRDY);
++  if (EFI_ERROR (Status) && (Private->SdInfo.CardType != UnknownCard)) {
++    MsdcTrace (23, 0x00FF0000);
++    DEBUG ((DEBUG_ERROR, "dandelion cmd %u failed: status=0x%x\n", CommandBlk->CommandIndex, Status));
++  }
    if (EFI_ERROR(Status)) {
-@@ -739,6 +752,7 @@
+     return Status;
+   }
+@@ -714,6 +836,9 @@
+   if (IsDataTransfer) {
+     if (IsRead) {
+       Status = MsdcPioRead (Private, Packet->InDataBuffer, Packet->InTransferLength);
++      if (Private->SdInfo.CardType != UnknownCard) {
++        MsdcTrace (22, EFI_ERROR (Status) ? 0x00FF0000 : 0x0000FF00);
++      }
+       if (EFI_ERROR(Status)) {
+         return Status;
+       }
+@@ -739,6 +864,7 @@
  
    // SW Reset
    MsdcReset (Private);
@@ -34,7 +237,52 @@
  
    // Clear FIFO
    MsdcClearFifo (Private);
-@@ -1280,6 +1294,7 @@
+@@ -773,6 +899,17 @@
+   MsdcWrite (Private, MSDC_PATCH_BIT1, 0xFFFA0349);
+ 
+   //
++  // dandelion: PATCH_BIT2 was never initialised, only poked, so everything
++  // except the three fields below kept whatever the bootloader left there.
++  // 0x3489180F is LK's full post-initialisation value for MT6765
++  // (MSDC_PB2_DEFAULT 0x14801803 from msdc_io.h:317, then RESPWAIT=3,
++  // CFGCRCSTS, CRCSTSENSEL=1, RESPSTENSEL=1, DDR50SEL, POPENCNT=8,
++  // CFGRESPCNT=1, INTCRESPSEL=1, CFGCRCSTSCNT=1).  Those bits are response
++  // and data CRC sampling -- exactly what a data read depends on.
++  //
++  MsdcWrite (Private, MSDC_PATCH_BIT2, 0x3489180F);
++
++  //
+   // [VERIFIED] LK clears EMMC_CFG0.BOOTSUPP before card identification and
+   // comments that leaving it set "may cause eMMC initialization to fail after
+   // BROM operations" (LK msdc.c:2932-2938).  We are handed over by LK right
+@@ -1224,7 +1361,12 @@
+       return Status;
+     }
+   } else {
+-    Status = EMMCSwitch(PassThru, 3, 185, 1, 0);
++    //
++    // dandelion: skip HS_TIMING=1.  The card would switch to high speed
++    // while the host timing stays at default, which is the most likely
++    // reason a data read fails where every command succeeds.
++    //
++    Status = EFI_SUCCESS;
+     if (EFI_ERROR(Status))
+     {
+       DEBUG ((DEBUG_ERROR, "MsdcDxe: EMMCSwitch failed with status %r\n", Status));
+@@ -1244,7 +1386,11 @@
+     return EFI_DEVICE_ERROR;
+   }
+ 
+-  MsdcSetMclk(Private, 50 * 1000 * 1000);
++    //
++  // dandelion: stay at default-speed 26 MHz instead of 50 MHz.
++  // 50 MHz is where the DATA path (not the command path) started failing.
++  //
++  MsdcSetMclk(Private, 26 * 1000 * 1000);
+ 
+   return Status;
+ }
+@@ -1280,6 +1426,7 @@
  
      MicroSecondDelay (100000);
    } while ((Ocr & BIT31) == 0);
@@ -42,7 +290,7 @@
  
    Status = CardAllSendCid (PassThru);
    if (EFI_ERROR (Status)) {
-@@ -1294,6 +1309,7 @@
+@@ -1294,9 +1441,11 @@
    }
  
    Private->SdInfo.CardType = EmmcCard;
@@ -50,11 +298,32 @@
    DEBUG ((DEBUG_ERROR, "MsdcDxe: Found EMMC device at controller with index %d\n", Private->Index));
  
    Status = CardSetBusMode (Private, 1);
-@@ -1425,6 +1441,7 @@
++  MsdcTrace (13, EFI_ERROR (Status) ? 0x00FF0000 : 0x0000FF00);
+ 
+   return Status;
+ }
+@@ -1425,6 +1574,9 @@
      }
  
      Private->TopMmioReg = Region.Address;
-+    MsdcTrace (8, (i == 0) ? 0x0000FF00 : 0x00FF0000);
++    if (i == 0) {
++      MsdcTrace (8, 0x0000FF00);
++    }
  
      MsdcInit(Private);
  
+@@ -1440,12 +1592,14 @@
+ 
+     if (EFI_ERROR(Status)) {
+       DEBUG ((DEBUG_ERROR, "MsdcDxe: Failed to detect card! %r\n", Status));
++      MsdcTrace (15, 0x00FF0000);
+       Status = EFI_SUCCESS;
+       FreePool (Private);
+       FreePool (DevicePath);
+       continue;
+     }
+ 
++    MsdcTrace (14, 0x0000FFFF);
+     Status = gBS->InstallMultipleProtocolInterfaces (
+                     &Private->ControllerHandle,
+                     &gEfiDevicePathProtocolGuid, DevicePath,
