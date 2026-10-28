@@ -18,8 +18,8 @@ checkout 完整复现。构建与打包的完整环境见
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-14a921bcb3e45fd8187e4b7aa2dd420134eb1af052b6cac52714bc784d8aee1c  SILICIUM_UEFI.fd
-63338774779fb1e43e1f5b58fa371036531b03f2caa0c5efbd820b085df097f2  boot-uefi-m5-dma.img
+8b8c702a2e48a9649e6981d63169d7c98280a4141f826cb3263170a5c2965758  SILICIUM_UEFI.fd
+2028dbb60500b698c494360fa5af5f2318a86097a8398be5d0e7f2037aca8bce  boot-uefi-m5-dma.img
 ```
 
 ## 这一版是什么（2026-10-29 02:2x）

@@ -624,6 +624,37 @@ DandelionConsoleDxeEntryPoint (
   DandelionOutputString (&mTextOut, L"CONSOLE OK 90x100\r\n");
 
   //
+  // Build stamp.
+  //
+  // Between two flashes there are usually three images in play -- the one in
+  // git, the one in D:\aios\artifacts, and the one on the phone -- and until now
+  // the only way to tell which was running was to compare behaviour against
+  // memory.  __DATE__/__TIME__ are the compilation moment of this file, which is
+  // enough to identify a build in a photo, and they cost two lines of text.
+  //
+  {
+    CHAR16  Stamp[48];
+    UINTN   Source;
+    UINTN   Target;
+
+    Source = 0;
+    Target = 0;
+    for (Source = 0; (Source < sizeof (__DATE__)) && (__DATE__[Source] != '\0'); Source++) {
+      Stamp[Target++] = (CHAR16)(UINT8)__DATE__[Source];
+    }
+
+    Stamp[Target++] = L' ';
+    for (Source = 0; (Source < sizeof (__TIME__)) && (__TIME__[Source] != '\0'); Source++) {
+      Stamp[Target++] = (CHAR16)(UINT8)__TIME__[Source];
+    }
+
+    Stamp[Target++] = L'\r';
+    Stamp[Target++] = L'\n';
+    Stamp[Target]   = L'\0';
+    DandelionOutputString (&mTextOut, Stamp);
+  }
+
+  //
   // Status band, stage marker: magenta = this console ran.
   //
   // The band is y 40..47 (was 26..33, which overlapped this driver's own header
