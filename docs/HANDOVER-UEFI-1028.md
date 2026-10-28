@@ -297,3 +297,37 @@ DXE 已经能跑我们自己的驱动，所以文字控制台可以直接做：
 4. 再往后才是 GOP：`GraphicsConsoleDxe` 需要一个 MT6765 的 GOP 生产者。
 
 注意：10 秒的复位窗口足够画完几十行字，不影响使用。
+
+
+## ConOut 实测：有协议，但没有 GOP（同日，第四次上机）
+
+`SystemTable->ConOut` 非 NULL（ConSplitter 建了它，所以那行 `CONOUT YES` 是真的），
+但通过它 `OutputString(L"CONOUT REACHES PANEL")` 写出去的内容**屏幕上没有出现**。
+
+结论：**这块板没有 GOP 生产者**。ConOut 链路上没有能落到面板的
+`EFI_GRAPHICS_OUTPUT_PROTOCOL`，于是：
+
+- UEFI 自己的 DEBUG / 控制台输出目前不可见
+- 我们的直接写屏（`0x7EC50000` + 8x16 点阵）是唯一可靠的显示通道，已可用
+- **M3 的正题就是补一个 MT6765 的 GOP 驱动**（或移植 Mu-Silicium 里现成的 MTK
+  LCD/OVL 驱动），之后 `UniXNU.efi` / `DarwinBoot` 的打印才会出现
+
+### 本轮已确认的事实
+
+| 项 | 结果 |
+|---|---|
+| SEC 执行 | ✅ 绿带 |
+| PEI 执行 | ✅ 蓝带 |
+| DXE core + dispatcher + FV | ✅ 文字 + 白条 |
+| 直接写屏（8x16 点阵） | ✅ 可读，`DandelionDrawString()` |
+| ConOut → 面板 | ❌ 没有 GOP |
+
+### 下一步
+
+1. **GOP**：在 `MT6765Pkg` 里加一个 `GraphicsOutput` 生产者。最省力的起点是
+   Mu-Silicium 的 MTK 显示栈（`MtkDrmDxe` / `LcdGraphicsOutputDxe` 一类），
+   它已经在 lancelot（MT6768）上编译过；MT6765 的差异集中在 DSI/OVL 基址和
+   clock，和 `ClockImplLib` 里已经核对过的表是同一套。
+2. 在那之前，所有阶段都可以继续用 `DandelionDrawString()` 输出——它不依赖任何
+   UEFI 协议，SEC/PEI/DXE 都能用（把 `DandelionFont.h` 复制过去即可）。
+3. GOP 通了之后才谈 M4（`MsdcDxe` + FAT）和 M5（`UniXNU.efi`）。
