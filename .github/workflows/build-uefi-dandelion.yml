@@ -66,6 +66,19 @@ jobs:
           echo "MT6765Pkg: $(find "$WORK/Silicon/MediaTek/MT6765Pkg" -type f | wc -l) files"
           echo "dandelionPkg: $(find "$WORK/Platforms/Xiaomi/dandelionPkg" -type f | wc -l) files"
 
+      - name: Apply our patches to the EDK2 base
+        # MediaTekPkg and friends live in the upstream fork, so the fixes we
+        # need there are kept as patches in Resources/MuPatches and applied
+        # here.  Without this the build stops at MsdcDxe.c with
+        # -Werror,-Wunused-but-set-variable.
+        run: |
+          set -e
+          shopt -s nullglob
+          for p in dandelion-xnu/Resources/MuPatches/*.patch; do
+            echo "applying $(basename "$p")"
+            git -C "$WORK" apply -p1 --verbose "$p"
+          done
+
       - name: Disable the x86 NASM external dependency
         # mu_nasm packages the x86 assembler; an aarch64-only build never runs
         # it, and the feed is not reachable from CI.
