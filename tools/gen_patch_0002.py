@@ -26,6 +26,14 @@ WORK = os.environ.get("UEFI_TREE", os.path.expanduser("~/uefi-a04br3"))
 HERE = os.path.dirname(os.path.abspath(__file__))
 PATCHDIR = os.environ.get("MU_PATCHES", os.path.join(os.path.dirname(HERE), "Resources", "MuPatches"))
 REL = "Silicon/MediaTek/MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.c"
+#
+# The data path needs CacheMaintenanceLib (DMA descriptors and buffers have to be
+# cleaned/invalidated), and a library class lives in the .inf, so this patch has
+# to touch two files.  Everything else about the patch is unchanged.
+#
+INF_REL = "Silicon/MediaTek/MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.inf"
+inf_path = os.path.join(WORK, INF_REL)
+INF_BASE = os.path.join("/tmp", "MsdcDxe.inf.base")
 PATCH0001 = os.path.join(PATCHDIR, "0001-MediaTekPkg-MsdcDxe-mt6765-bringup.patch")
 BASE = os.path.join("/tmp", "MsdcDxe.base.c")
 OUT = os.path.join(PATCHDIR, "0002-MsdcDxe-dandelion-panel-markers.patch")
@@ -34,9 +42,10 @@ path = os.path.join(WORK, REL)
 
 # Regenerate the 0001-applied baseline from the tree's own git object, so this
 # script is self-contained (WSL may have recycled /tmp since the last run).
-subprocess.run(["git", "-C", WORK, "checkout", "--", REL], check=True)
+subprocess.run(["git", "-C", WORK, "checkout", "--", REL, INF_REL], check=True)
 subprocess.run(["git", "-C", WORK, "apply", "-p1", PATCH0001], check=True)
 subprocess.run(["cp", path, BASE], check=True)
+subprocess.run(["cp", inf_path, INF_BASE], check=True)
 
 text = open(path, "r", encoding="utf-8", errors="surrogateescape").read()
 base = open(BASE, "r", encoding="utf-8", errors="surrogateescape").read()
@@ -269,15 +278,32 @@ OLD_PIO = """  UINT32 IntStatus, ChunkSize, RemainSize, RxBytes;
 
 NEW_PIO = """  UINT32  IntStatus, RemainSize, RxBytes, Words;
   UINT32  Spins;
+  UINT32  PsOr, PsAnd, PsNow;
   UINT8   *ByteBuffer = (UINT8 *)Buffer;
 
   RemainSize = BufferLength;
   Spins      = 0;
+  PsOr       = 0;
+  PsAnd      = 0xFFFFFFFF;
 
   MsdcClrBits (Private, MSDC_INTEN, MSDC_INT_DATSTS);
 
   while (TRUE) {
     MsdcRead (Private, MSDC_INT, &IntStatus);
+
+    //
+    // Sample the pin levels while waiting.  MSDC_PS reports what the controller
+    // sees on the pads right now -- DAT0 is bit 0, CMD and CLK have their own
+    // bits.  A card that starts a data phase drives DAT0 low, so OR-ing every
+    // sample and AND-ing every sample tells us afterwards whether the pin ever
+    // moved at all:
+    //
+    //   ps_or == ps_and   the pad never changed during the whole wait
+    //   ps_or != ps_and   something drove the bus, so this is not wiring
+    //
+    MsdcRead (Private, MSDC_PS, &PsNow);
+    PsOr  |= PsNow;
+    PsAnd &= PsNow;
 
     //
     // Errors are checked before anything else, and every bit that was latched
@@ -309,6 +335,7 @@ NEW_PIO = """  UINT32  IntStatus, RemainSize, RxBytes, Words;
         DbgSts,
         DbgDcrc
         ));
+      DEBUG ((DEBUG_ERROR, "ddn  ps_or=%08x ps_and=%08x", PsOr, PsAnd));
 
       // MSDC_PS: the pin levels the controller sees right now.  DAT0 is bit 0;
       // if the card is driving a data block at least one DAT bit must have
@@ -653,40 +680,33 @@ OLD_SWITCH = """    //
     if (EFI_ERROR(Status))
     {"""
 NEW_SWITCH = """    //
-    // dandelion: HS_TIMING=1 stays skipped -- the card would switch to high
-    // speed while the host timing stays at default, and the line-A driver
-    // (bootshim/msdc.c, which does move data on this phone) keeps the
-    // inherited timing for exactly that reason.
+    // dandelion: put the card back into the timing mode this host actually runs,
+    // instead of leaving it wherever the previous boot left it.
     //
-    Status = EFI_SUCCESS;
-
+    // "Skip HS_TIMING" was wrong reasoning: skipping does not mean "default
+    // speed", it means "keep whatever is in the card".  EXT_CSD[185] (HS_TIMING)
+    // and EXT_CSD[183] (BUS_WIDTH) are only reset by a power cycle, not by CMD0 --
+    // so after Android has run, the card is very likely in HS_TIMING=2 (HS200)
+    // with BUS_WIDTH=2 (8-bit) while this driver talks to it at default speed on
+    // one data line.  A card in HS200 clocked like a default-speed card answers
+    // commands and never sends data, which is exactly what the panel shows.
     //
-    // dandelion: put the card back into the timing mode this host is
-    // actually running, instead of leaving it wherever the previous boot
-    // left it.
-    //
-    // "Skip HS_TIMING" was wrong reasoning: skipping does not mean
-    // "default speed", it means "keep whatever is in the card".
-    // EXT_CSD[185] (HS_TIMING) and EXT_CSD[183] (BUS_WIDTH) are only reset
-    // by a power cycle, not by CMD0 -- so after Android has run, the card is
-    // very likely in HS_TIMING=2 (HS200) with BUS_WIDTH=2 (8-bit) while this
-    // driver talks to it at default speed on one data line.  A card in HS200
-    // clocked like a default-speed card answers commands and never sends
-    // data, which is exactly what the panel shows.
-    //
-    // Order matters: leave HS200 before narrowing the bus.
+    // Both switches are best effort on purpose: if one fails, carrying on with the
+    // card as it is still produces the diagnostics that say what happened, whereas
+    // failing identification here would hide them (and lose the data-path markers
+    // entirely, since EmmcDxe would never bind).
     //
     Status = EMMCSwitch (PassThru, 3, 185, 0, 0);
     if (EFI_ERROR (Status)) {
-      DEBUG ((DEBUG_ERROR, "MsdcDxe: HS_TIMING=0 failed %r\\n", Status));
-      return Status;
+      DEBUG ((DEBUG_ERROR, "MsdcDxe: HS_TIMING=0 failed %r (continuing)", Status));
     }
 
-    //
-    // dandelion: and force the bus to 1-bit, which is what the host side is
-    // configured for (MsdcSetBusWidth (Private, 1)).  No-op if already 1-bit.
-    //
     Status = EMMCSwitch (PassThru, 3, 183, 0, 0);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "MsdcDxe: BUS_WIDTH=0 failed %r (continuing)", Status));
+    }
+
+    Status = EFI_SUCCESS;
     if (EFI_ERROR(Status))
     {"""
 if OLD_SWITCH in text:
@@ -720,6 +740,81 @@ text = text.replace(OLD_TMO, NEW_TMO)
 # ---------------------------------------------------------------------------
 # Clear the whole interrupt register before a command, not just the bits that
 # happen to be latched when we look.  The line-A shim writes 0xFFFFFFFF.
+
+# ---------------------------------------------------------------------------
+# dandelion: DMA read path.
+#
+# PIO has never moved a byte on this board -- every attempt ends in DATTMO with an
+# empty FIFO.  The alternative is the controller's own DMA engine, and there is a
+# complete, hardware-proven implementation of it in this tree
+# (Platforms/Benesse/a04br3Pkg/Drivers/SdCardBlockIoDxe), so this is a port rather
+# than an invention.  The C bodies live in tools/snippets/ so they can be read and
+# edited as ordinary C instead of as escaped strings.
+#
+_SNIPPETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "snippets")
+_DMA_DEFS = open(os.path.join(_SNIPPETS, "msdc_dma_defs.c"), "r", encoding="utf-8").read()
+_DMA_READ = open(os.path.join(_SNIPPETS, "msdc_dma_read.c"), "r", encoding="utf-8").read()
+
+_ANCHOR_PROTO = "extern VOID MsdcPanelValue (UINTN Slot, UINT32 Value);"
+if text.count(_ANCHOR_PROTO) != 1:
+    sys.exit("panel prototype anchor appears %d times" % text.count(_ANCHOR_PROTO))
+text = text.replace(_ANCHOR_PROTO, _ANCHOR_PROTO + "\n\n" + _DMA_DEFS)
+
+_ANCHOR_PIO = "EFI_STATUS\nMsdcPioRead (\n  MSDC_PRIVATE_DATA* Private,"
+if text.count(_ANCHOR_PIO) != 1:
+    sys.exit("MsdcPioRead anchor appears %d times" % text.count(_ANCHOR_PIO))
+text = text.replace(_ANCHOR_PIO, _DMA_READ + "\n" + _ANCHOR_PIO)
+
+# Use the DMA path first; on failure the flag is cleared so the rest of the boot
+# is exactly the old behaviour.
+OLD_READ = "      Status = MsdcPioRead (Private, Packet->InDataBuffer, Packet->InTransferLength);"
+NEW_READ = """      if (mDdnUseDma) {
+        Status = MsdcDmaRead (Private, Packet->InDataBuffer, Packet->InTransferLength);
+        if (EFI_ERROR (Status)) {
+          //
+          // One experiment, then behave: if DMA cannot do it either, put the
+          // controller back on PIO for every later transfer.
+          //
+          mDdnUseDma = FALSE;
+        }
+      } else {
+        Status = MsdcPioRead (Private, Packet->InDataBuffer, Packet->InTransferLength);
+      }"""
+if text.count(OLD_READ) != 1:
+    sys.exit("data read anchor appears %d times" % text.count(OLD_READ))
+text = text.replace(OLD_READ, NEW_READ)
+
+# ... and PIO must be *off* before the command when DMA is going to move the data,
+# because the controller decides at command time how the data phase is served.
+OLD_REASSERT = """    MsdcSetBits (Private, MSDC_CFG, MSDC_CFG_PIO);
+    MsdcSetBits (Private, MSDC_FIFOCS, MSDC_FIFOCS_CLR);"""
+NEW_REASSERT = """    if (mDdnUseDma && IsRead) {
+      MsdcClrBits (Private, MSDC_CFG, MSDC_CFG_PIO);
+    } else {
+      MsdcSetBits (Private, MSDC_CFG, MSDC_CFG_PIO);
+    }
+    MsdcSetBits (Private, MSDC_FIFOCS, MSDC_FIFOCS_CLR);"""
+if text.count(OLD_REASSERT) != 1:
+    sys.exit("PIO re-assert anchor appears %d times" % text.count(OLD_REASSERT))
+text = text.replace(OLD_REASSERT, NEW_REASSERT)
+
+# ---------------------------------------------------------------------------
+# MsdcDxe.inf: add CacheMaintenanceLib for the DMA path.
+#
+# Without it the link fails on WriteBackInvalidateDataCacheRange /
+# InvalidateDataCacheRange, which is exactly the failure you want rather than a
+# DMA engine walking stale descriptors.
+inf_path = os.path.join(WORK, INF_REL)
+inf_text = open(inf_path, "r", encoding="utf-8", errors="surrogateescape").read()
+
+OLD_LIB = "  MemoryAllocationLib\n"
+NEW_LIB = "  MemoryAllocationLib\n  CacheMaintenanceLib\n"
+if inf_text.count(OLD_LIB) != 1:
+    sys.exit("MemoryAllocationLib anchor appears %d times" % inf_text.count(OLD_LIB))
+if "CacheMaintenanceLib" not in inf_text:
+    inf_text = inf_text.replace(OLD_LIB, NEW_LIB)
+    open(inf_path, "w", encoding="utf-8", errors="surrogateescape", newline="").write(inf_text)
+
 open(path, "w", encoding="utf-8", errors="surrogateescape", newline="").write(text)
 
 # Emit the patch: 0001-applied state -> final state.
@@ -729,5 +824,12 @@ diff = subprocess.run(
 )
 if diff.returncode != 1:
     sys.exit("unexpected diff result: %d %s" % (diff.returncode, diff.stderr))
-open(OUT, "w", encoding="utf-8", newline="\n").write(diff.stdout)
+inf_diff = subprocess.run(
+    ["diff", "-u", "--label", "a/" + INF_REL, "--label", "b/" + INF_REL, INF_BASE, inf_path],
+    capture_output=True, text=True,
+)
+if inf_diff.returncode != 1:
+    sys.exit("unexpected inf diff result: %d %s" % (inf_diff.returncode, inf_diff.stderr))
+
+open(OUT, "w", encoding="utf-8", newline="\n").write(diff.stdout + inf_diff.stdout)
 print("wrote %s (%d lines)" % (OUT, diff.stdout.count("\n")))

@@ -8,7 +8,7 @@ checkout 完整复现。构建与打包的完整环境见
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
-| `boot-uefi-m5-log.img` | 16,099,328 B | **当前上机版**：M4 卡状态修复 + M5 装载器 + 设备树 + 完整日志（含写 flash） |
+| `boot-uefi-m5-dma.img` | 16,099,328 B | **当前上机版**：M4 卡状态修复 + DMA 读路径 + M5 装载器 + 设备树 + 完整日志（含写 flash） |
 | `panel-preview.png` | 720×1600 | `tools/render_panel_preview.py` 渲染的仪表区，**不用刷机就能看布局** |
 
 > 更早的几版（`boot-uefi-pagelog-pio2.img`、`boot-uefi-stagecells.img`、`boot-uefi-console.img`）
@@ -18,8 +18,8 @@ checkout 完整复现。构建与打包的完整环境见
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-79cdc3cedafd7915863ec11d499a336e66b7512fc15d2b904cd5f7b52c395735  SILICIUM_UEFI.fd
-0c14e210698794ee8750da058e7f47d2d427c9a54cbb25d13a7c132a176375ec  boot-uefi-m5-log.img
+9c8dad0aab136ebc05ba426fb77c3f4f27d84bd86267a29599b84bd52424e68f  SILICIUM_UEFI.fd
+aeee60eb1609a6c3530f5fbc13d00ca49c47be66d9728742547f43c53e9e17b4  boot-uefi-m5-dma.img
 ```
 
 ## 这一版是什么（2026-10-29 02:2x）

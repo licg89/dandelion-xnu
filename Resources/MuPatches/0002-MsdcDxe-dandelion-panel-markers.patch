@@ -1,6 +1,6 @@
 --- a/Silicon/MediaTek/MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.c
 +++ b/Silicon/MediaTek/MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.c
-@@ -1,5 +1,22 @@
+@@ -1,5 +1,122 @@
  #include "MsdcDxe.h"
  
 +//
@@ -20,10 +20,110 @@
 +//
 +extern VOID MsdcPanelValue (UINTN Slot, UINT32 Value);
 +
++//
++// dandelion: MTK GPD/BD descriptor definitions for the DMA read path.
++//
++// Copied from Platforms/Benesse/a04br3Pkg/Drivers/SdCardBlockIoDxe, which is the
++// only implementation in this tree that moves data on hardware of this family
++// (MT6765-class MSDC).  The layout is fixed by the controller:
++//
++//   GPD (general purpose descriptor) 28 bytes: where the buffer descriptors are
++//   BD  (buffer descriptor)          16 bytes: where the data goes
++//
++// Both carry a one-byte checksum in bits 15:8 that the controller verifies; get
++// it wrong and the transfer fails with BDCSERR/GPDCSERR, which is at least a
++// clear failure rather than a silent one.
++//
++typedef struct {
++  UINT32  Info;
++  UINT32  Next;
++  UINT32  Pointer;
++  UINT32  BufferLength;
++  UINT32  Argument;
++  UINT32  BlockCount;
++  UINT32  Command;
++} DDN_MSDC_GPD;
++
++typedef struct {
++  UINT32  Info;
++  UINT32  Next;
++  UINT32  Pointer;
++  UINT32  BufferLength;
++} DDN_MSDC_BD;
++
++#define DDN_GPD_HWO             BIT0
++#define DDN_GPD_BDP             BIT1
++#define DDN_DESC_CHECKSUM_SHIFT 8
++#define DDN_GPD_NEXT_HIGH_SHIFT 24
++#define DDN_GPD_BD_HIGH_SHIFT   28
++#define DDN_BD_EOL              BIT0
++#define DDN_BD_DATA_HIGH_SHIFT  28
++#define DDN_DESC_HIGH_MASK      0xFU
++#define DDN_DESC_LENGTH_MASK    0x00FFFFFFU
++#define DDN_DESC_CHECKSUM_BYTES 16U
++
++#define DDN_DMA_SA_HIGH         (0x08c)
++#define DDN_DMA_SA              (0x090)
++#define DDN_DMA_CA              (0x094)
++#define DDN_DMA_CTRL            (0x098)
++#define DDN_DMA_CFG             (0x09c)
++#define DDN_DMA_LEN             (0x0a8)
++
++#define DDN_DMA_CTRL_START      BIT0
++#define DDN_DMA_CTRL_STOP       BIT1
++#define DDN_DMA_CTRL_MODE       BIT8
++#define DDN_DMA_CTRL_LASTBUF    BIT10
++#define DDN_DMA_CTRL_BURST_MASK (0x7U << 12)
++#define DDN_DMA_CTRL_BURST_64B  (0x6U << 12)
++#define DDN_DMA_CFG_STS         BIT0
++#define DDN_DMA_CFG_DECSEN      BIT1
++
++STATIC DDN_MSDC_GPD  mDdnGpd[2] __attribute__ ((aligned (64)));
++STATIC DDN_MSDC_BD   mDdnBd __attribute__ ((aligned (64)));
++
++//
++// CacheMaintenanceLib, declared rather than included.
++//
++// This file has no include block a patch can extend, and the two prototypes are
++// stable EDK2 API.  The library itself has to be listed in MsdcDxe.inf -- the
++// generator adds it there, in the same patch -- or the link fails with
++// "undefined symbol", which is a clear enough failure.
++//
++// Both calls are load-bearing for DMA on ARM:
++//
++//   * the descriptors we just wrote are cacheable data; without cleaning them the
++//     controller reads stale bytes out of DRAM and fails the descriptor checksum;
++//   * the destination buffer's cache lines must be invalidated afterwards or the
++//     CPU keeps reading whatever it had before the transfer.
++//
++VOID
++WriteBackInvalidateDataCacheRange (
++  IN VOID   *Address,
++  IN UINTN  Length
++  );
++
++VOID
++InvalidateDataCacheRange (
++  IN VOID   *Address,
++  IN UINTN  Length
++  );
++
++//
++// Which data path the next read uses.
++//
++// TRUE means DMA first, because PIO has never moved a byte on this board: every
++// attempt ends in DATTMO with an empty FIFO (see
++// docs/ANALYSIS-EMMC-DATA-PATH.md).  If the DMA attempt fails the flag is cleared
++// so the rest of the boot behaves exactly as before -- one experiment, no
++// regression.
++//
++STATIC BOOLEAN  mDdnUseDma = TRUE;
++
++
  MSDC_PRIVATE_DATA gMSDCPrivateDataTemplate = {
    MSDC_PRIVATE_SIGNATURE, // Signature
    NULL, // ControllerHandle
-@@ -97,6 +114,9 @@
+@@ -97,6 +214,9 @@
  
    Private = MSDC_PRIVATE_FROM_THIS (This);
  
@@ -33,7 +133,7 @@
    return MsdcSendCmd (Private, Packet);
  }
  
-@@ -136,6 +156,7 @@
+@@ -136,6 +256,7 @@
    }
  
    Private = MSDC_PRIVATE_FROM_THIS (This);
@@ -41,7 +141,7 @@
  
    if (Private->SdInfo.CardType == EmmcCard) {
      EmmcNode = AllocateCopyPool (sizeof (EMMC_DEVICE_PATH), &gEMMCDevicePathTemplate);
-@@ -335,6 +356,19 @@
+@@ -335,6 +456,19 @@
  
    // Needed because clock has been changed
    MsdcSetTimeout (Private);
@@ -61,7 +161,238 @@
  }
  
  VOID
-@@ -494,42 +528,149 @@
+@@ -488,48 +622,398 @@
+   }
+ }
+ 
++/**
++  One-byte checksum over the first 16 bytes of a descriptor.
++
++  The controller verifies this on every GPD and BD; a wrong value fails the
++  transfer with GPDCSERR/BDCSERR.  Algorithm and width from
++  Platforms/Benesse/a04br3Pkg (MSDC_DESC_CHECKSUM_BYTES = 16, 0xff - sum).
++**/
++STATIC
++UINT8
++DdnDescriptorChecksum (
++  IN CONST VOID  *Descriptor
++  )
++{
++  CONST UINT8  *Bytes;
++  UINT32       Index;
++  UINT32       Sum;
++
++  Bytes = (CONST UINT8 *)Descriptor;
++  Sum   = 0;
++  for (Index = 0; Index < DDN_DESC_CHECKSUM_BYTES; ++Index) {
++    Sum += Bytes[Index];
++  }
++
++  return (UINT8)(0xFFU - (UINT8)Sum);
++}
++
++/**
++  Read one or more blocks through the controller's DMA engine.
++
++  Called *after* MsdcSendCmd has issued the data command (the command word carries
++  the block length and the data type; the controller starts the data phase as soon
++  as the card answers).  MSDC_CFG.PIO is therefore cleared before the command is
++  written -- see MsdcSendCmd -- and this function only arms the descriptors and
++  waits.
++
++  No cache maintenance is done here on purpose.  The question this path answers is
++  "does the card send data at all", and completion is visible in MSDC_INT without
++  touching the buffer contents.  If DMA turns out to be the working path, the
++  buffer must be cache-invalidated before the caller looks at it, and that needs
++  CacheMaintenanceLib in the .inf -- a separate, deliberate change.
++**/
++EFI_STATUS
++MsdcDmaRead (
++  MSDC_PRIVATE_DATA* Private,
++  VOID  *Buffer,
++  UINT32 BufferLength)
++{
++  UINT32      Blocks;
++  UINTN       Address;
++  UINTN       GpdAddress;
++  UINTN       BdAddress;
++  UINTN       NullGpdAddress;
++  UINT32      DmaControl;
++  UINT32      IntStatus;
++  UINT32      Spins;
++  UINT8       Checksum;
++  BOOLEAN     Done;
++
++  if ((Buffer == NULL) || (BufferLength == 0) || ((BufferLength & 511U) != 0)) {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  Blocks     = BufferLength >> 9;
++  Address    = (UINTN)Buffer;
++  GpdAddress = (UINTN)&mDdnGpd[0];
++  BdAddress  = (UINTN)&mDdnBd;
++  NullGpdAddress = (UINTN)&mDdnGpd[1];
++
++  if (((Address >> 36) != 0) || (((Address + BufferLength - 1) >> 36) != 0) ||
++      ((GpdAddress >> 36) != 0) || ((BdAddress >> 36) != 0) ||
++      ((NullGpdAddress >> 36) != 0))
++  {
++    return EFI_DEVICE_ERROR;
++  }
++
++  //
++  // Clear both descriptor areas with a plain byte loop: this file does not link
++  // BaseMemoryLib, and adding a library for two memsets is not worth an .inf
++  // change in the middle of a bring-up.
++  //
++  {
++    UINT8  *Raw;
++    UINTN  Index;
++
++    Raw = (UINT8 *)&mDdnBd;
++    for (Index = 0; Index < sizeof (mDdnBd); Index++) {
++      Raw[Index] = 0;
++    }
++
++    Raw = (UINT8 *)mDdnGpd;
++    for (Index = 0; Index < sizeof (mDdnGpd); Index++) {
++      Raw[Index] = 0;
++    }
++  }
++
++  //
++  // Buffer descriptor: the destination, its length, and the end-of-list bit.
++  //
++  mDdnBd.Info = DDN_BD_EOL |
++                (((UINT32)(Address >> 32) & DDN_DESC_HIGH_MASK) << DDN_BD_DATA_HIGH_SHIFT);
++  mDdnBd.Pointer      = (UINT32)Address;
++  mDdnBd.BufferLength = (UINT32)BufferLength & DDN_DESC_LENGTH_MASK;
++  Checksum            = DdnDescriptorChecksum (&mDdnBd);
++  mDdnBd.Info        |= (UINT32)Checksum << DDN_DESC_CHECKSUM_SHIFT;
++
++  //
++  // GPD 0: hardware-owned, points at the BD; GPD 1 is the terminating entry.
++  //
++  mDdnGpd[0].Info    = DDN_GPD_HWO | DDN_GPD_BDP |
++                       (((UINT32)(NullGpdAddress >> 32) & DDN_DESC_HIGH_MASK) << DDN_GPD_NEXT_HIGH_SHIFT) |
++                       (((UINT32)(BdAddress >> 32) & DDN_DESC_HIGH_MASK) << DDN_GPD_BD_HIGH_SHIFT);
++  mDdnGpd[0].Next    = (UINT32)NullGpdAddress;
++  mDdnGpd[0].Pointer = (UINT32)BdAddress;
++  Checksum           = DdnDescriptorChecksum (&mDdnGpd[0]);
++  mDdnGpd[0].Info   |= (UINT32)Checksum << DDN_DESC_CHECKSUM_SHIFT;
++
++  Checksum          = DdnDescriptorChecksum (&mDdnGpd[1]);
++  mDdnGpd[1].Info  |= (UINT32)Checksum << DDN_DESC_CHECKSUM_SHIFT;
++
++  //
++  // Clean the descriptors out of the cache before the engine walks them.  On this
++  // SoC the controller reads DRAM directly, so a descriptor still dirty in the CPU
++  // cache is a descriptor the engine has never seen.
++  //
++  WriteBackInvalidateDataCacheRange ((VOID *)&mDdnBd, sizeof (mDdnBd));
++  WriteBackInvalidateDataCacheRange ((VOID *)mDdnGpd, sizeof (mDdnGpd));
++
++  //
++  // Arm and start.  Order matters: the start address is latched before the
++  // descriptor enable, and the start bit is set last.
++  //
++  MsdcWrite (Private, DDN_DMA_SA_HIGH, (UINT32)(GpdAddress >> 32) & DDN_DESC_HIGH_MASK);
++  MsdcWrite (Private, DDN_DMA_SA, (UINT32)GpdAddress);
++  MsdcWrite (Private, DDN_DMA_LEN, 0);
++  MsdcSetBits (Private, DDN_DMA_CFG, DDN_DMA_CFG_DECSEN);
++
++  MsdcRead (Private, DDN_DMA_CTRL, &DmaControl);
++  DmaControl &= ~(DDN_DMA_CTRL_START | DDN_DMA_CTRL_STOP |
++                  DDN_DMA_CTRL_LASTBUF | DDN_DMA_CTRL_BURST_MASK);
++  DmaControl |= DDN_DMA_CTRL_MODE | DDN_DMA_CTRL_BURST_64B;
++  MsdcWrite (Private, DDN_DMA_CTRL, DmaControl);
++  MsdcSetBits (Private, DDN_DMA_CTRL, DDN_DMA_CTRL_START);
++
++  Done  = FALSE;
++  Spins = 0;
++  while (!Done) {
++    MsdcRead (Private, MSDC_INT, &IntStatus);
++
++    if (IntStatus & (MSDC_INT_DATTMO | MSDC_INT_DATCRCERR | MSDC_INT_ACMDTMO |
++                     MSDC_INT_ACMDCRCERR | MSDC_INT_BDCSERR | MSDC_INT_GPDCSERR))
++    {
++      UINT32  DbgDmaCfg, DbgDmaCtrl, DbgDmaCa, DbgFifo;
++
++      MsdcRead (Private, DDN_DMA_CFG, &DbgDmaCfg);
++      MsdcRead (Private, DDN_DMA_CTRL, &DbgDmaCtrl);
++      MsdcRead (Private, DDN_DMA_CA, &DbgDmaCa);
++      MsdcRead (Private, MSDC_FIFOCS, &DbgFifo);
++      DEBUG ((
++        DEBUG_ERROR,
++        "ddn dma FAIL int=%08x cfg=%08x ctrl=%08x ca=%08x fifo=%08x",
++        IntStatus,
++        DbgDmaCfg,
++        DbgDmaCtrl,
++        DbgDmaCa,
++        DbgFifo
++        ));
++      MsdcPanelValue (0, IntStatus);
++      MsdcPanelValue (2, DbgFifo);
++      Done = TRUE;
++      IntStatus = 0;
++      break;
++    }
++
++    if (IntStatus & MSDC_INT_XFER_COMPL) {
++      MsdcWrite (Private, MSDC_INT, IntStatus);
++      Done = TRUE;
++      break;
++    }
++
++    if (IntStatus != 0) {
++      MsdcWrite (Private, MSDC_INT, IntStatus);
++    }
++
++    if (++Spins > 4000000) {
++      DEBUG ((DEBUG_ERROR, "ddn dma stall int=%08x", IntStatus));
++      MsdcPanelValue (0, IntStatus);
++      break;
++    }
++  }
++
++  //
++  // Stop the engine and leave the controller in PIO mode again, whatever
++  // happened: the next command must not inherit a half-armed DMA channel.
++  //
++  MsdcSetBits (Private, DDN_DMA_CTRL, DDN_DMA_CTRL_STOP);
++  for (Spins = 0; Spins < 1000000; Spins++) {
++    MsdcRead (Private, DDN_DMA_CFG, &DmaControl);
++    if ((DmaControl & DDN_DMA_CFG_STS) == 0) {
++      break;
++    }
++  }
++  MsdcClrBits (Private, DDN_DMA_CFG, DDN_DMA_CFG_DECSEN);
++  MsdcSetBits (Private, MSDC_CFG, MSDC_CFG_PIO);
++
++  if (IntStatus & (MSDC_INT_DATTMO | MSDC_INT_DATCRCERR | MSDC_INT_ACMDTMO |
++                   MSDC_INT_ACMDCRCERR | MSDC_INT_BDCSERR | MSDC_INT_GPDCSERR))
++  {
++    return EFI_DEVICE_ERROR;
++  }
++
++  if (!Done) {
++    return EFI_TIMEOUT;
++  }
++
++  //
++  // And drop the destination's cache lines so the caller sees what the engine
++  // wrote rather than what was there before.
++  //
++  InvalidateDataCacheRange (Buffer, BufferLength);
++
++  MsdcPanelValue (5, BufferLength);
++  DEBUG ((DEBUG_ERROR, "ddn dma ok len=%u blocks=%u", BufferLength, Blocks));
++  return EFI_SUCCESS;
++}
++
+ EFI_STATUS
+ MsdcPioRead (
+   MSDC_PRIVATE_DATA* Private,
    VOID  *Buffer,
    UINT32 BufferLength)
  {
@@ -69,16 +400,33 @@
 -  UINT8 *ByteBuffer = (UINT8 *)Buffer;
 +  UINT32  IntStatus, RemainSize, RxBytes, Words;
 +  UINT32  Spins;
++  UINT32  PsOr, PsAnd, PsNow;
 +  UINT8   *ByteBuffer = (UINT8 *)Buffer;
  
    RemainSize = BufferLength;
 +  Spins      = 0;
++  PsOr       = 0;
++  PsAnd      = 0xFFFFFFFF;
  
    MsdcClrBits (Private, MSDC_INTEN, MSDC_INT_DATSTS);
  
    while (TRUE) {
      MsdcRead (Private, MSDC_INT, &IntStatus);
  
++    //
++    // Sample the pin levels while waiting.  MSDC_PS reports what the controller
++    // sees on the pads right now -- DAT0 is bit 0, CMD and CLK have their own
++    // bits.  A card that starts a data phase drives DAT0 low, so OR-ing every
++    // sample and AND-ing every sample tells us afterwards whether the pin ever
++    // moved at all:
++    //
++    //   ps_or == ps_and   the pad never changed during the whole wait
++    //   ps_or != ps_and   something drove the bus, so this is not wiring
++    //
++    MsdcRead (Private, MSDC_PS, &PsNow);
++    PsOr  |= PsNow;
++    PsAnd &= PsNow;
++
 +    //
 +    // Errors are checked before anything else, and every bit that was latched
 +    // is cleared after handling, so the next command cannot inherit them.
@@ -109,6 +457,7 @@
 +        DbgSts,
 +        DbgDcrc
 +        ));
++      DEBUG ((DEBUG_ERROR, "ddn  ps_or=%08x ps_and=%08x", PsOr, PsAnd));
 +
 +      // MSDC_PS: the pin levels the controller sees right now.  DAT0 is bit 0;
 +      // if the card is driving a data block at least one DAT bit must have
@@ -227,7 +576,7 @@
      }
    }
  
-@@ -679,6 +820,13 @@
+@@ -679,6 +1163,17 @@
    if (IsDataTransfer) {
      RawCmd |= BLOCK_SIZE << SDC_CMD_BLK_SIZE_SHIFT;
      MsdcWrite (Private, SDC_BLK_NUM, BlkLen);
@@ -236,12 +585,16 @@
 +    // dandelion: re-assert PIO mode immediately before the command, and
 +    // drop whatever is left in the FIFO from the previous transfer.
 +    //
-+    MsdcSetBits (Private, MSDC_CFG, MSDC_CFG_PIO);
++    if (mDdnUseDma && IsRead) {
++      MsdcClrBits (Private, MSDC_CFG, MSDC_CFG_PIO);
++    } else {
++      MsdcSetBits (Private, MSDC_CFG, MSDC_CFG_PIO);
++    }
 +    MsdcSetBits (Private, MSDC_FIFOCS, MSDC_FIFOCS_CLR);
    }
  
    do {
-@@ -689,10 +837,32 @@
+@@ -689,10 +1184,32 @@
    // Disable interrupts because we use polling way
    MsdcClrBits (Private, MSDC_INTEN, MSDC_INT_CMDSTS);
  
@@ -274,10 +627,11 @@
    if (EFI_ERROR(Status)) {
      return Status;
    }
-@@ -713,7 +883,18 @@
+@@ -713,7 +1230,29 @@
  
    if (IsDataTransfer) {
      if (IsRead) {
+-      Status = MsdcPioRead (Private, Packet->InDataBuffer, Packet->InTransferLength);
 +      MsdcPanelValue (6, SdMmcStatusBlk->Resp0);
 +      DEBUG ((
 +        DEBUG_ERROR,
@@ -286,14 +640,25 @@
 +        SdMmcStatusBlk->Resp0,
 +        Packet->InTransferLength
 +        ));
-       Status = MsdcPioRead (Private, Packet->InDataBuffer, Packet->InTransferLength);
++      if (mDdnUseDma) {
++        Status = MsdcDmaRead (Private, Packet->InDataBuffer, Packet->InTransferLength);
++        if (EFI_ERROR (Status)) {
++          //
++          // One experiment, then behave: if DMA cannot do it either, put the
++          // controller back on PIO for every later transfer.
++          //
++          mDdnUseDma = FALSE;
++        }
++      } else {
++        Status = MsdcPioRead (Private, Packet->InDataBuffer, Packet->InTransferLength);
++      }
 +      if (Private->SdInfo.CardType != UnknownCard) {
 +        MsdcTrace (22, EFI_ERROR (Status) ? 0x00FF0000 : 0x0000FF00);
 +      }
        if (EFI_ERROR(Status)) {
          return Status;
        }
-@@ -739,6 +920,7 @@
+@@ -739,6 +1278,7 @@
  
    // SW Reset
    MsdcReset (Private);
@@ -301,7 +666,7 @@
  
    // Clear FIFO
    MsdcClearFifo (Private);
-@@ -748,7 +930,14 @@
+@@ -748,7 +1288,14 @@
  
    // Enable SDIO mode, otherwise cmd5 won't work
    // This bit disables R4 response CRC check for SDIO card
@@ -317,7 +682,7 @@
    // Disable detecting SDIO interrupts
    MsdcClrBits (Private, SDC_CFG, SDC_CFG_SDIOIDE);
  
-@@ -761,6 +950,17 @@
+@@ -761,6 +1308,17 @@
  
    MsdcWrite (Private, MSDC_IOCON, 0);
  
@@ -335,7 +700,7 @@
    // Quirks
    //
    // [VERIFIED] These were MT6768 values.  MT6765 uses
-@@ -773,6 +973,17 @@
+@@ -773,6 +1331,17 @@
    MsdcWrite (Private, MSDC_PATCH_BIT1, 0xFFFA0349);
  
    //
@@ -353,50 +718,43 @@
    // [VERIFIED] LK clears EMMC_CFG0.BOOTSUPP before card identification and
    // comments that leaving it set "may cause eMMC initialization to fail after
    // BROM operations" (LK msdc.c:2932-2938).  We are handed over by LK right
-@@ -1224,7 +1435,41 @@
+@@ -1224,7 +1793,34 @@
        return Status;
      }
    } else {
 -    Status = EMMCSwitch(PassThru, 3, 185, 1, 0);
 +    //
-+    // dandelion: HS_TIMING=1 stays skipped -- the card would switch to high
-+    // speed while the host timing stays at default, and the line-A driver
-+    // (bootshim/msdc.c, which does move data on this phone) keeps the
-+    // inherited timing for exactly that reason.
++    // dandelion: put the card back into the timing mode this host actually runs,
++    // instead of leaving it wherever the previous boot left it.
 +    //
-+    Status = EFI_SUCCESS;
-+
++    // "Skip HS_TIMING" was wrong reasoning: skipping does not mean "default
++    // speed", it means "keep whatever is in the card".  EXT_CSD[185] (HS_TIMING)
++    // and EXT_CSD[183] (BUS_WIDTH) are only reset by a power cycle, not by CMD0 --
++    // so after Android has run, the card is very likely in HS_TIMING=2 (HS200)
++    // with BUS_WIDTH=2 (8-bit) while this driver talks to it at default speed on
++    // one data line.  A card in HS200 clocked like a default-speed card answers
++    // commands and never sends data, which is exactly what the panel shows.
 +    //
-+    // dandelion: put the card back into the timing mode this host is
-+    // actually running, instead of leaving it wherever the previous boot
-+    // left it.
-+    //
-+    // "Skip HS_TIMING" was wrong reasoning: skipping does not mean
-+    // "default speed", it means "keep whatever is in the card".
-+    // EXT_CSD[185] (HS_TIMING) and EXT_CSD[183] (BUS_WIDTH) are only reset
-+    // by a power cycle, not by CMD0 -- so after Android has run, the card is
-+    // very likely in HS_TIMING=2 (HS200) with BUS_WIDTH=2 (8-bit) while this
-+    // driver talks to it at default speed on one data line.  A card in HS200
-+    // clocked like a default-speed card answers commands and never sends
-+    // data, which is exactly what the panel shows.
-+    //
-+    // Order matters: leave HS200 before narrowing the bus.
++    // Both switches are best effort on purpose: if one fails, carrying on with the
++    // card as it is still produces the diagnostics that say what happened, whereas
++    // failing identification here would hide them (and lose the data-path markers
++    // entirely, since EmmcDxe would never bind).
 +    //
 +    Status = EMMCSwitch (PassThru, 3, 185, 0, 0);
 +    if (EFI_ERROR (Status)) {
-+      DEBUG ((DEBUG_ERROR, "MsdcDxe: HS_TIMING=0 failed %r\n", Status));
-+      return Status;
++      DEBUG ((DEBUG_ERROR, "MsdcDxe: HS_TIMING=0 failed %r (continuing)", Status));
 +    }
 +
-+    //
-+    // dandelion: and force the bus to 1-bit, which is what the host side is
-+    // configured for (MsdcSetBusWidth (Private, 1)).  No-op if already 1-bit.
-+    //
 +    Status = EMMCSwitch (PassThru, 3, 183, 0, 0);
++    if (EFI_ERROR (Status)) {
++      DEBUG ((DEBUG_ERROR, "MsdcDxe: BUS_WIDTH=0 failed %r (continuing)", Status));
++    }
++
++    Status = EFI_SUCCESS;
      if (EFI_ERROR(Status))
      {
        DEBUG ((DEBUG_ERROR, "MsdcDxe: EMMCSwitch failed with status %r\n", Status));
-@@ -1244,7 +1489,13 @@
+@@ -1244,7 +1840,13 @@
      return EFI_DEVICE_ERROR;
    }
  
@@ -411,7 +769,7 @@
  
    return Status;
  }
-@@ -1280,6 +1531,7 @@
+@@ -1280,6 +1882,7 @@
  
      MicroSecondDelay (100000);
    } while ((Ocr & BIT31) == 0);
@@ -419,7 +777,7 @@
  
    Status = CardAllSendCid (PassThru);
    if (EFI_ERROR (Status)) {
-@@ -1294,9 +1546,11 @@
+@@ -1294,9 +1897,11 @@
    }
  
    Private->SdInfo.CardType = EmmcCard;
@@ -431,7 +789,7 @@
  
    return Status;
  }
-@@ -1425,6 +1679,9 @@
+@@ -1425,6 +2030,9 @@
      }
  
      Private->TopMmioReg = Region.Address;
@@ -441,7 +799,7 @@
  
      MsdcInit(Private);
  
-@@ -1440,12 +1697,14 @@
+@@ -1440,12 +2048,14 @@
  
      if (EFI_ERROR(Status)) {
        DEBUG ((DEBUG_ERROR, "MsdcDxe: Failed to detect card! %r\n", Status));
@@ -456,3 +814,13 @@
      Status = gBS->InstallMultipleProtocolInterfaces (
                      &Private->ControllerHandle,
                      &gEfiDevicePathProtocolGuid, DevicePath,
+--- a/Silicon/MediaTek/MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.inf
++++ b/Silicon/MediaTek/MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.inf
+@@ -20,6 +20,7 @@
+   UefiBootServicesTableLib
+   UefiDriverEntryPoint
+   MemoryAllocationLib
++  CacheMaintenanceLib
+   MemoryMapHelperLib
+   DevicePathLib
+   TimerLib

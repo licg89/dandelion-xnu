@@ -99,13 +99,24 @@ Mu 原来的做法是"跳过 HS_TIMING 切换"，但**"跳过"不等于"默认�
 6. 补齐 LK 有、Mu 没有的 `MSDC_PAD_TUNE*`、`MSDC_DAT_RDDLY*`、`SDC_FIFO_CFG` 位；
 7. host0 上 `SDC_CFG.SDIO` 清零（eMMC 不是 SDIO 卡）；
 8. 读数条修两个自己的 bug：标签必须 4 字符（`"CFG"`/`"R1"` 里的 `\0` 会把值截掉）、
-   行距 26 → 30 px（行与行贴太紧，照片上看不清）。
+   行距 26 → 30 px（行与行贴太紧，照片上看不清）；
+9. 两条 CMD6 改成 **best effort**：失败只打 `(continuing)`，不阻断识别
+   （阻断识别会让 EmmcDxe 不绑定，`MsdcPioRead` 根本不会被调用，证据全丢）；
+10. **新增 DMA 读路径** `MsdcDmaRead`（移植自 a04br3 的 GPD/BD 实现，含描述符校验和、
+    cache clean/invalidate、有界等待、失败自动退回 PIO）；为此 `MsdcDxe.inf` 增加
+    `CacheMaintenanceLib` —— 这条改动在本仓库的补丁序列里（`0002`，同一个 patch 两个文件）；
+11. 数据窗内 `MSDC_PS` 采样（`ps_or` / `ps_and`）。
 
-同时新增两个**不需要上机**的工具：
+**这一版的取舍：DMA 先试。** PIO 在这块板子上从来没成功过，而 DMA 是同类硬件上验证过的路径；
+失败会自动退回 PIO，所以一次开机同时验证两条通路，不会比之前更糟。
+
+同时新增三个**不需要上机**的工具：
 
 - `tools/gen_small_font.py` → 读数条用的 3×5 字体（放大 5 倍，一个字形 15×25 px）；
 - `tools/render_panel_preview.py` → **在 PC 上把仪表区画成 PNG**，布局错一眼就能看见，
-  不用刷机拍照。上面那两个读数条 bug 本来用它可以零成本发现。
+  不用刷机拍照。上面那两个读数条 bug 本来用它可以零成本发现；
+- `tools/extract_log_block.py` + `tools/test_extract_log_block.py` → 从 flash 镜像里
+  取回固件日志（格式/校验/长度都有离线自测）。
 
 ---
 
@@ -116,27 +127,69 @@ Mu 原来的做法是"跳过 HS_TIMING 切换"，但**"跳过"不等于"默认�
 | `INTR` | `R1` | `FIFO` | 说明 | 下一步 |
 |---|---|---|---|---|
 | `00001000` | — | ≠0 | `XFER_COMPL`，数据来了 | 看 `LEFT`：0 = **M4 达成**，直接进 M5 |
-| `00004000` | `xxxxxxx4`（state=Tran，bit8=1） | 0 | 卡在 Tran 但就是不发数据 | 只剩"数据线物理通路"一类：下一步试 host 侧 8-bit（`SDC_CFG` buswidth=2 + 卡切 8-bit）看是否有数据 |
-| `00004000` | 带错误位（bit22 ILLEGAL_COMMAND / bit31 ADDRESS_OUT_OF_RANGE / state≠4） | 0 | 卡拒绝了这条命令 | 打印 CMD7/CMD13 的 R1，确认"选中"这一步；必要时用 CMD3 返回的真实 RCA 而不是硬编码 1 |
+| `00004000` | `xxxxxxx4`（state=Tran，bit8=1） | 0 | 卡在 Tran 但就是不发数据 | 见下面第 5 节的阶梯 |
+| `00004000` | 带错误位（bit22 ILLEGAL_COMMAND / bit31 ADDRESS_OUT_OF_RANGE / state≠4） | 0 | 卡拒绝了这条命令 | 打印 CMD7/CMD13 的 R1，确认"选中"这一步 |
 | `00008000` | — | 0 | `DATCRCERR`：数据来了但采样错 | 回到调 `MSDC_PAD_TUNE`/`IOCON` 的采样相位，或再降时钟 |
-| 仍 `00004000` 且 `R1=0` | 0 | 0 | 命令根本没应答 | 看文字区有没有 `dandelion cmd N failed`，回到命令阶段 |
+| 仍 `00004000` 且 `R1=0` | 0 | 0 | 命令根本没应答 | 看文字区 `dandelion cmd N failed`，回到命令阶段 |
 
-另外文字区会多一行 `ddn data cmd=%u r1=%08x len=%u`，和读数条互相印证。
+文字区另外会有三行证据（都在同一个 512 字节时间窗里）：
+
+```
+ddn pio-read FAIL int=00004000 left=512
+ddn  cfg=0200049B fifo=00000000 sts=00100000 dcrc=00000000
+ddn  ps_or=XXXXXXXX ps_and=XXXXXXXX        <- 数据窗内 MSDC_PS 的"或/与"
+```
+
+`ps_or` / `ps_and` 是这一版新加的，用来**区分"卡没发"和"线没通"**：
+
+| 观察 | 结论 |
+|---|---|
+| `ps_or == ps_and`（整段时间引脚没变） | 卡确实没有驱动数据线 —— 问题在卡的时序/状态，而不是 DAT0 走线 |
+| `ps_or != ps_and`（引脚动过） | 数据真的上过总线，问题在采样/宽度/CRC 侧 |
+
+> 这一版还把所有"纠正卡状态"的动作改成 **best effort**：`HS_TIMING=0` / `BUS_WIDTH=0`
+> 两条 CMD6 即使失败也只是打印一行 `(continuing)`，不再让识别流程失败。
+> 理由很实际：一旦识别流程失败，EmmcDxe 就不会绑定，`MsdcPioRead` 根本不会被调用，
+> 我们连"数据窗里的寄存器"都看不到 —— 那等于把唯一的证据来源弄丢了。
+
 
 ---
 
 ## 5. 如果数据通路仍然不通，按这个顺序继续
 
-1. **host 侧 8-bit**：`MsdcSetBusWidth(Private, 8)` + 卡 `BUS_WIDTH=2`，看 `INTR` 是否变成 `DATCRCERR`
-   —— 若变成 CRC，说明"数据线确实通了、只是宽度不匹配"，那就回到 1-bit 继续调；
-2. **`MSDC_PS` 判线**：文字区已有 `ddn  ps=%08x`。`MSDC_PS` 是引脚电平现状，
-   DAT0 为 bit0、CMD 为 bit8 一带；卡驱动数据时这些位会动。一直不变的只有两种可能：
-   pad 复用错、卡确实没发；
-3. **改走 DMA**：Mu 的 `MsdcDmaRead` 路径也在树里，`a04br3Pkg` 的
-   `SdCardBlockIoDxe` 有完整的 MTK GPD/BD 描述符实现（`Platforms/Benesse/`），
-   真要绕开 PIO 有现成参考；
+1. **读 `ps_or` / `ps_and`**（详见第 4 节）：这是"卡没发"和"线没通"的分水岭 ——
+   整段时间引脚没变化，就别再怀疑走线；变化过，就别再怀疑卡；
+2. **host 侧 8-bit**：`MsdcSetBusWidth(Private, 8)` + 卡 `BUS_WIDTH=2`，看 `INTR` 是否变成
+   `DATCRCERR` —— 若变成 CRC，说明数据线其实是通的、只是宽度不匹配；
+3. **改成 DMA 读**（见 5.1），这是 a04br3 在同类硬件上真正跑通的路径；
 4. **不要做的事**：不要再怀疑"时钟太快"（已降到 400 kHz）、不要再怀疑"FIFO 阈值"
-   （已按 RXCNT 实到实排）、不要再怀疑"中断残留"（已全清）。
+   （已按 RXCNT 实到实排）、不要再怀疑"中断残留"（已全清）、不要再怀疑"卡状态"
+   （已强制 `HS_TIMING=0` + `BUS_WIDTH=1`，且失败也不阻断识别）。
+
+### 5.1 DMA 备选路径（已调研完，随时可以写）
+
+a04br3 的 `SdCardBlockIoDxe` 在真机上是**用 DMA 搬数据的**，PIO 只用于小传输。它把整套
+MTK GPD/BD 描述符实现都写出来了，可以直接照搬：
+
+| 需要的东西 | a04br3 里的位置 |
+|---|---|
+| 描述符结构（GPD 28 B / BD 16 B） | `Platforms/Benesse/a04br3Pkg/Drivers/SdCardBlockIoDxe/SdCardBlockIoDxe.c:220-240` |
+| 校验和算法 `SdDescriptorChecksum` | 同文件，`MSDC_DESC_CHECKSUM_BYTES` 附近 |
+| 构建描述符 `SdBuildDescriptors` | 同文件 ~845-905 |
+| 启动 + 等待 `SdReadDmaBlocks` / `SdWaitDmaComplete` | 同文件 ~930-1045 |
+| 收尾 `SdStopDma` | 同文件 ~911-925 |
+
+关键点（照抄时不要漏）：
+
+1. 数据命令发出**之前**先清 `MSDC_CFG.PIO`（切到 DMA 模式），命令应答后再启动 DMA；
+2. `SDC_BLK_NUM` 先写，`SDC_CMD.DTYP` 用 1（单块）或 2（多块）；
+3. 命令成功后写 `MSDC_DMA_SA_HIGH` / `MSDC_DMA_SA` / `MSDC_DMA_LEN = 0`，
+   置 `MSDC_DMA_CFG.DECSEN`，然后在 `MSDC_DMA_CTRL` 里 `START` 且 burst = 64 B；
+4. 轮询 `MSDC_INT` 的 `XFER_COMPL / DATTMO / DATCRCERR / BDCSERR / GPDCSERR`；
+5. 收尾要 `DMA_CTRL.STOP`、等 `DMA_CFG.STS` 清零、清 `DECSEN`、把 `PIO` 置回；
+6. **缓冲区要做 cache 维护**：传输前 `WriteBackInvalidateDataCacheRange`，读回前
+   `InvalidateDataCacheRange`。这意味着 `MsdcDxe.inf` 要加 `CacheMaintenanceLib`
+   —— Mu 的 `MsdcDxe.inf` 现在没有，所以这条改动必须连同 INF 一起打进补丁序列（`0003`）。
 
 ---
 
