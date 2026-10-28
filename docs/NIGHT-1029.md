@@ -101,6 +101,8 @@ DMA 失败一次之后驱动会自动退回 PIO（`mDdnUseDma = FALSE`），所�
   （阻断识别 = EmmcDxe 不绑定 = 连证据都没有了）；
 - **新增 DMA 读路径**（`MsdcDmaRead`，移植自 a04br3 的 GPD/BD 实现，含描述符校验和与
   cache 维护），DMA 失败自动退回 PIO —— 一次开机同时验证两条通路；
+- **R1 里带错误位就立刻中止**（照 `bootshim/msdc.c` 的 `R1_FATAL_MASK`）：
+  "卡拒绝命令"和"卡很慢"是两件事，前者不该靠等 512 字节来发现；
 - 三份实现的逐项对照写进 `docs/ANALYSIS-EMMC-DATA-PATH.md`，
   包括"为什么命令全通、数据全丢"的完整解释和下一次上机的判读表。
 
@@ -157,8 +159,23 @@ python tools\extract_log_block.py flashinfo.img --out last-boot.log --verbose
 |---|---|
 | `docs/ANALYSIS-EMMC-DATA-PATH.md` | Mu / LK / bootshim 三份实现对照 + 判读表 + 后续阶梯 |
 | `docs/M5-M6-PLAN.md` | M5 已落地部分、缺什么；M6 需要的四个外部模块、要改哪三处 |
-| `docs/CORRECTIONS.md` | C11（滚动重影的真因）、C12（读数条标签截断） |
-| `docs/HANDOVER-CURRENT.md` | §5.6 / §5.7：这一轮的改动与实测寄存器 |
+| `docs/BOOT-FLOW.md` | **屏幕上的每块颜色/每行字对应哪个驱动**，按 APRIORI 顺序走一遍 |
+| `docs/CORRECTIONS.md` | C11（滚动重影）、C12（读数条标签截断）、C13（APRIORI≠FV）、C14（压缩 FV 里搜字符串无效） |
+| `docs/HANDOVER-CURRENT.md` | 顶部新增"先读哪两份"，里程碑表更新（M3.5 完成 / M4 进行中 / M5 一半） |
+
+### 6. 全部工具都带自检，而且今晚都跑过
+
+| 工具 | 作用 | 自检结果 |
+|---|---|---|
+| `tools/check_modules.py` | 三个模块清单（DSC `[Components]` / `DXE.inc` / `APRIORI.inc`）交叉核对 + 文件存在性 | 5 个模块全部一致 |
+| `tools/check_patches.py` | 补丁能否干净地应用到干净树，且**每个补丁要点还在** | 2 个补丁 / 14 个标记全在 |
+| `tools/check_docs.py` | 文档里的相对链接与仓库路径是否真实存在 | 130 条引用全部有效 |
+| `tools/test_extract_log_block.py` | flash 日志块的格式、校验和、CLI、长度 | 通过 |
+| `tools/render_panel_preview.py` | 不用刷机把仪表区渲染成 PNG | `artifacts/panel-preview.png` |
+| `tools/gen_patch_0002.py` | MSDC 补丁由脚本生成（C 代码体放在 `tools/snippets/`） | 每次构建都在跑 |
+
+三个 checker 也进了 CI（构建前一步），所以"编得过但没进 FV""补丁丢了要点""文档指空"
+这三类问题以后不会靠人肉发现。
 
 ---
 
@@ -175,7 +192,7 @@ python tools\extract_log_block.py flashinfo.img --out last-boot.log --verbose
 
 ## 接下来（按顺序）
 
-1. 你刷 `boot-uefi-m5-log.img` + 一张照片 → 按判读表定 M4 的下一步（我预计 1–2 轮内出结果）；
+1. 你刷 `boot-uefi-m5-dma.img` + 一张照片 → 按判读表定 M4 的下一步（我预计 1–2 轮内出结果）；
 2. M4 一通：`StorageBeacon` 立刻有 `BLOCK OK` + `FAT OK`，
    `PayloadBootDxe` 就能从 FAT 里读真 payload，同时把日志写进 eMMC（真正的日志通道）；
 3. M5/M6 需要外部输入：`UniXNU` 的 `kernel.macho`（macOS）→ `UniXNU.efi`，
