@@ -270,10 +270,24 @@ PlatformProgressDxeEntryPoint (
     // 90 x 84 means a real graphics console; 80 x 25 means ConOut is backed by
     // a text-only device (serial) and nothing can ever reach the panel.
     //
-    DandelionDrawString (16, 312, "COLS", 0x00FF8000, 0x00000000);
-    DandelionDrawHex (64, 312, (UINT64)SystemTable->ConOut->Mode->Columns, 4, 0x00FF8000);
-    DandelionDrawString (120, 312, "ROWS", 0x00FF8000, 0x00000000);
-    DandelionDrawHex (168, 312, (UINT64)SystemTable->ConOut->Mode->Rows, 4, 0x00FF8000);
+    {
+      UINTN       Cols;
+      UINTN       Rows;
+      EFI_STATUS  QueryStatus;
+
+      Cols = 0;
+      Rows = 0;
+      QueryStatus = SystemTable->ConOut->QueryMode (
+                                        SystemTable->ConOut,
+                                        SystemTable->ConOut->Mode->Mode,
+                                        &Cols,
+                                        &Rows
+                                        );
+      DandelionDrawString (16, 312, "COLS", 0x00FF8000, 0x00000000);
+      DandelionDrawHex (64, 312, EFI_ERROR (QueryStatus) ? 0xFFFF : (UINT64)Cols, 4, 0x00FF8000);
+      DandelionDrawString (120, 312, "ROWS", 0x00FF8000, 0x00000000);
+      DandelionDrawHex (168, 312, EFI_ERROR (QueryStatus) ? 0xFFFF : (UINT64)Rows, 4, 0x00FF8000);
+    }
     DandelionDrawString (16, 344, "CUR", 0x00FF8000, 0x00000000);
     DandelionDrawHex (64, 344, (UINT64)SystemTable->ConOut->Mode->CursorRow, 4, 0x00FF8000);
     DandelionDrawHex (112, 344, (UINT64)SystemTable->ConOut->Mode->CursorColumn, 4, 0x00FF8000);
