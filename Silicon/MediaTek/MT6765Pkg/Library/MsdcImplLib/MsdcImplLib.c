@@ -155,10 +155,115 @@ STATIC MTK_PMIC_PROTOCOL *mPmic = NULL;
       purple    (reserved) block device produced
       red       (reserved) filesystem produced
 **/
+/**
+  Stage cells: a persistent, ConOut-independent record of how far the eMMC
+  bring-up got.
+
+  Why this exists (2026-10-29): MsdcDxe is dispatched from the APRIORI block
+  BEFORE DandelionConsoleDxe, so on that build gST->ConOut was still NULL when
+  every one of these markers ran -- MsdcSay() returned immediately and the
+  panel said nothing at all about storage.  A whole flash cycle produced one
+  magenta band and no information.  So the markers must not touch ConOut:
+
+    * eight fixed cells at the bottom of the panel (rows 1400..1480), one per
+      stage, painted straight into the framebuffer;
+    * a cell that is present was reached, a cell that is absent was not, so a
+      single photo of the strip is a complete state vector -- no scrolling, no
+      "last writer wins" ambiguity;
+    * the row-26..33 band is still repainted with thecolour of the latest stage,
+      for the case where only the top of the panel is legible.
+
+  The strip sits below DandelionConsoleDxe's two proof bars (1200..1280 and
+  1300..1380) and above PlatformProgressDxe's white band (1560), in an area
+  nothing else draws into.
+
+    stage 0 yellow   MsdcDxe constructor entered (MSDC library constructor)
+    stage 1 orange   GPIO122..133 muxed   (red = no GPIO protocol)
+    stage 2 cyan     MSDC clocks enabled  (red = no clock protocol)
+    stage 3 white    power/PMIC path done (red = missing protocols)
+    stage 4 purple   block device produced   [StorageBeaconDxe]
+    stage 5 green    filesystem mounted      [StorageBeaconDxe]
+
+  Stages 8..15 live in a second, shorter row just below (y 1488..1543) and are
+  driven from inside MediaTekPkg's MsdcDxe.c through the exported MsdcTrace()
+  below (see Resources/MuPatches/0002-*).  They split the gap between "host
+  initialised" and "block device appeared", which is where a silent eMMC
+  typically hangs: msdc0 memory regions resolved, controller out of reset,
+  a command actually on the bus, CMD1 answered, CMD2/CMD3 done.
+
+    stage  8 green     both msdc0 memory regions resolved
+    stage  9 yellow    controller reset completed (MsdcReset returned)
+    stage 10 magenta   a command reached the bus during identification
+    stage 11 cyan      CMD1 answered (OCR bit 31 set -> card powered up)
+    stage 12 white     CMD2+CMD3 ok, CardType = EmmcCard (EmmcDxe can bind)
+**/
+#define MSDC_FB_BASE     0x7EC50000ULL
+#define MSDC_FB_STRIDE   2944
+#define MSDC_FB_PIXELS   736
+#define MSDC_STAGE_TOP   1400
+#define MSDC_STAGE_SIZE  80
+#define MSDC_STAGE_TOP2  1488
+#define MSDC_STAGE_SIZE2 56
+#define MSDC_STAGE_PITCH 88
+#define MSDC_STAGE_LEFT  8
+
+STATIC
+VOID
+MsdcStage (
+  IN UINTN   Stage,
+  IN UINT32  Colour
+  )
+{
+  volatile UINT32  *Row;
+  UINTN            Left;
+  UINTN            Size;
+  UINTN            Top;
+  UINTN            X;
+  UINTN            Y;
+
+  if (Stage > 15) {
+    return;
+  }
+
+  if (Stage < 8) {
+    Top  = MSDC_STAGE_TOP;
+    Size = MSDC_STAGE_SIZE;
+  } else {
+    Top  = MSDC_STAGE_TOP2;
+    Size = MSDC_STAGE_SIZE2;
+  }
+
+  Left = MSDC_STAGE_LEFT + (Stage & 7) * MSDC_STAGE_PITCH;
+  for (Y = Top; Y < Top + Size; Y++) {
+    Row = (volatile UINT32 *)(UINTN)(MSDC_FB_BASE + (UINT64)Y * MSDC_FB_STRIDE) + Left;
+    for (X = 0; X < MSDC_STAGE_SIZE; X++) {
+      Row[X] = Colour;
+    }
+  }
+}
+
+/**
+  Public entry point for markers that live outside this library.
+
+  MediaTekPkg's MsdcDxe.c is upstream code, so the card-identification markers
+  cannot call the file-static MsdcSay(); Resources/MuPatches/0002 declares this
+  one symbol and calls it with a stage number and a colour.  Nothing else about
+  the SoC library is exported.
+**/
+VOID
+MsdcTrace (
+  IN UINTN   Stage,
+  IN UINT32  Colour
+  )
+{
+  MsdcStage (Stage, Colour);
+}
+
 STATIC
 VOID
 MsdcSay (
   IN CONST CHAR8  *Tag,
+  IN UINTN        Stage,
   IN UINT32       Colour
   )
 {
@@ -168,19 +273,29 @@ MsdcSay (
   UINTN         X;
   STATIC UINTN  Row = 27;
 
-  if ((gST == NULL) || (gST->ConOut == NULL) || (Tag == NULL)) {
-    return;
-  }
+  //
+  // Framebuffer part first and unconditionally: it must work before any
+  // console exists.
+  //
+  MsdcStage (Stage, Colour);
 
   //
   // Status band: rows 26..33, full width including the 16 hidden pixels, so
   // nothing old can bleed through from either side.
   //
   for (Y = 26; Y < 34; Y++) {
-    volatile UINT32  *Line32 = (volatile UINT32 *)(UINTN)(0x7EC50000ULL + (UINT64)Y * 2944);
-    for (X = 0; X < 736; X++) {
+    volatile UINT32  *Line32 = (volatile UINT32 *)(UINTN)(MSDC_FB_BASE + (UINT64)Y * MSDC_FB_STRIDE);
+    for (X = 0; X < MSDC_FB_PIXELS; X++) {
       Line32[X] = Colour;
     }
+  }
+
+  //
+  // Text is a bonus: only meaningful once a console exists.  MsdcDxe now runs
+  // after DandelionConsoleDxe (see APRIORI.inc), so in practice it prints.
+  //
+  if ((gST == NULL) || (gST->ConOut == NULL) || (Tag == NULL)) {
+    return;
   }
 
   if (Row >= 34) {
@@ -237,7 +352,7 @@ SourceClockControl (
   UINT32 Index,
   BOOLEAN Enable)
 {
-  MsdcSay ("clock", 0x0000FFFF);
+  MsdcSay ("clock", 2, 0x0000FFFF);
 
   EFI_STATUS Status;
   UINT32 ClockId;
@@ -278,7 +393,7 @@ ClockControl (
   UINT32 Index,
   BOOLEAN Enable)
 {
-  MsdcSay ("clock", 0x0000FFFF);
+  MsdcSay ("clock", 2, 0x0000FFFF);
 
   EFI_STATUS Status;
   UINT32 ClockId;
@@ -317,7 +432,7 @@ PowerControl (
   UINT32 Index,
   BOOLEAN Enable)
 {
-  MsdcSay ("power skipped", 0x00FF8000);
+  MsdcSay ("power skipped", 3, 0x00FF8000);
 
   //
   // 2026-10-28: deliberately does NOT touch the PMIC yet.
@@ -353,7 +468,7 @@ VOID
 InitGpio (
   UINT32 Index)
 {
-  MsdcSay ("gpio", 0x00FF8000);
+  MsdcSay ("gpio", 1, 0x00FF8000);
 
 #if SOC_TYPE == 1
   //
@@ -393,7 +508,7 @@ InitGpio (
         mGpio->SetMode (Pin, Mode);
       }
 
-      MsdcSay (((Mode == 2) ? "gpio mode2 x12" : "gpio mode1 x12"), 0x00FF8000);
+      MsdcSay (((Mode == 2) ? "gpio mode2 x12" : "gpio mode1 x12"), 1, 0x00FF8000);
     }
   }
   else {
@@ -416,7 +531,7 @@ MsdcLibConstructor (VOID)
 {
   EFI_STATUS Status;
 
-  MsdcSay ("ctor", 0x00FFFF00);
+  MsdcSay ("ctor", 0, 0x00FFFF00);
 
   // Locate Gpio Protocol
   Status = gBS->LocateProtocol (&gMediaTekGpioProtocolGuid, NULL, (VOID **)&mGpio);
@@ -428,14 +543,14 @@ MsdcLibConstructor (VOID)
     // with no way to tell why.  Report it on the panel and carry on; the MSDC
     // init that follows will fail visibly instead of silently.
     //
-    MsdcSay ("no gpio protocol", 0x00FF0000);
+    MsdcSay ("no gpio protocol", 1, 0x00FF0000);
     mGpio = NULL;
   }
 
   // Locate Clock Protocol
   Status = gBS->LocateProtocol (&gMediaTekClockProtocolGuid, NULL, (VOID **)&mClock);
   if (EFI_ERROR (Status)) {
-    MsdcSay ("no clock protocol", 0x00FF0000);
+    MsdcSay ("no clock protocol", 2, 0x00FF0000);
     mClock = NULL;
   }
 
@@ -447,17 +562,17 @@ MsdcLibConstructor (VOID)
     // this board carries an MT6357.  Not fatal any more -- the eMMC rails are
     // already on because LK boots from that card.
     //
-    MsdcSay ("no pmic (ok)", 0x00FF8000);
+    MsdcSay ("no pmic (ok)", 3, 0x00FF8000);
     mPmic = NULL;
   }
 
   if ((mGpio == NULL) || (mClock == NULL)) {
-    MsdcSay ("missing protocols", 0x00FF0000);
+    MsdcSay ("missing protocols", 3, 0x00FF0000);
     return EFI_DEVICE_ERROR;
   }
 
   if (mPmic == NULL) {
-    MsdcSay ("no pmic, skip volt", 0x00FF8000);
+    MsdcSay ("no pmic, skip volt", 3, 0x00FF8000);
     return EFI_SUCCESS;
   }
 
@@ -474,7 +589,7 @@ MsdcLibConstructor (VOID)
   // once made the whole DXE chain stop before DandelionConsoleDxe, so some
   // other driver depends on it.  Keep the driver, skip the writes.
   //
-  MsdcSay ("pmic: no writes", 0x00FF8000);
+  MsdcSay ("pmic: no writes", 3, 0x00FFFFFF);
   Status = EFI_SUCCESS;
 
   return Status;

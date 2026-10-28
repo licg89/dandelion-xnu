@@ -48,6 +48,39 @@ PaintBand (
   }
 }
 
+/**
+  Paint one of the stage cells at the bottom of the panel.
+
+  Same strip MsdcImplLib paints (rows 1400..1480, eight 80x80 cells on an
+  88-pixel pitch); this driver owns cells 4 (block device) and 5 (filesystem)
+  so that the whole eMMC chain reports into one row of cells instead of
+  overwriting a single band.
+**/
+STATIC
+VOID
+StageCell (
+  IN UINTN   Stage,
+  IN UINT32  Colour
+  )
+{
+  volatile UINT32  *Row;
+  UINTN            Left;
+  UINTN            X;
+  UINTN            Y;
+
+  if (Stage > 7) {
+    return;
+  }
+
+  Left = 8 + Stage * 88;
+  for (Y = 1400; Y < 1480; Y++) {
+    Row = (volatile UINT32 *)(UINTN)(0x7EC50000ULL + (UINT64)Y * 2944) + Left;
+    for (X = 0; X < 80; X++) {
+      Row[X] = Colour;
+    }
+  }
+}
+
 STATIC
 VOID
 Say (
@@ -100,6 +133,7 @@ StorageBeaconDxeEntryPoint (
   UINTN       BlockDevices;
 
   PaintBand (0x008000FF);
+  StageCell (4, 0x008000FF);
   Say (SystemTable, L"\r\nBLOCK OK\r\n");
 
   //
@@ -148,6 +182,7 @@ StorageBeaconDxeEntryPoint (
 
   if (Volumes > 0) {
     PaintBand (0x0000FF00);
+    StageCell (5, 0x0000FF00);
     Say (SystemTable, L"FAT OK\r\n");
   } else {
     Say (SystemTable, L"FAT NONE\r\n");

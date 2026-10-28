@@ -39,24 +39,28 @@ GOP 可用、framebuffer 参数全部实测确认；**唯一未完成的是让 U
 
 ---
 
-## 4. 最近一次上机的确切画面（重要）
+## 4. 最近一次上机的确切画面（2026-10-29 01:0x，`boot-uefi-gpiofix.img`）
 
 屏幕从上到下：
 
-1. 白 / 绿 / 黄 / 品红 / 橙色小字 —— `PlatformProgressDxe` 直写 framebuffer 的诊断
-   （`DANDELION UEFI`、`DXE OK`、`CONOUT YES`、`FD 40080000`、`GOP FOUND`、
-   `GOP 720 OK`、`MODE 0`、`FB 7EC50000`、`STRIDE 02E0`、`COLS 0050 ROWS 0019`、`CUR`）
-2. 黄色 `S02E0` + 白色 `UEFI` —— 5 倍放大（每字 40×80），证明我们的写屏通道绝对正确
-3. **一片白色横条纹** —— UEFI 控制台（BDS/UiApp）的文字，被错误 pitch 渲染成斜纹
-4. **底部一条洋红 + 一条黄色实心条**（y≈1200 / y≈1300）—— `DandelionConsoleDxe`
-   入口处的自证标记
+1. 顶部一条**洋红实心带**（framebuffer 第 26..33 行，约 y 26..33）—— 状态带，
+   洋红 = 只有我们的控制台报了到，**没有任何 MSDC 阶段覆盖它**
+2. 白色 `DANDELION UEFI`（被状态带压掉一半）、绿色 `DXE OK`、黄色 `CONOUT NO`
+   —— `PlatformProgressDxe` 直写 framebuffer 的诊断
+3. 中间大片"白横纹" —— **不是**驱动画的，是旧内容没被清掉（见 5.4(b)）
+4. 清晰可读的 `SELFTEST 0123456789` / `ABCDEFGHIJKLMNOPQRSTUVWXYZ` /
+   `DIRECT CALL 0123456789` / `COUT 0 90x19` —— 我们自己的 `OutputString`
+5. 底部**洋红实心条（y 1200..1280）+ 黄色实心条（y 1300..1380）** ——
+   `DandelionConsoleDxe` 入口处的自证标记
+6. 白条（y 1560..1591）—— `PlatformProgressDxe` 画的
 
-**两条都出现** ⇒ `DandelionConsoleDxe` 确实被调度并执行了 `ClearScreen` + 安装协议。
-但 BDS 的文字仍然是歪的 ⇒ `ConSplitter` 底下还有第二个 console 设备在抢输出，
-几乎可以确定是 `GraphicsConsoleDxe` 仍在 FV 里。
+读数结论：
 
-> 注意：`COLS 0050 ROWS 0019`（80×25）是 `PlatformProgressDxe` 在**新控制台接管之前**
-> 读到的旧状态，不代表新控制台失败。新控制台自己是 90×100。
+- ✅ `DandelionConsoleDxe` 确实被调度、执行、安装协议（两条自证条都在）
+- ✅ 我们的渲染通道完全正确（`SELFTEST` / `DIRECT CALL` 都是 1:1 清晰）
+- ❌ 状态带是**洋红** ⇒ eMMC 一个阶段都没报 ⇒ 但这不是 eMMC 失败，
+  而是 **MSDC 的标记全部打在 ConOut 还不存在的时候**（见 5.4(a)）
+- ❌ 没有紫色 / 绿色 ⇒ 没有 BlockIo，也没有文件系统（M4 未达成）
 
 ---
 
@@ -104,6 +108,80 @@ GOP 可用、framebuffer 参数全部实测确认；**唯一未完成的是让 U
 - 如果 `COUT` 报 `5A x 64`（90×100）且 `VIA CONOUT` 出现 → 已经接上了
 - 如果 `COUT X` 或列行数是 80×25 → 还没接上，下一步是直接替换
   `gST->ConOut` 为我们的实例（bring-up 阶段的务实做法，之后再回头修 ConSplitter）
+
+### 5.4 2026-10-29 凌晨：横纹的真因 + MSDC 标记为什么一直是空的
+
+这两条都是**读代码读出来的**，不靠上机，价值比一次刷机大。
+
+#### (a) MSDC 的所有标记都打在 ConOut 还不存在的时候
+
+`MsdcImplLib.c` 的 `MsdcSay()` 第一件事就是
+
+```c
+if ((gST == NULL) || (gST->ConOut == NULL) || (Tag == NULL)) {
+  return;      // ← 连状态带都不画
+}
+```
+
+而 `MsdcDxe` 当时排在 `APRIORI.inc` 的**第 29 行**，`DandelionConsoleDxe` 在**第 91 行**。
+所以构造函数的每一条标记都在 `gST->ConOut == NULL` 时返回，屏幕上只剩控制台自己画的
+洋红。**那一整个刷机周期对 eMMC 一无所知，不是我猜错了阶段，是标记根本没画。**
+
+处理（两层）：
+
+1. `MsdcSay()` 改成**先写 framebuffer，再看有没有 ConOut**；
+2. `MsdcDxe` 挪到 `DandelionConsoleDxe` **之后**（`APRIORI.inc`），这样文字标记也能落到
+   一个活的控制台上。
+
+并且把"最后一次覆盖的状态带"升级成**状态格子**：面板底部 y 1400..1480 有 8 个 80×80
+格子，间距 88，第 i 个格子代表第 i 个阶段。**格子存在 = 阶段到达**，所以一张照片就是
+一个完整状态向量，没有"最后写入者覆盖"的歧义：
+
+| 格子 | 颜色 | 含义 |
+|---|---|---|
+| 0 | 黄 | `MsdcDxe` 构造函数跑到了 |
+| 1 | 橙（红=失败） | GPIO122..133 复用设置完成 |
+| 2 | 青（红=失败） | MSDC 时钟使能完成 |
+| 3 | 白（红=缺协议） | power / PMIC 路径走完 |
+| 4 | 紫 | 产生了 BlockIo（`StorageBeaconDxe`） |
+| 5 | 绿 | 挂上了文件系统（`StorageBeaconDxe`） |
+
+#### (b) 那片"白横纹"是我们自己的 `ClearScreen` 没清干净
+
+`DandelionConsoleDxe.c` 的 `FillRow()` 原本是：
+
+```c
+Dst = base + Row * 16 * STRIDE;      // 只算出这一格的**第一行**
+for (X = 0; X < WIDTH; X++) Dst[X] = Color;   // 也只填这一行
+```
+
+`ClearScreen()` 用 `for (Row = 0; Row < 100; Row++) FillRow (Row, bg)` 调用它，于是只清了
+**扫描行 0, 16, 32, …, 1584**，每 16 行里剩下 15 行是上一阶段留下的旧内容。
+
+这就解释了所有一直没解释通的现象：
+
+- `PlatformProgressDxe` 在 y=24 写的 `DANDELION UEFI` **擦不掉**（24 不是 16 的倍数）；
+- 中段那片横纹既不是 GOP、也不是 `GraphicsConsoleDxe`、也不是第二条控制台，
+  而是 **PEI/上一帧留在 DRAM 里的老内容**，从来没有任何一次 clear 碰到过它；
+- 我们把 `GraphicsConsoleDxe` 从 FV 里摘掉之后横纹"还在"，正是因为凶手不是它。
+
+已修：`FillRow()` 现在填满 16 个扫描行（含隐藏的 16 像素补白）。
+`ScrollUp()` 也一并正确了。
+
+> 连带影响：clear 真的生效以后，`PlatformProgressDxe` 的头部诊断会被擦掉，
+> 所以控制台入口现在自己写前两行 `DANDELION UEFI` / `CONSOLE OK 90x100`。
+
+### 5.5 下一步动作（照这个顺序）
+
+1. 用当前改动重新 build → package → `flash boot`；
+2. 一张照片读底部 8 个格子：
+   - 只到 0 → `MsdcDxe` 的 depex 没满足，或 `Start()` 提前返回
+   - 到 1 红 → 没拿到 GPIO 协议
+   - 到 2 红 → 没拿到 Clock 协议
+   - 到 3 白 → 主机侧初始化全过，卡不应答（下一步查 CMD0/CMD1 与 pad tuning）
+   - 到 4 紫 → **M4 达成**，接着看 5
+3. 只有到 3 时，才去动上游 `MsdcDxe.c`（用 `Resources/MuPatches` 加 `MsdcTrace` 钩子），
+   在 CMD0/CMD1/ACMD41 上打点。
 
 ### 5.1 把 `GraphicsConsoleDxe` 从 FV 里摘掉（**改的是 `APRIORI.inc`，不是 DSC**）
 

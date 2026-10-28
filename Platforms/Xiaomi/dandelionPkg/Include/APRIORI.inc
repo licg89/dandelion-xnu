@@ -26,7 +26,14 @@ APRIORI DXE {
   INF MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
   INF MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
 
-  INF MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.inf
+  #
+  # MsdcDxe used to sit here, i.e. before DandelionConsoleDxe.  That ordering
+  # silently discarded every MSDC marker: MsdcImplLib paints its stage band
+  # through gST->ConOut and ConOut was still NULL at this point, so a whole
+  # flash cycle produced one magenta band and zero information about storage.
+  # Moved below the console -- nothing here depends on the eMMC.
+  #
+# INF MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.inf
 
   INF MdeModulePkg/Bus/Sd/EmmcDxe/EmmcDxe.inf
   INF MdeModulePkg/Bus/Sd/SdDxe/SdDxe.inf
@@ -89,6 +96,11 @@ APRIORI DXE {
   # system" -- went to the serial port and never to the panel.
   #
   INF dandelionPkg/Drivers/DandelionConsoleDxe/DandelionConsoleDxe.inf
+  #
+  # Storage after the console, so MSDC's text markers land on a live ConOut
+  # (the stage cells work either way -- see MsdcImplLib.c).
+  #
+  INF MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.inf
   #
   # GraphicsConsoleDxe is deliberately NOT here any more.
   #

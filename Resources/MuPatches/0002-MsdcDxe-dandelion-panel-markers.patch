@@ -1,0 +1,60 @@
+--- a/Silicon/MediaTek/MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.c
++++ b/Silicon/MediaTek/MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.c
+@@ -1,5 +1,15 @@
+ #include "MsdcDxe.h"
+ 
++//
++// dandelion: panel markers for the card-identification path.
++//
++// The SoC library (MT6765Pkg/Library/MsdcImplLib) owns a framebuffer strip of
++// 80x80 cells that records how far eMMC bring-up got, and exports exactly one
++// symbol for the markers that have to live in this upstream file.  There is no
++// library header, so the prototype is declared here.
++//
++extern VOID MsdcTrace (UINTN Stage, UINT32 Colour);
++
+ MSDC_PRIVATE_DATA gMSDCPrivateDataTemplate = {
+   MSDC_PRIVATE_SIGNATURE, // Signature
+   NULL, // ControllerHandle
+@@ -691,6 +701,9 @@
+ 
+   MsdcWrite (Private, SDC_ARG, CommandBlk->CommandArgument);
+   MsdcWrite (Private, SDC_CMD, RawCmd);
++  if (Private->SdInfo.CardType == UnknownCard) {
++    MsdcTrace (10, 0x00FF00FF);
++  }
+ 
+   Status = MsdcPollInterrupts (Private, MSDC_INT_CMDSTS, MSDC_INT_CMDRDY);
+   if (EFI_ERROR(Status)) {
+@@ -739,6 +752,7 @@
+ 
+   // SW Reset
+   MsdcReset (Private);
++  MsdcTrace (9, 0x00FFFF00);
+ 
+   // Clear FIFO
+   MsdcClearFifo (Private);
+@@ -1280,6 +1294,7 @@
+ 
+     MicroSecondDelay (100000);
+   } while ((Ocr & BIT31) == 0);
++  MsdcTrace (11, 0x0000FFFF);
+ 
+   Status = CardAllSendCid (PassThru);
+   if (EFI_ERROR (Status)) {
+@@ -1294,6 +1309,7 @@
+   }
+ 
+   Private->SdInfo.CardType = EmmcCard;
++  MsdcTrace (12, 0x00FFFFFF);
+   DEBUG ((DEBUG_ERROR, "MsdcDxe: Found EMMC device at controller with index %d\n", Private->Index));
+ 
+   Status = CardSetBusMode (Private, 1);
+@@ -1425,6 +1441,7 @@
+     }
+ 
+     Private->TopMmioReg = Region.Address;
++    MsdcTrace (8, (i == 0) ? 0x0000FF00 : 0x00FF0000);
+ 
+     MsdcInit(Private);
+ 

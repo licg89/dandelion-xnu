@@ -89,6 +89,17 @@ AttributeToColor (
   return Palette[Index & 0xF];
 }
 
+/**
+  Clear one whole character cell -- all 16 scanlines of it.
+
+  2026-10-29: this used to write a single scanline per call (Row * 16 *
+  stride, then a loop over X only), so ClearScreen() cleared scanlines
+  0, 16, 32, ... and left the other 15/16 of the panel untouched.  That is
+  the "band of corrupted pixels from row ~34 down" that made every photo of
+  this panel hard to read: it was never corruption, it was old content that
+  no clear had ever erased.  Fixed here, so ClearScreen and ScrollUp really
+  do erase, and anything visible is something a driver drew on purpose.
+**/
 STATIC
 VOID
 FillRow (
@@ -97,17 +108,19 @@ FillRow (
   )
 {
   volatile UINT32  *Dst;
+  UINTN            Line;
   UINTN            X;
 
-  Dst = (volatile UINT32 *)(UINTN)(DANDELION_FB_BASE + (UINT64)Row * 16 * DANDELION_FB_STRIDE);
-  for (X = 0; X < DANDELION_FB_WIDTH; X++) {
-    Dst[X] = Color;
-  }
+  for (Line = 0; Line < 16; Line++) {
+    Dst = (volatile UINT32 *)(UINTN)(
+            DANDELION_FB_BASE + (UINT64)(Row * 16 + Line) * DANDELION_FB_STRIDE
+            );
 
-  // Paint the hidden 16-pixel padding of the scanout line too, so nothing old
-  // can bleed into the visible area when the panel re-reads the line.
-  for (X = DANDELION_FB_WIDTH; X < DANDELION_FB_STRIDE / 4; X++) {
-    Dst[X] = Color;
+    // Fill the hidden 16-pixel padding of the scanout line too, so nothing old
+    // can bleed into the visible area when the panel re-reads the line.
+    for (X = 0; X < DANDELION_FB_STRIDE / 4; X++) {
+      Dst[X] = Color;
+    }
   }
 }
 
@@ -379,6 +392,17 @@ DandelionConsoleDxeEntryPoint (
   //
   ApplyAttribute (mMode.Attribute);
   DandelionClearScreen (&mTextOut);
+
+  //
+  // FillRow() was broken until 2026-10-29 (one scanline per cell), so this
+  // clear never actually erased PlatformProgressDxe's header and "COUT/VIA"
+  // was read through a fog of leftovers.  Now that the clear works, the header
+  // has to be redrawn here or it is gone.
+  //
+  mMode.CursorColumn = 0;
+  mMode.CursorRow    = 0;
+  DandelionOutputString (&mTextOut, L"DANDELION UEFI\r\n");
+  DandelionOutputString (&mTextOut, L"CONSOLE OK 90x100\r\n");
 
   //
   // Status band, stage marker: magenta = this console ran.

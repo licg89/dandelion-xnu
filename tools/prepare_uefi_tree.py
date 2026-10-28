@@ -25,11 +25,27 @@ FIXES = [
     ),
 ]
 
+# The recursive glob below walks the entire Mu tree (several GB, tens of
+# thousands of files).  On the Windows 9p mount that took minutes per build for
+# no reason: every file we patch has a known path.  Try that first and only fall
+# back to the glob when the file has moved upstream.
+HINTS = {
+    "SimpleFb.c": ["SiliciumPkg/Drivers/SimpleFbDxe/SimpleFb.c"],
+}
+
+
+def candidates(root, filename):
+    for hint in HINTS.get(filename, []):
+        path = os.path.join(root, hint.replace("/", os.sep))
+        if os.path.isfile(path):
+            return [path]
+    return glob.glob(os.path.join(root, "**", filename), recursive=True)
+
 
 def apply_fix(root, filename, old, new):
     changed = 0
     seen = 0
-    for path in glob.glob(os.path.join(root, "**", filename), recursive=True):
+    for path in candidates(root, filename):
         seen += 1
         with open(path, "r", encoding="utf-8", errors="surrogateescape") as handle:
             text = handle.read()

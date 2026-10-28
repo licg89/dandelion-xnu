@@ -73,17 +73,53 @@ pin 的取法：`https://api.github.com/repos/microsoft/mu_basecore/contents/<pa
 
 ## 2. 构建
 
+**用仓库里的脚本，不要手敲命令**（2026-10-29 起）：
+
+```powershell
+wsl -d Ubuntu -e bash /mnt/d/aios/dandelion-xnu/tools/build-local.sh
+```
+
+它按 **CI 的相同顺序**做四件事，所以本地编出来的 FD 和 CI 的是同一份固件：
+
+1. 覆盖本仓库的 `Silicon/MT6765Pkg` + `Platforms/dandelionPkg`（+ `Resources/Configs/dandelion.toml`、`Resources/DTBs/dandelion.dtb`）
+2. 把补丁涉及的上游文件 `git checkout --` 还原成原样，再按名字顺序打 `Resources/MuPatches/*.patch`
+3. `tools/prepare_uefi_tree.py`（SimpleFbDxe 的扫描 pitch 720 → 736）
+4. `python3 build_uefi.py -d dandelion -m 0 -r DEBUG`
+
+跑完自动把 FD 拷到 `D:\aios\artifacts\SILICIUM_UEFI.fd`，日志写
+`D:\aios\_work\build_dandelion_last.log`。环境变量 `DANDELION_WORK` / `DANDELION_OUT`
+可以换树和输出目录。
+
+### 三条必须知道的（都是踩出来的）
+
+- **必须写 `wsl -d Ubuntu`。** 这台机器默认 WSL 发行版是 `docker-desktop`，里面没有
+  bash，裸 `wsl -e bash` 会报 `execvpe(bash): No such file or directory`。
+- **构建树必须在 WSL 的 ext4 上**（`/root/uefi-a04br3`），不要放在 `/mnt/d`。
+  drvfs 上每隔几次构建就会卡死：四个 `python3` 进程停在 `p9_client_rpc` 的 D 状态，
+  AutoGen 永远走不完。搬到 ext4 之后又快又不卡。
+  迁移用 `_work/migrate_tree.sh`（注意 exclude 要写成 `/Build/`、`/Conf/`，
+  写成 `Conf/` 会把 `Mu_Basecore/BaseTools/Conf` 模板目录一起排掉，构建直接报
+  `Failed to find Template file for .../Conf/target.txt`）。
+- **不要手改上游树里的文件。** 改 `Resources/MuPatches/`。脚本第 2 步会把那些文件
+  还原，手改过的树正是本地 `git apply` 一直失败、而 CI 一切正常的原因。
+
+另外：zip 解压出来的树里 `Binaries`、`Common/Mu`、`Mu_Basecore` 等"子模块"其实是
+普通目录（没有自己的 `.git`），`stuart --setup` 会在
+`git submodule update --init --recursive Binaries` 上死掉。`build_uefi.py` 只在
+`Build/` 不存在时才跑那一步，所以脚本先建一个空 `Build/` 跳过它 —— 这些子模块要提供
+的东西本来就都在磁盘上。真的 `git clone`（CI）不受影响。
+
+耗时（ext4 实测）：干净重建 3–5 min，增量 1–2 min。（早先全在 drvfs 上跑，
+干净重建 6–12 min，还经常卡死。）
+
+手动等价命令（脚本内部就是这些）：
+
 ```bash
 export HOME=/root
-cd /mnt/d/aios/uefi-a04br3
+$HOME/uefi-a04br3 && cd $HOME/uefi-a04br3
 python3 build_uefi.py -d dandelion -m 0 -r DEBUG      # 增量
 python3 build_uefi.py -d dandelion -m 0 -r DEBUG -c   # 干净重建
 ```
-
-现成包装脚本：`D:\aios\_work\build_dandelion.sh`（额外参数原样传给 `build_uefi.py`，
-日志写 `D:\aios\_work\build_dandelion_last.log`）。
-
-耗时（本机实测）：干净重建 6–12 min，增量 3–4 min。全在 drvfs 上跑，慢是正常的。
 
 产物：
 

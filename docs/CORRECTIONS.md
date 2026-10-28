@@ -169,3 +169,62 @@ C7 的结论「以 `MemoryMapLib.c` 的 `0x48880000` 为准」**是错的**。C7
 **遗留**：`~60 s` 和信标表里的 20 s / 30 s / 2 s 都不吻合。要么是掐表误差
 （PEI 的 30 s 加上 LK 阶段），要么是 WDT 的时钟倍率与 vendor 公式不符。
 下一次用 `Seconds=6` 的单级信标就能一次定标。
+
+---
+
+## C9. 「面板中段那片白横纹是第二个 console / GOP 在抢输出」——**错**
+
+**现象**：framebuffer 大约 y 880..1200 有一大片斜向白色条纹，看起来像用错误 pitch
+（2880 而不是 2944）渲染出来的文字。为此先后摘掉了 `GraphicsConsoleDxe`、
+`SimpleTextInOutSerial`，甚至整个 GOP，横纹都还在。
+
+**真因**（2026-10-29 读代码，`DandelionConsoleDxe.c` 的 `FillRow()`）：
+
+```c
+Dst = base + Row * 16 * STRIDE;                // 只定位到这一格的**第一行**
+for (X = 0; X < DANDELION_FB_WIDTH; X++) {     // 也只写这一行
+  Dst[X] = Color;
+}
+```
+
+`DandelionClearScreen()` 的写法是 `for (Row = 0; Row < 100; Row++) FillRow (Row, bg)`，
+于是它只清了**扫描行 0, 16, 32, …, 1584**，每 16 行里有 15 行**从来没被清过**。
+那片横纹是 PEI / 上一帧留在 DRAM 里的老内容，被面板原样扫描出来。
+
+**反证**：`PlatformProgressDxe` 在 y=24 写的 `DANDELION UEFI` 一直擦不掉 ——
+24 不是 16 的倍数；而它写在 y=1024 的白条（16 的倍数）确实被擦掉了。
+
+**结论**：不是第二个渲染器，是**我们自己的清屏少清了 15/16**。
+读屏不可靠的那几个月，有一半是这条 bug 造成的假象。
+
+**已修**：`FillRow()` 填满 16 个扫描行（并连带补齐隐藏的 16 像素补白），
+`ScrollUp()` 随之正确。
+
+---
+
+## C10. 「MSDC 一个阶段都没报到，说明 eMMC 走不到那一步」——**错**
+
+**现象**：`boot-uefi-gpiofix.img` 上状态带（第 26..33 行）是洋红，即只有控制台报过到，
+`MSDCDxe` 的 yellow / orange / cyan 一个都没出现。
+
+**真因**：`MsdcImplLib.c` 的 `MsdcSay()` 开头就是
+
+```c
+if ((gST == NULL) || (gST->ConOut == NULL) || (Tag == NULL)) {
+  return;
+}
+```
+
+而当时 `MsdcDxe` 排在 `APRIORI.inc` 第 29 行、`DandelionConsoleDxe` 在第 91 行。
+**构造函数执行时 `gST->ConOut` 还是 NULL**，所以每一条标记都在画状态带之前返回。
+
+**教训**：**诊断代码自己依赖被诊断的东西**，是这个项目里反复出现的坑
+（串口不存在、ConOut 还不存在、GOP 还没装……）。
+在没有串口的板子上，任何"打点"都必须直写 framebuffer，并且**不许 early return**。
+
+**已修**：
+1. `MsdcSay()` 先写 framebuffer（阶段格子 + 状态带），再决定要不要写字；
+2. `MsdcDxe` 挪到 `DandelionConsoleDxe` 之后；
+3. 单一状态带升级成 **8 个固定位置的状态格子**（y 1400..1480，80×80，间距 88），
+   "格子存在 = 阶段到达"，一张照片就是一个状态向量，不会互相覆盖。
+
