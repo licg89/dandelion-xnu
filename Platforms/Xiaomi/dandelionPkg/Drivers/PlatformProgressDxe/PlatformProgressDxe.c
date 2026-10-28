@@ -320,6 +320,25 @@ PlatformProgressDxeEntryPoint (
     DandelionDrawString (16, 344, "CUR", 0x00FF8000, 0x00000000);
     DandelionDrawHex (64, 344, (UINT64)SystemTable->ConOut->Mode->CursorRow, 4, 0x00FF8000);
     DandelionDrawHex (112, 344, (UINT64)SystemTable->ConOut->Mode->CursorColumn, 4, 0x00FF8000);
+
+    //
+    // Drawn last, on top of anything the console wrote: if the GOP pitch is
+    // still 0x02D0 (720) the console output above is sheared and the fix did
+    // not reach the compiled module; 0x02E0 (736) means the image is correct.
+    //
+    {
+      EFI_GRAPHICS_OUTPUT_PROTOCOL  *LateGop = NULL;
+
+      if (!EFI_ERROR (gBS->LocateProtocol (&gEfiGraphicsOutputProtocolGuid, NULL, (VOID **)&LateGop)) &&
+          (LateGop->Mode != NULL) &&
+          (LateGop->Mode->Info != NULL))
+      {
+        DandelionDrawString (16, 376, "STRIDE", 0x00FF8000, 0x00000000);
+        DandelionDrawHex (96, 376, (UINT64)LateGop->Mode->Info->PixelsPerScanLine, 4, 0x00FF8000);
+        DandelionDrawString (16, 408, "FB", 0x00FF8000, 0x00000000);
+        DandelionDrawHex (48, 408, (UINT64)LateGop->Mode->FrameBufferBase, 8, 0x00FF8000);
+      }
+    }
   }
 
   // Disarm first: WDT_MODE with only the key clears ENABLE.

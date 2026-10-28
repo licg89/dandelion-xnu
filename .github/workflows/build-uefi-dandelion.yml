@@ -88,9 +88,17 @@ jobs:
         # (720) while our own text, drawn with a 2944-byte stride, is correct.
         run: |
           set -e
-          F="$WORK/Silicon/Silicium/SiliciumPkg/Drivers/SimpleFbDxe/SimpleFb.c"
-          sed -i 's|PixelsPerScanLine    = Width;|PixelsPerScanLine    = 736;  // dandelion: 2944 B pitch, 720 visible|' "$F"
-          grep -n "PixelsPerScanLine" "$F"
+          FILES=$(find "$WORK" -name SimpleFb.c -path "*SimpleFbDxe*")
+          if [ -z "$FILES" ]; then
+            echo "no SimpleFb.c found under $WORK"
+            exit 1
+          fi
+          for F in $FILES; do
+            echo "patching $F"
+            sed -i 's|PixelsPerScanLine    = Width;|PixelsPerScanLine    = 736;  // dandelion: 2944 B pitch, 720 visible|' "$F"
+            grep -n "PixelsPerScanLine" "$F"
+            grep -q "PixelsPerScanLine    = 736;" "$F" || { echo "pattern did not match in $F"; exit 1; }
+          done
 
       - name: Disable the x86 NASM external dependency
         # mu_nasm packages the x86 assembler; an aarch64-only build never runs
