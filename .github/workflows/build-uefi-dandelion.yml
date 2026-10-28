@@ -74,6 +74,7 @@ jobs:
         run: |
           set -e
           python3 "$GITHUB_WORKSPACE"/dandelion-xnu/tools/check_modules.py
+          python3 "$GITHUB_WORKSPACE"/dandelion-xnu/tools/check_docs.py
 
       - name: Apply our patches to the EDK2 base
         # MediaTekPkg and friends live in the upstream fork, so the fixes we

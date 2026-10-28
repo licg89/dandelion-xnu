@@ -1,5 +1,11 @@
 # 交接：线 B（UEFI）当前卡点与恢复步骤（2026-10-28 00:50）
 
+> **历史文档**：这是 2026-10-28 的交接快照，保留它是为了追溯"当时为什么这么判断"。
+> 其中若干结论**已被后续实测推翻**（例如 `--kernel-addr 0x48880000`，见 `CORRECTIONS.md` C8；
+> 又如 `boot-uefi-m2.img` 这类文件名，仓库现在只保留当前版本）。
+> **当前状态请看 [`HANDOVER-CURRENT.md`](HANDOVER-CURRENT.md)**，
+> 最近一夜的进展看 [`NIGHT-1029.md`](NIGHT-1029.md)。
+
 ## 一句话
 
 线 A（开源 XNU）已冻结在 `sched_startup`；主线是 UEFI。

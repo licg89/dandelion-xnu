@@ -107,7 +107,7 @@ DMA 失败一次之后驱动会自动退回 PIO（`mDdnUseDma = FALSE`），所�
 ### 2. 不用刷机就能验证布局：`tools/render_panel_preview.py`
 在 PC 上把整个仪表区（读数条 + 横幅 + 点阵 + 状态格 + 白条）渲染成 PNG。
 上面那两个读数条 bug 本来用它就能零成本抓到。生成效果见
-`docs/../artifacts/panel_preview.png`（也可随时重跑）。
+`../artifacts/panel-preview.png`（也可随时重跑）。
 
 ### 3. M5：装载链路整条搭起来
 - `PayloadBootDxe`：FAT 上找 `\UniXNU.efi` / `\EFI\BOOT\BOOTAA64.EFI` / `\xnu.efi`，
