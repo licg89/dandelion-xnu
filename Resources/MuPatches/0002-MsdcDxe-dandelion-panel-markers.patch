@@ -1,6 +1,6 @@
 --- a/Silicon/MediaTek/MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.c
 +++ b/Silicon/MediaTek/MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.c
-@@ -1,5 +1,15 @@
+@@ -1,5 +1,22 @@
  #include "MsdcDxe.h"
  
 +//
@@ -13,10 +13,17 @@
 +//
 +extern VOID MsdcTrace (UINTN Stage, UINT32 Colour);
 +
++//
++// dandelion: persistent numeric readout on the panel (see
++// MsdcPanelValue in MT6765Pkg/Library/MsdcImplLib).  Console text scrolls
++// away before a photo can be taken; these values do not.
++//
++extern VOID MsdcPanelValue (UINTN Slot, UINT32 Value);
++
  MSDC_PRIVATE_DATA gMSDCPrivateDataTemplate = {
    MSDC_PRIVATE_SIGNATURE, // Signature
    NULL, // ControllerHandle
-@@ -97,6 +107,9 @@
+@@ -97,6 +114,9 @@
  
    Private = MSDC_PRIVATE_FROM_THIS (This);
  
@@ -26,7 +33,7 @@
    return MsdcSendCmd (Private, Packet);
  }
  
-@@ -136,6 +149,7 @@
+@@ -136,6 +156,7 @@
    }
  
    Private = MSDC_PRIVATE_FROM_THIS (This);
@@ -34,7 +41,7 @@
  
    if (Private->SdInfo.CardType == EmmcCard) {
      EmmcNode = AllocateCopyPool (sizeof (EMMC_DEVICE_PATH), &gEMMCDevicePathTemplate);
-@@ -494,42 +508,116 @@
+@@ -494,42 +515,149 @@
    VOID  *Buffer,
    UINT32 BufferLength)
  {
@@ -82,6 +89,39 @@
 +        DbgSts,
 +        DbgDcrc
 +        ));
++
++      // MSDC_PS: the pin levels the controller sees right now.  DAT0 is bit 0;
++      // if the card is driving a data block at least one DAT bit must have
++      // moved, so an unchanged/zero PS means nothing arrived on the pads at all
++      // (wiring or card state) rather than a sampling problem.
++      {
++        UINT32  DbgPs;
++        MsdcRead (Private, MSDC_PS, &DbgPs);
++        DEBUG ((DEBUG_ERROR, "ddn  ps=%08x\n", DbgPs));
++      }
++      //
++      // Also park the numbers in the fixed readout band.  The console keeps
++      // only its last 68 lines and EmmcDxe/BdsDxe print more than that
++      // afterwards, so text alone cannot be relied on to still be on screen by
++      // the time the panel is photographed.
++      //
++      {
++        UINT32  DbgCmd, DbgSdc, DbgBlk;
++
++        MsdcRead (Private, SDC_CMD, &DbgCmd);
++        MsdcRead (Private, SDC_CFG, &DbgSdc);
++        MsdcRead (Private, SDC_BLK_NUM, &DbgBlk);
++        MsdcPanelValue (0, IntStatus);
++        MsdcPanelValue (1, DbgCfg);
++        MsdcPanelValue (2, DbgFifo);
++        MsdcPanelValue (3, DbgSts);
++        MsdcPanelValue (4, DbgDcrc);
++        MsdcPanelValue (5, RemainSize);
++        MsdcPanelValue (7, DbgCmd);
++        MsdcPanelValue (8, DbgSdc);
++        MsdcPanelValue (9, DbgBlk);
++      }
++
 +      MsdcWrite (Private, MSDC_INT, IntStatus);
        return MsdcIntTrackError (Private, MSDC_INT_DATSTS, IntStatus);
      }
@@ -167,7 +207,7 @@
      }
    }
  
-@@ -679,6 +767,13 @@
+@@ -679,6 +807,13 @@
    if (IsDataTransfer) {
      RawCmd |= BLOCK_SIZE << SDC_CMD_BLK_SIZE_SHIFT;
      MsdcWrite (Private, SDC_BLK_NUM, BlkLen);
@@ -181,7 +221,7 @@
    }
  
    do {
-@@ -689,10 +784,37 @@
+@@ -689,10 +824,37 @@
    // Disable interrupts because we use polling way
    MsdcClrBits (Private, MSDC_INTEN, MSDC_INT_CMDSTS);
  
@@ -219,9 +259,11 @@
    if (EFI_ERROR(Status)) {
      return Status;
    }
-@@ -714,6 +836,9 @@
+@@ -713,7 +875,11 @@
+ 
    if (IsDataTransfer) {
      if (IsRead) {
++      MsdcPanelValue (6, SdMmcStatusBlk->Resp0);
        Status = MsdcPioRead (Private, Packet->InDataBuffer, Packet->InTransferLength);
 +      if (Private->SdInfo.CardType != UnknownCard) {
 +        MsdcTrace (22, EFI_ERROR (Status) ? 0x00FF0000 : 0x0000FF00);
@@ -229,7 +271,7 @@
        if (EFI_ERROR(Status)) {
          return Status;
        }
-@@ -739,6 +864,7 @@
+@@ -739,6 +905,7 @@
  
    // SW Reset
    MsdcReset (Private);
@@ -237,7 +279,41 @@
  
    // Clear FIFO
    MsdcClearFifo (Private);
-@@ -773,6 +899,17 @@
+@@ -748,7 +915,14 @@
+ 
+   // Enable SDIO mode, otherwise cmd5 won't work
+   // This bit disables R4 response CRC check for SDIO card
+-  MsdcSetBits (Private, SDC_CFG, SDC_CFG_SDIO);
++  //
++  // dandelion: only for SDIO hosts.  Host 0 on this board is the eMMC.
++  //
++  if (Private->Index != 0) {
++    MsdcSetBits (Private, SDC_CFG, SDC_CFG_SDIO);
++  } else {
++    MsdcClrBits (Private, SDC_CFG, SDC_CFG_SDIO);
++  }
+   // Disable detecting SDIO interrupts
+   MsdcClrBits (Private, SDC_CFG, SDC_CFG_SDIOIDE);
+ 
+@@ -761,6 +935,17 @@
+ 
+   MsdcWrite (Private, MSDC_IOCON, 0);
+ 
++  //
++  // dandelion: the rest of LK's msdc_init_hw() signal path.
++  //
++  MsdcWrite (Private, 0xf0, 0);   // MSDC_PAD_TUNE0
++  MsdcWrite (Private, 0xf4, 0);   // MSDC_PAD_TUNE1
++  MsdcWrite (Private, 0xf8, 0);   // MSDC_DAT_RDDLY0
++  MsdcWrite (Private, 0xfc, 0);   // MSDC_DAT_RDDLY1
++  MsdcWrite (Private, 0x100, 0);  // MSDC_DAT_RDDLY2
++  MsdcWrite (Private, 0x104, 0);  // MSDC_DAT_RDDLY3
++  MsdcClrBits (Private, SDC_FIFO_CFG, (BIT24 | BIT25));
++
+   // Quirks
+   //
+   // [VERIFIED] These were MT6768 values.  MT6765 uses
+@@ -773,6 +958,17 @@
    MsdcWrite (Private, MSDC_PATCH_BIT1, 0xFFFA0349);
  
    //
@@ -255,7 +331,7 @@
    // [VERIFIED] LK clears EMMC_CFG0.BOOTSUPP before card identification and
    // comments that leaving it set "may cause eMMC initialization to fail after
    // BROM operations" (LK msdc.c:2932-2938).  We are handed over by LK right
-@@ -1224,7 +1361,12 @@
+@@ -1224,7 +1420,12 @@
        return Status;
      }
    } else {
@@ -269,7 +345,7 @@
      if (EFI_ERROR(Status))
      {
        DEBUG ((DEBUG_ERROR, "MsdcDxe: EMMCSwitch failed with status %r\n", Status));
-@@ -1244,7 +1386,11 @@
+@@ -1244,7 +1445,11 @@
      return EFI_DEVICE_ERROR;
    }
  
@@ -282,7 +358,7 @@
  
    return Status;
  }
-@@ -1280,6 +1426,7 @@
+@@ -1280,6 +1485,7 @@
  
      MicroSecondDelay (100000);
    } while ((Ocr & BIT31) == 0);
@@ -290,7 +366,7 @@
  
    Status = CardAllSendCid (PassThru);
    if (EFI_ERROR (Status)) {
-@@ -1294,9 +1441,11 @@
+@@ -1294,9 +1500,11 @@
    }
  
    Private->SdInfo.CardType = EmmcCard;
@@ -302,7 +378,7 @@
  
    return Status;
  }
-@@ -1425,6 +1574,9 @@
+@@ -1425,6 +1633,9 @@
      }
  
      Private->TopMmioReg = Region.Address;
@@ -312,7 +388,7 @@
  
      MsdcInit(Private);
  
-@@ -1440,12 +1592,14 @@
+@@ -1440,12 +1651,14 @@
  
      if (EFI_ERROR(Status)) {
        DEBUG ((DEBUG_ERROR, "MsdcDxe: Failed to detect card! %r\n", Status));

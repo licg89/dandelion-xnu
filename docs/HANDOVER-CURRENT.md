@@ -227,6 +227,43 @@ for (X = 0; X < WIDTH; X++) Dst[X] = Color;   // 也只填这一行
    `int` 里没有数据位而有别的位 → 就是 latched 残留；
 3. `ddn pio-read ok` 出现 + `BLOCK OK` + `FAT OK` → M4 达成，直接进 M5。
 
+### 5.7 2026-10-29 02:2x 实测：DATTMO，一个字节都没来
+
+`boot-uefi-pagelog-pio2.img` 的照片上读到了这两行（第一次真正看到寄存器，不是猜）：
+
+```
+ddn pio-read FAIL int=00004000 left=512
+ddn  cfg=0200049B fifo=00000000 sts=00100000 dcrc=00000000
+```
+
+| 值 | 含义 |
+|---|---|
+| `int=0x00004000` | **只有 DATTMO**（bit14）。没有 XFER_COMPL、没有 DATCRCERR、也没有 ACMD 任何位 |
+| `fifo=0x00000000` | 512 字节的时间窗里，FIFO **一个字节都没进过** |
+| `left=512` | 一个字节都没读走（和 fifo=0 自洽） |
+| `dcrc=0x00000000` | 没有任何数据线的 CRC 状态令牌 → 根本没有数据传输 |
+| `cfg=0x0200049B` | MODE=1、CKPDN=1、**PIO=1**（bit3，确认在 PIO 模式）、CKDRVEN=1、CKSTB=1（时钟稳）、CKDIV=4、SCLK_STOP_DDR=1 |
+| `sts=0x00100000` | SDC_STS bit20（MTK 未公开位；SDCBUSY/CMDBUSY 都没置，即控制器不认为命令忙） |
+
+**结论**：这不是采样点问题（那是 CRCERR），是**卡根本没有发出数据**。方向只剩两个：
+
+1. **卡不在 Transfer 状态**：`SEND_EXT_CSD`(CMD8) 是寻址命令，卡只有在 Tran 才能回数据。
+   如果 CMD7(SELECT_CARD) 的 RCA 不对，卡会停在 Stand-by，命令照样应答
+   （CMDRDY 会置位，所以我们没在命令阶段失败），但不会送数据 → 正好 DATTMO + fifo=0。
+2. **DAT0 根本没连到控制器**（pad 复用/驱动能力），也是 DATTMO + fifo=0。
+
+所以下一版把**数据命令的 R1 存到读数条**（格子 6）：R1 的 bit12:9 是 CURRENT_STATE，
+`4` = Tran。同时把 LK `msdc_init_hw()` 里我们漏掉的信号完整性寄存器补齐
+（`MSDC_PAD_TUNE0/1`、`MSDC_DAT_RDDLY0..3`、`SDC_FIFO_CFG` 的 b24/b25），
+并清掉 `SDC_CFG.SDIO`（eMMC 不该置这一位，LK 只在 SDIO 卡上置）。
+
+> 还有一条现成的旁证：`bootshim/msdc.c`（线 A 的日志通道，**在本机真机上已经读写通过**）
+> 的头注释写着「LK 刚用 MSDC0 载入了这个镜像，所以控制器已上时钟、pad 已复用、
+> 卡已用 RCA=1 选中并处于 Transfer 状态 —— 所以我们不去重新初始化」。
+> 这正好说明：**这条 eMMC 的硬件路径本身是好的**，UEFI 里失败的是"重新初始化"这一段，
+> 而最可能差的就是卡状态（RCA/CMD7）。
+
+
 ### 5.1 把 `GraphicsConsoleDxe` 从 FV 里摘掉（**改的是 `APRIORI.inc`，不是 DSC**）
 
 > 2026-10-28 实测更正：原先以为「DSC 里还在编，FV 可能仍包含它」——

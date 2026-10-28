@@ -87,6 +87,13 @@ EXTERN = '''
 // library header, so the prototype is declared here.
 //
 extern VOID MsdcTrace (UINTN Stage, UINT32 Colour);
+
+//
+// dandelion: persistent numeric readout on the panel (see
+// MsdcPanelValue in MT6765Pkg/Library/MsdcImplLib).  Console text scrolls
+// away before a photo can be taken; these values do not.
+//
+extern VOID MsdcPanelValue (UINTN Slot, UINT32 Value);
 '''
 
 text = insert_after(text, '#include "MsdcDxe.h"', EXTERN)
@@ -300,6 +307,39 @@ NEW_PIO = """  UINT32  IntStatus, RemainSize, RxBytes, Words;
         DbgSts,
         DbgDcrc
         ));
+
+      // MSDC_PS: the pin levels the controller sees right now.  DAT0 is bit 0;
+      // if the card is driving a data block at least one DAT bit must have
+      // moved, so an unchanged/zero PS means nothing arrived on the pads at all
+      // (wiring or card state) rather than a sampling problem.
+      {
+        UINT32  DbgPs;
+        MsdcRead (Private, MSDC_PS, &DbgPs);
+        DEBUG ((DEBUG_ERROR, "ddn  ps=%08x\\n", DbgPs));
+      }
+      //
+      // Also park the numbers in the fixed readout band.  The console keeps
+      // only its last 68 lines and EmmcDxe/BdsDxe print more than that
+      // afterwards, so text alone cannot be relied on to still be on screen by
+      // the time the panel is photographed.
+      //
+      {
+        UINT32  DbgCmd, DbgSdc, DbgBlk;
+
+        MsdcRead (Private, SDC_CMD, &DbgCmd);
+        MsdcRead (Private, SDC_CFG, &DbgSdc);
+        MsdcRead (Private, SDC_BLK_NUM, &DbgBlk);
+        MsdcPanelValue (0, IntStatus);
+        MsdcPanelValue (1, DbgCfg);
+        MsdcPanelValue (2, DbgFifo);
+        MsdcPanelValue (3, DbgSts);
+        MsdcPanelValue (4, DbgDcrc);
+        MsdcPanelValue (5, RemainSize);
+        MsdcPanelValue (7, DbgCmd);
+        MsdcPanelValue (8, DbgSdc);
+        MsdcPanelValue (9, DbgBlk);
+      }
+
       MsdcWrite (Private, MSDC_INT, IntStatus);
       return MsdcIntTrackError (Private, MSDC_INT_DATSTS, IntStatus);
     }
@@ -512,6 +552,74 @@ text = insert_before(
     "    MsdcTrace (17, 0x0000FFFF);\n"
     "  }\n",
 )
+
+
+# ---------------------------------------------------------------------------
+# The card's own answer to the data command, parked in readout slot 6.
+#
+# R1 bits 12:9 are CURRENT_STATE (4 = Tran, the only state in which a card will
+# send data), bit 8 is READY_FOR_DATA, bit 22 is ILLEGAL_COMMAND.  Between them
+# they separate "the card refused the command" from "the card went quiet", which
+# is exactly the question a DATTMO with an empty FIFO leaves open.
+text = insert_before(
+    text,
+    "      Status = MsdcPioRead (Private, Packet->InDataBuffer, Packet->InTransferLength);",
+    "      MsdcPanelValue (6, SdMmcStatusBlk->Resp0);",
+)
+
+# ---------------------------------------------------------------------------
+# Signal-integrity registers, as LK sets them.
+#
+# These are the registers that decide where the controller samples the DATA
+# lines, and the original code wrote only MSDC_IOCON.  Everything else kept
+# whatever the bootloader left behind, which is fine for commands (they work) and
+# fatal for data.  Values and order from lk-svoboda18 msdc.c:1855-1875
+# (msdc_init_hw), which is the same controller on the same SoC:
+#
+#   MSDC_PAD_TUNE0/1   0xf0 / 0xf4    RX delay line
+#   MSDC_DAT_RDDLY0-3  0xf8..0x104    per-lane data read delay
+#   SDC_FIFO_CFG b24/25               FIFO valid selects -- LK clears both, with
+#                                     the comment that leaving them set breaks
+#                                     the data path
+OLD_IOCON = "  MsdcWrite (Private, MSDC_IOCON, 0);"
+NEW_IOCON = (
+    "  MsdcWrite (Private, MSDC_IOCON, 0);\n"
+    "\n"
+    "  //\n"
+    "  // dandelion: the rest of LK's msdc_init_hw() signal path.\n"
+    "  //\n"
+    "  MsdcWrite (Private, 0xf0, 0);   // MSDC_PAD_TUNE0\n"
+    "  MsdcWrite (Private, 0xf4, 0);   // MSDC_PAD_TUNE1\n"
+    "  MsdcWrite (Private, 0xf8, 0);   // MSDC_DAT_RDDLY0\n"
+    "  MsdcWrite (Private, 0xfc, 0);   // MSDC_DAT_RDDLY1\n"
+    "  MsdcWrite (Private, 0x100, 0);  // MSDC_DAT_RDDLY2\n"
+    "  MsdcWrite (Private, 0x104, 0);  // MSDC_DAT_RDDLY3\n"
+    "  MsdcClrBits (Private, SDC_FIFO_CFG, (BIT24 | BIT25));"
+)
+if text.count(OLD_IOCON) != 1:
+    sys.exit("MSDC_IOCON anchor appears %d times" % text.count(OLD_IOCON))
+text = text.replace(OLD_IOCON, NEW_IOCON)
+
+# ---------------------------------------------------------------------------
+# SDC_CFG_SDIO is an SDIO-card bit and was set unconditionally ("otherwise cmd5
+# won't work").  LK sets it only when the card really is SDIO; on this board
+# host 0 is an eMMC and left set it changes how the controller treats the data
+# phase -- the last place to look when every command is answered and the first
+# data transfer times out.
+OLD_SDIO = "  MsdcSetBits (Private, SDC_CFG, SDC_CFG_SDIO);"
+NEW_SDIO = (
+    "  //\n"
+    "  // dandelion: only for SDIO hosts.  Host 0 on this board is the eMMC.\n"
+    "  //\n"
+    "  if (Private->Index != 0) {\n"
+    "    MsdcSetBits (Private, SDC_CFG, SDC_CFG_SDIO);\n"
+    "  } else {\n"
+    "    MsdcClrBits (Private, SDC_CFG, SDC_CFG_SDIO);\n"
+    "  }"
+)
+if text.count(OLD_SDIO) != 1:
+    sys.exit("SDC_CFG_SDIO anchor appears %d times" % text.count(OLD_SDIO))
+text = text.replace(OLD_SDIO, NEW_SDIO)
 
 open(path, "w", encoding="utf-8", errors="surrogateescape", newline="").write(text)
 
