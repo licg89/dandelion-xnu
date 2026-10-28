@@ -154,6 +154,49 @@ DandelionDrawHex (
   DandelionDrawString (X, Y, Buf, Fg, 0x00000000);
 }
 
+//
+// Same glyphs, drawn Scale times larger.  The UEFI console's 8x19 font is
+// unreadable at arm's length on this panel, and while it is being debugged we
+// cannot trust anything it renders -- so the important values get drawn here,
+// straight into the framebuffer, in 40x80 pixel digits.
+//
+STATIC
+VOID
+DandelionDrawStringScaled (
+  UINTN        X,
+  UINTN        Y,
+  CONST CHAR8  *Text,
+  UINT32       Fg,
+  UINT32       Bg,
+  UINTN        Scale
+  )
+{
+  volatile UINT32  *Row;
+  UINTN            Column;
+  UINTN            Line;
+  UINTN            Dx;
+  UINTN            Dy;
+  UINT8            Bits;
+
+  for ( ; *Text != '\0'; Text++, X += 8 * Scale) {
+    if ((*Text < 0x20) || (*Text > 0x7E)) {
+      continue;
+    }
+
+    for (Line = 0; Line < 16; Line++) {
+      Bits = mDandelionFont8x16[*Text - 0x20][Line];
+      for (Dy = 0; Dy < Scale; Dy++) {
+        Row = (volatile UINT32 *)(UINTN)(DANDELION_FB_BASE + (Y + Line * Scale + Dy) * DANDELION_FB_STRIDE) + X;
+        for (Column = 0; Column < 8; Column++) {
+          for (Dx = 0; Dx < Scale; Dx++) {
+            Row[Column * Scale + Dx] = (Bits & (0x80 >> Column)) ? Fg : Bg;
+          }
+        }
+      }
+    }
+  }
+}
+
 EFI_STATUS
 EFIAPI
 PlatformProgressDxeEntryPoint (
@@ -337,6 +380,26 @@ PlatformProgressDxeEntryPoint (
         DandelionDrawHex (96, 376, (UINT64)LateGop->Mode->Info->PixelsPerScanLine, 4, 0x00FF8000);
         DandelionDrawString (16, 408, "FB", 0x00FF8000, 0x00000000);
         DandelionDrawHex (48, 408, (UINT64)LateGop->Mode->FrameBufferBase, 8, 0x00FF8000);
+
+        //
+        // 5x scaled, drawn last: whatever the console does, this is readable.
+        // 02E0 = 736 (correct), 02D0 = 720 (sheared).
+        //
+        {
+          CHAR8   Big[6];
+          UINT64  Value;
+          UINTN   Digit;
+
+          Value = (UINT64)LateGop->Mode->Info->PixelsPerScanLine;
+          for (Digit = 0; Digit < 4; Digit++) {
+            Big[Digit] = "0123456789ABCDEF"[(Value >> ((3 - Digit) * 4)) & 0xF];
+          }
+
+          Big[4] = '\0';
+          DandelionDrawStringScaled (16, 460, "S", 0x00FFFF00, 0x00000000, 5);
+          DandelionDrawStringScaled (60, 460, Big, 0x00FFFF00, 0x00000000, 5);
+          DandelionDrawStringScaled (16, 560, "UEFI", 0x00FFFFFF, 0x00000000, 5);
+        }
       }
     }
   }
