@@ -380,6 +380,31 @@ DandelionConsoleDxeEntryPoint (
   ApplyAttribute (mMode.Attribute);
   DandelionClearScreen (&mTextOut);
 
+  //
+  // Unmissable proof that this driver actually executed: two solid bars at the
+  // bottom of the panel.  If they are absent, the DXE dispatcher never ran us
+  // and the noise on screen comes from somewhere else entirely.
+  //
+  {
+    volatile UINT32  *Line;
+    UINTN            Y;
+    UINTN            X;
+
+    for (Y = 1200; Y < 1280; Y++) {
+      Line = (volatile UINT32 *)(UINTN)(DANDELION_FB_BASE + (UINT64)Y * DANDELION_FB_STRIDE);
+      for (X = 0; X < DANDELION_FB_WIDTH; X++) {
+        Line[X] = 0x00FF00FF;
+      }
+    }
+
+    for (Y = 1300; Y < 1380; Y++) {
+      Line = (volatile UINT32 *)(UINTN)(DANDELION_FB_BASE + (UINT64)Y * DANDELION_FB_STRIDE);
+      for (X = 0; X < DANDELION_FB_WIDTH; X++) {
+        Line[X] = 0x00FFFF00;
+      }
+    }
+  }
+
   Status = gBS->InstallMultipleProtocolInterfaces (
                   &Handle,
                   &gEfiDevicePathProtocolGuid,
