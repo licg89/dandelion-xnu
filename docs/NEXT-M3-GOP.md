@@ -126,3 +126,27 @@ Fix plan (both small, neither is a driver port):
    a new PcdFrameBufferStride in SiliciumPkg.dec + dandelion.dsc.
 
 After both, ConOut will draw on the real panel and M3 is done.
+
+## Photo evidence: console reaches the panel, but the image is sheared
+
+The panel now shows BDS output ("volume up boot manager", "failed to find an
+operating system"), so ConOut really does reach the framebuffer -- M3 holds.
+
+But every glyph is smeared into diagonal bands.  A 16-pixel right shift per
+row, wrapping after 45 rows, is exactly what a 720-pixel write pitch against a
+736-pixel panel pitch produces.  Our own DandelionDrawString (2944-byte stride)
+is crisp in the same boot, so the panel pitch is definitely 736.
+
+Therefore the sed step did NOT reach the module that was compiled.  The CI log
+shows line 177 of
+  Silicon/Silicium/SiliciumPkg/Drivers/SimpleFbDxe/SimpleFb.c
+was rewritten to 736, yet the running GOP still reports/writes 720.  Next thing
+to check is which SimpleFb.c the build actually compiles (grep the build log for
+the module path); DXE.inc references the INF as
+"SiliciumPkg/Drivers/SimpleFbDxe/SimpleFbDxe.inf", i.e. without the
+"Silicon/Silicium/" prefix, so the workspace may hold a second copy that the
+sed never touched.
+
+Also confirmed by the same boot:
+  - SEC band and PEI band still draw (top of the panel)
+  - BDS runs to completion and asks for a boot device: M4 is now the only work
