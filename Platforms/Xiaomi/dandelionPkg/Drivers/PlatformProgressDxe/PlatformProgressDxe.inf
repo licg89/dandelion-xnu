@@ -21,7 +21,16 @@
 
 [LibraryClasses]
   IoLib
+  UefiBootServicesTableLib
   UefiDriverEntryPoint
+
+#
+# Consumed only, to report whether a GOP exists.  It must be listed here or the
+# GUID is not linked and the build fails with
+#   lld-link: error: undefined symbol: gEfiGraphicsOutputProtocolGuid
+#
+[Protocols]
+  gEfiGraphicsOutputProtocolGuid    ## SOMETIMES_CONSUMES
 
 #
 # No dependencies on purpose: the whole point is to run as early as the
