@@ -55,11 +55,13 @@ MsdcDmaRead (
   UINT32      Spins;
   UINT8       Checksum;
   BOOLEAN     Done;
+  BOOLEAN     Failed;
 
   if ((Buffer == NULL) || (BufferLength == 0) || ((BufferLength & 511U) != 0)) {
     return EFI_INVALID_PARAMETER;
   }
 
+  Failed     = FALSE;
   Blocks     = BufferLength >> 9;
   Address    = (UINTN)Buffer;
   GpdAddress = (UINTN)&mDdnGpd[0];
@@ -166,8 +168,9 @@ MsdcDmaRead (
         ));
       MsdcPanelValue (0, IntStatus);
       MsdcPanelValue (2, DbgFifo);
-      Done = TRUE;
+      Failed    = TRUE;
       IntStatus = 0;
+      Done      = TRUE;
       break;
     }
 
@@ -184,6 +187,7 @@ MsdcDmaRead (
     if (++Spins > 4000000) {
       DEBUG ((DEBUG_ERROR, "ddn dma stall int=%08x", IntStatus));
       MsdcPanelValue (0, IntStatus);
+      Failed = TRUE;
       break;
     }
   }
@@ -202,9 +206,14 @@ MsdcDmaRead (
   MsdcClrBits (Private, DDN_DMA_CFG, DDN_DMA_CFG_DECSEN);
   MsdcSetBits (Private, MSDC_CFG, MSDC_CFG_PIO);
 
-  if (IntStatus & (MSDC_INT_DATTMO | MSDC_INT_DATCRCERR | MSDC_INT_ACMDTMO |
-                   MSDC_INT_ACMDCRCERR | MSDC_INT_BDCSERR | MSDC_INT_GPDCSERR))
-  {
+  //
+  // Report what actually happened.  `Failed` is the authority: the error branch
+  // clears IntStatus so the latched bits cannot be mistaken for a clean run, and
+  // a stall leaves Done FALSE.  Getting this wrong the first time made every
+  // failure look like a success, which is the one outcome a bring-up cannot
+  // afford.
+  //
+  if (Failed) {
     return EFI_DEVICE_ERROR;
   }
 

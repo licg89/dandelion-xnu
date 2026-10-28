@@ -30,8 +30,8 @@ cd D:\aios\dandelion-xnu
 
 | 文件 | 大小 | sha256 |
 |---|---|---|
-| `SILICIUM_UEFI.fd` | 2,097,152 | `9c8dad0a…24e68f` |
-| `boot-uefi-m5-dma.img` | 16,099,328 | `aeee60eb…3e9e17b4` |
+| `SILICIUM_UEFI.fd` | 2,097,152 | `80a2d6a7…f7bae` |
+| `boot-uefi-m5-dma.img` | 16,099,328 | `42752869…0bc88` |
 
 恢复原厂：`fastboot flash boot D:\aios\artifacts\boot_backup.img`。
 

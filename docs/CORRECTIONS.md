@@ -282,4 +282,48 @@ Text[4] = '=';
 另外新增 `tools/render_panel_preview.py`：**在 PC 上把整个仪表区渲染成 PNG**，
 这类布局/截断问题不用刷机就能看出来。
 
+## C13. 「`APRIORI.inc` 里加了一行，模块就进 FV 了」——**错**
+
+**现象**：新增 `PayloadBootDxe`，加进 `dandelion.dsc` 的 `[Components]`、加进
+`Include/APRIORI.inc`，构建成功、`PayloadBootDxe.efi` 也编出来了，
+但固件里根本没有它 —— 刷进去后 y 1570 那条横条**完全没出现**（连"正在找 payload"的橙色都没有）。
+
+**真因**：这两个文件管的不是同一件事。
+
+| 文件 | 作用 |
+|---|---|
+| `dandelion.dsc` `[Components]` | 决定**编不编** |
+| `Include/DXE.inc` | 决定**进不进 FV**（FDF 的 `[FV.FvMain]` 里 `!include` 的就是它） |
+| `Include/APRIORI.inc` | 决定**调度顺序**（`APRIORI DXE { }` 段） |
+
+`APRIORI.inc` 里那行注释写着"this APRIORI list is what actually puts a module into the
+FV" —— 那句话在**它自己的场景**下成立（GraphicsConsoleDxe 同时也在 DXE.inc 里，
+所以把它从 APRIORI 里注释掉之后两者都不含它），但它容易被读成"APRIORI 就够了"。
+`StorageBeaconDxe` 之所以看起来"只加 APRIORI 就行"，是因为它同时也在 DXE.inc 里。
+
+**判据（唯一权威）**：构建完看 `Build/<pkg>/DEBUG_CLANGPDB/FV/FVMAIN.inf` 的 `[files]`
+列表，里面有 `EFI_FILE_NAME = .../<FILE_GUID><Name>/<GUID>.ffs` 才算在 FV 里。
+或者看 `FV/Ffs/` 目录下有没有以该模块 FILE_GUID 开头的子目录。
+
+**已修**：`Include/DXE.inc` 里补上 `INF dandelionPkg/Drivers/PayloadBootDxe/PayloadBootDxe.inf`，
+并在该行旁边写清楚"这个文件才是 FV 内容清单，APRIORI 只管顺序"。
+
+## C14. 「在 `*.fd` 里搜不到某段代码的字符串，说明镜像里没有它」——**错**
+
+**现象**：想确认刷进去的镜像到底有没有包含某次改动，于是
+`IndexOf("pio-read")`、`IndexOf("BLOCK NONE")`、`IndexOf("DANDELION")` 全返回 -1，
+于是判断"改动没进镜像"。**这个判断是错的** —— 连我们自己控制台里百分之百存在的字符串
+也搜不到，因为 FV 里的模块是**压缩存储**的（`FVMAIN_COMPACT`），明文只有 FV 头。
+
+**正确做法**（三选一，从便宜到贵）：
+
+1. 构建完直接在**构建树**里 `grep` 那个源文件（`tools/build-local.sh` 第 2 步之后的状态
+   就是被编译进去的状态）；
+2. 看 `BUILDLOG_<pkg>.txt` 里该模块的编译行（有编译就说明这份源码进去了）；
+3. 真要看二进制，就先解压 FV（`GenFds`/`uefi-firmware-parser`），再在里面搜。
+
+**教训**：**"我没观测到"不等于"它不存在"**。这条和 C9/C10/C11 是同一类：
+用坏掉的仪器做测量，比不测量更糟。
+
+
 

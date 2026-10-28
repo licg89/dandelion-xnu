@@ -161,7 +161,7 @@
  }
  
  VOID
-@@ -488,48 +622,398 @@
+@@ -488,48 +622,407 @@
    }
  }
  
@@ -222,11 +222,13 @@
 +  UINT32      Spins;
 +  UINT8       Checksum;
 +  BOOLEAN     Done;
++  BOOLEAN     Failed;
 +
 +  if ((Buffer == NULL) || (BufferLength == 0) || ((BufferLength & 511U) != 0)) {
 +    return EFI_INVALID_PARAMETER;
 +  }
 +
++  Failed     = FALSE;
 +  Blocks     = BufferLength >> 9;
 +  Address    = (UINTN)Buffer;
 +  GpdAddress = (UINTN)&mDdnGpd[0];
@@ -333,8 +335,9 @@
 +        ));
 +      MsdcPanelValue (0, IntStatus);
 +      MsdcPanelValue (2, DbgFifo);
-+      Done = TRUE;
++      Failed    = TRUE;
 +      IntStatus = 0;
++      Done      = TRUE;
 +      break;
 +    }
 +
@@ -351,6 +354,7 @@
 +    if (++Spins > 4000000) {
 +      DEBUG ((DEBUG_ERROR, "ddn dma stall int=%08x", IntStatus));
 +      MsdcPanelValue (0, IntStatus);
++      Failed = TRUE;
 +      break;
 +    }
 +  }
@@ -369,9 +373,14 @@
 +  MsdcClrBits (Private, DDN_DMA_CFG, DDN_DMA_CFG_DECSEN);
 +  MsdcSetBits (Private, MSDC_CFG, MSDC_CFG_PIO);
 +
-+  if (IntStatus & (MSDC_INT_DATTMO | MSDC_INT_DATCRCERR | MSDC_INT_ACMDTMO |
-+                   MSDC_INT_ACMDCRCERR | MSDC_INT_BDCSERR | MSDC_INT_GPDCSERR))
-+  {
++  //
++  // Report what actually happened.  `Failed` is the authority: the error branch
++  // clears IntStatus so the latched bits cannot be mistaken for a clean run, and
++  // a stall leaves Done FALSE.  Getting this wrong the first time made every
++  // failure look like a success, which is the one outcome a bring-up cannot
++  // afford.
++  //
++  if (Failed) {
 +    return EFI_DEVICE_ERROR;
 +  }
 +
@@ -576,7 +585,7 @@
      }
    }
  
-@@ -679,6 +1163,17 @@
+@@ -679,6 +1172,17 @@
    if (IsDataTransfer) {
      RawCmd |= BLOCK_SIZE << SDC_CMD_BLK_SIZE_SHIFT;
      MsdcWrite (Private, SDC_BLK_NUM, BlkLen);
@@ -594,7 +603,7 @@
    }
  
    do {
-@@ -689,10 +1184,32 @@
+@@ -689,10 +1193,32 @@
    // Disable interrupts because we use polling way
    MsdcClrBits (Private, MSDC_INTEN, MSDC_INT_CMDSTS);
  
@@ -627,7 +636,7 @@
    if (EFI_ERROR(Status)) {
      return Status;
    }
-@@ -713,7 +1230,29 @@
+@@ -713,7 +1239,29 @@
  
    if (IsDataTransfer) {
      if (IsRead) {
@@ -658,7 +667,7 @@
        if (EFI_ERROR(Status)) {
          return Status;
        }
-@@ -739,6 +1278,7 @@
+@@ -739,6 +1287,7 @@
  
    // SW Reset
    MsdcReset (Private);
@@ -666,7 +675,7 @@
  
    // Clear FIFO
    MsdcClearFifo (Private);
-@@ -748,7 +1288,14 @@
+@@ -748,7 +1297,14 @@
  
    // Enable SDIO mode, otherwise cmd5 won't work
    // This bit disables R4 response CRC check for SDIO card
@@ -682,7 +691,7 @@
    // Disable detecting SDIO interrupts
    MsdcClrBits (Private, SDC_CFG, SDC_CFG_SDIOIDE);
  
-@@ -761,6 +1308,17 @@
+@@ -761,6 +1317,17 @@
  
    MsdcWrite (Private, MSDC_IOCON, 0);
  
@@ -700,7 +709,7 @@
    // Quirks
    //
    // [VERIFIED] These were MT6768 values.  MT6765 uses
-@@ -773,6 +1331,17 @@
+@@ -773,6 +1340,17 @@
    MsdcWrite (Private, MSDC_PATCH_BIT1, 0xFFFA0349);
  
    //
@@ -718,7 +727,7 @@
    // [VERIFIED] LK clears EMMC_CFG0.BOOTSUPP before card identification and
    // comments that leaving it set "may cause eMMC initialization to fail after
    // BROM operations" (LK msdc.c:2932-2938).  We are handed over by LK right
-@@ -1224,7 +1793,34 @@
+@@ -1224,7 +1802,34 @@
        return Status;
      }
    } else {
@@ -754,7 +763,7 @@
      if (EFI_ERROR(Status))
      {
        DEBUG ((DEBUG_ERROR, "MsdcDxe: EMMCSwitch failed with status %r\n", Status));
-@@ -1244,7 +1840,13 @@
+@@ -1244,7 +1849,13 @@
      return EFI_DEVICE_ERROR;
    }
  
@@ -769,7 +778,7 @@
  
    return Status;
  }
-@@ -1280,6 +1882,7 @@
+@@ -1280,6 +1891,7 @@
  
      MicroSecondDelay (100000);
    } while ((Ocr & BIT31) == 0);
@@ -777,7 +786,7 @@
  
    Status = CardAllSendCid (PassThru);
    if (EFI_ERROR (Status)) {
-@@ -1294,9 +1897,11 @@
+@@ -1294,9 +1906,11 @@
    }
  
    Private->SdInfo.CardType = EmmcCard;
@@ -789,7 +798,7 @@
  
    return Status;
  }
-@@ -1425,6 +2030,9 @@
+@@ -1425,6 +2039,9 @@
      }
  
      Private->TopMmioReg = Region.Address;
@@ -799,7 +808,7 @@
  
      MsdcInit(Private);
  
-@@ -1440,12 +2048,14 @@
+@@ -1440,12 +2057,14 @@
  
      if (EFI_ERROR(Status)) {
        DEBUG ((DEBUG_ERROR, "MsdcDxe: Failed to detect card! %r\n", Status));
