@@ -62,13 +62,26 @@ GOP 可用、framebuffer 参数全部实测确认；**唯一未完成的是让 U
 
 ## 5. 下一步（按顺序做，都很小）
 
-### 5.1 把 `GraphicsConsoleDxe` 从 DSC 的 Components 里也去掉
+### 5.1 把 `GraphicsConsoleDxe` 从 FV 里摘掉（**改的是 `APRIORI.inc`，不是 DSC**）
 
-现在只从 FDF（`Include/DXE.inc`）注释掉了，DSC 里还在编，FV 可能仍包含它。
+> 2026-10-28 实测更正：原先以为「DSC 里还在编，FV 可能仍包含它」——
+> 不对。DSC 的 `[Components]` 只负责**编译**，往 FV 里放模块的是 FDF。
+> 而 `GraphicsConsoleDxe` 进 FV 的路径是 `Include/APRIORI.inc` 的 APRIORI 列表
+> （`DXE.inc` 里那行之前已经被注释，但 APRIORI 是第二条路）。
+>
+> 判定方法（不用猜）：构建后直接在 `Build/.../FV/FVMAIN.Fv` 里搜该驱动的文件 GUID
+> `CCCB0C28-4B24-11d5-9A5A-0090273FC14D`。
+>
+> | APRIORI 那行 | FVMAIN 里搜到 GUID |
+> |---|---|
+> | 保留 | 1 次（两个 console 同时存在） |
+> | 注释掉 | 0 次 |
 
-- `Platforms/Xiaomi/dandelionPkg/dandelion.dsc` → `[Components]` 里找到
-  `MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf`，注释掉
-- 验证：CI 构建日志里搜 FV 内容，确认 FV 中已无 `GraphicsConsoleDxe`
+- 改 `Platforms/Xiaomi/dandelionPkg/Include/APRIORI.inc`，把最后那条
+  `INF MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf`
+  注释掉（**不要**去动 DSC：它在 `SiliciumPkg.dsc.inc` 的 `[Components]` 里，
+  是共享文件，编出来不放进 FV 也无害）
+- 验证：CI 构建后确认 FV 中已无该 GUID
 
 做完后 `ConSplitter` 只剩我们的控制台，BDS 的文字应立刻变清晰。
 
@@ -139,7 +152,8 @@ fastboot reboot
 | FD 基址 | 用 `0x48880000` 时 FD **从不执行**；必须 `0x40080000` |
 | CI 从未应用 `MuPatches` | 已修，用 `git -C "$WORK" apply`（绝对路径） |
 | YAML 步骤名带冒号 | `- name: Dandelion: ...` 会让整个 workflow 解析失败、jobs 为空 |
-| 新驱动必须登记两处 | DSC 的 `[Components]` **和** FDF 的 `DXE.inc`，缺一个就构建失败或进不了 FV |
+| 新驱动必须登记两处 | DSC 的 `[Components]`（编译）**和** FDF 的 `DXE.inc`（进 FV），缺一个就构建失败或进不了 FV |
+| APRIORI 也会往 FV 里放模块 | `Include/APRIORI.inc` 是进 FV 的第二条路；只注释 `DXE.inc` 摘不掉一个驱动 |
 | INF 缺 `[Protocols]` | 用到的 GUID 不声明会 `lld-link: undefined symbol: gEfi...Guid` |
 | `EFI_SIMPLE_TEXT_OUTPUT_MODE` | 没有 `Columns`/`Rows` 字段，要用 `QueryMode()` 取 |
 | PowerShell 里写中文 | 容易乱码，文档请用 `write` 工具写 UTF-8，或脚本文件而非 here-string |

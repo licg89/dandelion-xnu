@@ -44,5 +44,20 @@ APRIORI DXE {
   INF EmbeddedPkg/SimpleTextInOutSerial/SimpleTextInOutSerial.inf
   INF MdeModulePkg/Universal/Console/ConPlatformDxe/ConPlatformDxe.inf
   INF MdeModulePkg/Universal/Console/ConSplitterDxe/ConSplitterDxe.inf
-  INF MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf
+  #
+  # GraphicsConsoleDxe is deliberately NOT here any more.
+  #
+  # Commenting it out in DXE.inc is NOT enough, and neither is removing it from
+  # the DSC [Components] list: this APRIORI list is what actually puts a module
+  # into the FV.  Measured 2026-10-28 by searching the built FVMAIN for the
+  # driver's file GUID (CCCB0C28-4B24-11d5-9A5A-0090273FC14D):
+  #
+  #   line present -> GUID found in FVMAIN   (both consoles shipped, so
+  #                   ConSplitter aggregated ours and the sheared one)
+  #   line removed -> GUID absent
+  #
+  # Replaced by dandelionPkg/Drivers/DandelionConsoleDxe, which draws with the
+  # real 2944-byte stride.
+  #
+# INF MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf
 }
