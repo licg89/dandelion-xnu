@@ -74,8 +74,9 @@ jobs:
         run: |
           set -e
           shopt -s nullglob
-          for p in dandelion-xnu/Resources/MuPatches/*.patch; do
+          for p in "$GITHUB_WORKSPACE"/dandelion-xnu/Resources/MuPatches/*.patch; do
             echo "applying $(basename "$p")"
+            # absolute path: git -C changes the working directory
             git -C "$WORK" apply -p1 --verbose "$p"
           done
 
