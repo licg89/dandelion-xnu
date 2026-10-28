@@ -108,6 +108,7 @@
 #include <Uefi.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/DebugLib.h>
+#include <Library/IoLib.h>
 #include <Library/MsdcImplLib.h>
 
 #include <Protocol/MtkGpio.h>
@@ -364,17 +365,36 @@ InitGpio (
 #endif
 
   if (Index == 0 && FixedPcdGetBool(PcdStorageIsEMMC)) {
-    // Setup EMMC GPIO
-    mGpio->SetMode (123, 1); // DAT0
-    mGpio->SetMode (128, 1); // DAT1
-    mGpio->SetMode (125, 1); // DAT2
-    mGpio->SetMode (132, 1); // DAT3
-    mGpio->SetMode (126, 1); // DAT4
-    mGpio->SetMode (129, 1); // DAT5
-    mGpio->SetMode (127, 1); // DAT6
-    mGpio->SetMode (130, 1); // DAT7
-    mGpio->SetMode (122, 1); // CMD
-    mGpio->SetMode (124, 1); // CLK
+    //
+    // [VERIFIED] MT6765 eMMC pin muxing, from both the vendor kernel and LK:
+    //
+    //   vendor mt6765/msdc_cust.c:827-841  -> msdc_set_pin_mode()
+    //   LK     msdc_io.c:624-638           (identical)
+    //
+    //   MODE0 = 0x100053F0[31:8] and MODE1 = 0x10005400[23:0] are driven to
+    //   0x222222 -- twelve pins, GPIO122..133, four bits each -- and to
+    //   0x111111 only when the board strap MSDC0_GPIO_MODE_TRAP
+    //   (0x100056F0 bit 13) is set.
+    //
+    // What this file used to do: mode 1 on ten pins (122..130, 132), never
+    // touching 131/133 and never reading the strap.  With the strap clear that
+    // muxes CMD/CLK to the wrong function, so the card cannot answer at all --
+    // which is exactly the symptom we have: no block device ever appears.
+    //
+    {
+      UINT32  Trap;
+      UINT32  Mode;
+      UINT32  Pin;
+
+      Trap = MmioRead32 (0x100056F0);
+      Mode = ((Trap & (1U << 13)) != 0) ? 1 : 2;
+
+      for (Pin = 122; Pin <= 133; Pin++) {
+        mGpio->SetMode (Pin, Mode);
+      }
+
+      MsdcSay (((Mode == 2) ? "gpio mode2 x12" : "gpio mode1 x12"), 0x00FF8000);
+    }
   }
   else {
     // Setup SDCard GPIO
