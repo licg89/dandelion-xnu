@@ -139,14 +139,32 @@ STATIC MTK_PMIC_PROTOCOL *mPmic = NULL;
   Silent and harmless when ConOut is not up yet (gST may be NULL very early,
   and ConOut is NULL before a console driver installs itself).
 **/
+/**
+  Paint the status band and print one short line.
+
+  Why a colour band: a photo of small text on this panel is unreliable (there
+  is a band of corrupted pixels from row ~34 down), but a solid colour strip
+  is unmissable even in a bad photo.  Each MSDC stage repaints the same strip,
+  so the colour on screen at reset is the LAST stage that was reached:
+
+      magenta   DandelionConsoleDxe ran            (painted by the console)
+      yellow    MsdcDxe constructor ran
+      orange    GPIO configured
+      cyan      clocks configured
+      purple    (reserved) block device produced
+      red       (reserved) filesystem produced
+**/
 STATIC
 VOID
 MsdcSay (
-  IN CONST CHAR8  *Tag
+  IN CONST CHAR8  *Tag,
+  IN UINT32       Colour
   )
 {
   CHAR16        Line[48];
   UINTN         Index;
+  UINTN         Y;
+  UINTN         X;
   STATIC UINTN  Row = 27;
 
   if ((gST == NULL) || (gST->ConOut == NULL) || (Tag == NULL)) {
@@ -154,12 +172,16 @@ MsdcSay (
   }
 
   //
-  // Fixed row positions, not "wherever the cursor happens to be": the panel
-  // has a band of corrupted pixels from row ~34 downwards (source still
-  // unidentified), and the top of the screen is the only reliable place to
-  // read a marker.  Row 27 sits just below PlatformProgressDxe's own block
-  // (which ends around row 25) and above the corruption.
+  // Status band: rows 26..33, full width including the 16 hidden pixels, so
+  // nothing old can bleed through from either side.
   //
+  for (Y = 26; Y < 34; Y++) {
+    volatile UINT32  *Line32 = (volatile UINT32 *)(UINTN)(0x7EC50000ULL + (UINT64)Y * 2944);
+    for (X = 0; X < 736; X++) {
+      Line32[X] = Colour;
+    }
+  }
+
   if (Row >= 34) {
     Row = 27;
   }
@@ -214,7 +236,7 @@ SourceClockControl (
   UINT32 Index,
   BOOLEAN Enable)
 {
-  MsdcSay ("clock");
+  MsdcSay ("clock", 0x0000FFFF);
 
   EFI_STATUS Status;
   UINT32 ClockId;
@@ -255,7 +277,7 @@ ClockControl (
   UINT32 Index,
   BOOLEAN Enable)
 {
-  MsdcSay ("clock");
+  MsdcSay ("clock", 0x0000FFFF);
 
   EFI_STATUS Status;
   UINT32 ClockId;
@@ -294,7 +316,7 @@ PowerControl (
   UINT32 Index,
   BOOLEAN Enable)
 {
-  MsdcSay ("power: no pmic (skipped)");
+  MsdcSay ("power skipped", 0x00FF8000);
 
   //
   // 2026-10-28: deliberately does NOT touch the PMIC yet.
@@ -330,7 +352,7 @@ VOID
 InitGpio (
   UINT32 Index)
 {
-  MsdcSay ("gpio");
+  MsdcSay ("gpio", 0x00FF8000);
 
 #if SOC_TYPE == 1
   //
@@ -374,7 +396,7 @@ MsdcLibConstructor (VOID)
 {
   EFI_STATUS Status;
 
-  MsdcSay ("ctor");
+  MsdcSay ("ctor", 0x00FFFF00);
 
   // Locate Gpio Protocol
   Status = gBS->LocateProtocol (&gMediaTekGpioProtocolGuid, NULL, (VOID **)&mGpio);
@@ -386,14 +408,14 @@ MsdcLibConstructor (VOID)
     // with no way to tell why.  Report it on the panel and carry on; the MSDC
     // init that follows will fail visibly instead of silently.
     //
-    MsdcSay ("no gpio protocol");
+    MsdcSay ("no gpio protocol", 0x00FF0000);
     mGpio = NULL;
   }
 
   // Locate Clock Protocol
   Status = gBS->LocateProtocol (&gMediaTekClockProtocolGuid, NULL, (VOID **)&mClock);
   if (EFI_ERROR (Status)) {
-    MsdcSay ("no clock protocol");
+    MsdcSay ("no clock protocol", 0x00FF0000);
     mClock = NULL;
   }
 
@@ -405,17 +427,17 @@ MsdcLibConstructor (VOID)
     // this board carries an MT6357.  Not fatal any more -- the eMMC rails are
     // already on because LK boots from that card.
     //
-    MsdcSay ("no pmic protocol (ok)");
+    MsdcSay ("no pmic (ok)", 0x00FF8000);
     mPmic = NULL;
   }
 
   if ((mGpio == NULL) || (mClock == NULL)) {
-    MsdcSay ("ctor: missing protocols");
+    MsdcSay ("missing protocols", 0x00FF0000);
     return EFI_DEVICE_ERROR;
   }
 
   if (mPmic == NULL) {
-    MsdcSay ("ctor: no pmic, skipping voltages");
+    MsdcSay ("no pmic, skip volt", 0x00FF8000);
     return EFI_SUCCESS;
   }
 
@@ -432,7 +454,7 @@ MsdcLibConstructor (VOID)
   // once made the whole DXE chain stop before DandelionConsoleDxe, so some
   // other driver depends on it.  Keep the driver, skip the writes.
   //
-  MsdcSay ("ctor: pmic present, writes skipped");
+  MsdcSay ("pmic: no writes", 0x00FF8000);
   Status = EFI_SUCCESS;
 
   return Status;

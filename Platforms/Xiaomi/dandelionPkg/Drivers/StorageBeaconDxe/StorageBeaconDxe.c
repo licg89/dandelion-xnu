@@ -23,6 +23,31 @@
 #include <Protocol/BlockIo.h>
 #include <Protocol/SimpleFileSystem.h>
 
+/**
+  Repaint the status band (rows 26..33, full width).
+
+  Same strip that DandelionConsoleDxe (magenta) and the MSDC stages
+  (yellow/orange/cyan) use, so the colour on screen at reset is the last stage
+  reached.  Purple = block device, green = filesystem.
+**/
+STATIC
+VOID
+PaintBand (
+  IN UINT32  Colour
+  )
+{
+  volatile UINT32  *Band;
+  UINTN            Y;
+  UINTN            X;
+
+  for (Y = 26; Y < 34; Y++) {
+    Band = (volatile UINT32 *)(UINTN)(0x7EC50000ULL + (UINT64)Y * 2944);
+    for (X = 0; X < 736; X++) {
+      Band[X] = Colour;
+    }
+  }
+}
+
 STATIC
 VOID
 Say (
@@ -74,6 +99,7 @@ StorageBeaconDxeEntryPoint (
   UINTN       Volumes;
   UINTN       BlockDevices;
 
+  PaintBand (0x008000FF);
   Say (SystemTable, L"\r\nBLOCK OK\r\n");
 
   //
@@ -121,6 +147,7 @@ StorageBeaconDxeEntryPoint (
   }
 
   if (Volumes > 0) {
+    PaintBand (0x0000FF00);
     Say (SystemTable, L"FAT OK\r\n");
   } else {
     Say (SystemTable, L"FAT NONE\r\n");

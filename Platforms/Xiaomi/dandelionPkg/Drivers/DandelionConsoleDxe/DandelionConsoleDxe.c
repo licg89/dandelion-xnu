@@ -381,6 +381,27 @@ DandelionConsoleDxeEntryPoint (
   DandelionClearScreen (&mTextOut);
 
   //
+  // Status band, stage marker: magenta = this console ran.
+  //
+  // The band is rows 26..33, full width, and every later stage repaints it
+  // (MSDC yellow/orange/cyan, storage purple/green).  Reading a solid colour
+  // strip off a photograph is reliable; reading 8x16 text through this panel's
+  // corrupted band is not.
+  //
+  {
+    volatile UINT32  *Band;
+    UINTN            Y;
+    UINTN            X;
+
+    for (Y = 26; Y < 34; Y++) {
+      Band = (volatile UINT32 *)(UINTN)(DANDELION_FB_BASE + (UINT64)Y * DANDELION_FB_STRIDE);
+      for (X = 0; X < DANDELION_FB_STRIDE / 4; X++) {
+        Band[X] = 0x00FF00FF;
+      }
+    }
+  }
+
+  //
   // Self test, 2026-10-28 19:1x: two lines through our own OutputString, at a
   // row nothing else touches (row 43/44 = y 688..720, between the 5x "UEFI"
   // at 560..640 and the progress driver's band at 1560).
