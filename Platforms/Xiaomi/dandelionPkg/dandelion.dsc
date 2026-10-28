@@ -112,3 +112,10 @@
   #
   SiliciumPkg/Drivers/KeypadDxe/KeypadDxe.inf
   SiliciumPkg/Drivers/KeypadDeviceDxe/KeypadDeviceDxe.inf
+
+  #
+  # M2 progress beacon (re-arms the watchdog once DXE dispatch works).
+  # dandelion has no UART, so this is how "reached DXE" becomes observable.
+  # Temporary: see the comment in the driver.
+  #
+  dandelionPkg/Drivers/PlatformProgressDxe/PlatformProgressDxe.inf

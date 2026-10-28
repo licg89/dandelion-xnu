@@ -1,5 +1,8 @@
   INF MdeModulePkg/Core/Dxe/DxeMain.inf
   INF MdeModulePkg/Universal/PCD/Dxe/Pcd.inf
+  # M2 progress beacon: first driver in the FV that we control, so the 2 s
+  # watchdog re-arm happens as early as the dispatcher allows.
+  INF dandelionPkg/Drivers/PlatformProgressDxe/PlatformProgressDxe.inf
   INF ArmPkg/Drivers/CpuDxe/CpuDxe.inf
   INF MdeModulePkg/Core/RuntimeDxe/RuntimeDxe.inf
   INF MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf

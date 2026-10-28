@@ -20,6 +20,12 @@
     EnableConstantBlending() - "Display OVL" region. See PlatformRegisters.h:
                               the OVL register offsets below are inherited from
                               MT6768 and are NOT verified for dandelion's DDP.
+
+    SetWatchdogBeacon()     - re-arms TOPRGU with a known timeout instead of
+                              just disarming it. This is the M2 progress
+                              beacon: dandelion has no UART, so the only free
+                              channel is "how long until the SoC resets
+                              itself". See the table in docs/HANDOVER-UEFI-1028.md.
 **/
 
 #include <Library/IoLib.h>
@@ -27,6 +33,48 @@
 #include <Library/PlatformSecLib.h>
 
 #include "PlatformRegisters.h"
+
+/**
+  Re-arm the TOPRGU watchdog so the SoC resets itself after Seconds.
+
+  Every call first disarms (WDT_MODE = KEY with ENABLE clear), then rewrites
+  WDT_LENGTH, then enables with EXTEN so expiry is a real SoC reset. Writing
+  WDT_LENGTH while the watchdog is running is not documented anywhere, hence
+  the disarm/arm sandwich.
+
+  @param[in] Seconds  Timeout in seconds, 1..WDT_LENGTH_MAX_SECONDS.
+**/
+VOID
+SetWatchdogBeacon (
+  IN UINTN  Seconds
+  )
+{
+  EFI_STATUS                   Status;
+  EFI_MEMORY_REGION_DESCRIPTOR WDogRegion;
+  UINT32                       Length;
+
+  if ((Seconds == 0) || (Seconds > WDT_LENGTH_MAX_SECONDS)) {
+    return;
+  }
+
+  Status = LocateMemoryRegionByName ("WatchDog Timer", &WDogRegion);
+  if (EFI_ERROR (Status)) {
+    return;
+  }
+
+  // Disarm: key only, ENABLE clear.
+  MmioWrite32 (WDogRegion.Address + WDT_MODE_OFFSET, WDT_MODE_KEY);
+
+  // WDT_LENGTH[15:5] = Seconds * 64, [4:0] = LENGTH_KEY.
+  Length = (((UINT32)Seconds * 64) << 5) | WDT_LENGTH_KEY;
+  MmioWrite32 (WDogRegion.Address + WDT_LENGTH_OFFSET, Length);
+
+  // Arm with external reset.
+  MmioWrite32 (
+    WDogRegion.Address + WDT_MODE_OFFSET,
+    WDT_MODE_KEY | WDT_MODE_EXTEN | WDT_MODE_ENABLE
+    );
+}
 
 VOID
 DisableWatchDogTimer ()
@@ -63,8 +111,13 @@ EnableConstantBlending ()
 VOID
 PlatformInitialize ()
 {
-  // Disable WatchDog Timer
-  DisableWatchDogTimer ();
+  //
+  // M2 progress beacon, stage 1 of 3: this is the first code we own in SEC.
+  // 20 s so it cannot be confused with the ~10 s watchdog LK is believed to
+  // hand over armed, and cannot fire during a healthy SEC (which is < 1 s).
+  // Re-armed to 30 s by PlatformPeiLib and to 2 s by PlatformProgressDxe.
+  //
+  SetWatchdogBeacon (20);
 
   // Enable Constant Blending
   EnableConstantBlending ();

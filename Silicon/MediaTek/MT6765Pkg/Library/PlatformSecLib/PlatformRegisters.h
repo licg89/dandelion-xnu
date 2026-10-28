@@ -40,4 +40,38 @@
 //
 #define WDT_MODE_KEY                   0x22000000
 
+//
+// [VERIFIED] Register offsets, from the same vendor header
+//   (drivers/watchdog/mediatek/wdt/common/wdt_v2/mtk_wdt.h):
+//     MTK_WDT_MODE   = TOPRGU + 0x0000
+//     MTK_WDT_LENGTH = TOPRGU + 0x0004
+//   TOPRGU itself is the MemoryMapLib region "WatchDog Timer" (0x10007000),
+//   so nothing here hardcodes the base.
+//
+#define WDT_MODE_OFFSET                0x0000
+#define WDT_LENGTH_OFFSET              0x0004
+
+//
+// [VERIFIED] WDT_MODE bits (mtk_wdt.h): ENABLE 0x0001, EXT_POL 0x0002,
+//   EXTEN 0x0004, IRQ 0x0008, AUTO_RESTART 0x0010, IRQ_LEVEL_EN 0x0020,
+//   DUAL_MODE 0x0040, DDR_RESERVE 0x0080.
+//   EXTEN makes expiry pull the external reset line (a real SoC reset)
+//   instead of only raising the interrupt, which is what a beacon needs.
+//
+#define WDT_MODE_ENABLE                0x0001
+#define WDT_MODE_EXTEN                 0x0004
+
+//
+// [VERIFIED] WDT_LENGTH: the timeout sits in bits 15:5 and the low 5 bits must
+//   carry LENGTH_KEY or the write is ignored (mtk_wdt.h:
+//   MTK_WDT_LENGTH_TIME_OUT 0xffe0, MTK_WDT_LENGTH_KEY 0x0008).
+//   mtk_wdt_v2.c::mtk_wdt_set_timeout() encodes N seconds as
+//       timeout = N * (1 << 6);  timeout <<= 5;
+//       writel (timeout | MTK_WDT_LENGTH_KEY, MTK_WDT_LENGTH);
+//   i.e. the field is N * 64, so the longest representable timeout is
+//   2047 / 64 ~= 31 s. Do not ask for more than 31.
+//
+#define WDT_LENGTH_KEY                 0x0008
+#define WDT_LENGTH_MAX_SECONDS         31
+
 #endif /* _PLATFORM_REGISTERS_H_ */

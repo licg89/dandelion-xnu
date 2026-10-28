@@ -178,6 +178,13 @@
   PlatformSecLib|MT6765Pkg/Library/PlatformSecLib/PlatformSecLib.inf
 
   #
+  # PlatformPeiLib: overrides SiliciumNullPkg's null instance (mapped earlier
+  # by SiliciumPkg.dsc.inc) so PlatformPeim() can re-arm the watchdog beacon
+  # after memory init. It still builds the FV HOB the null instance built.
+  #
+  PlatformPeiLib|MT6765Pkg/Library/PlatformPeiLib/PlatformPeiLib.inf
+
+  #
   # Custom Libraries
   #
   GpioImplLib|MT6765Pkg/Library/GpioImplLib/GpioImplLib.inf

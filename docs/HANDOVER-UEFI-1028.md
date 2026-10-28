@@ -173,18 +173,48 @@ kernel 段 = gzip(FD) 575,283 B，解压后 sha256 与 FD 完全一致（已校�
 ### 上机判据
 
 ⚠️ **`SEC alive` 的 eMMC 标记还没有实现**（`MT6765Pkg` 里没有任何 flashinfo 写入代码）。
-所以这一版能看的只有两个信号：
+所以这一版改成用**看门狗当进度信标**（见下节）。
 
-1. **看门狗**：`SecMain()` 第一件事就是 `PlatformInitialize()` → 关 TOPRGU 看门狗
-   （`Silicon/Silicium/SiliciumPkg/Sec/Sec.c:104`）。如果 LK 交棒时看门狗是武装的，
-   那么「跑到 SEC」= 不再自动重启，「没跑到」= 约 10 s 后自己重启。
-2. **Android 还起不起来**：正常进系统 = LK 根本没执行我们的 kernel。
+### 看门狗进度信标（已实现，2026-10-28 09:43）
 
-（这两条都是推断，没有在 dandelion 上验证过；M2 真正的判据仍要 eMMC 通道。）
+dandelion 没有 UART，eMMC 写入还没写，唯一能免驱观测到的量是
+**「从跳转到 FD 到 SoC 自己复位，隔了多久」**。TOPRGU 的寄存器语义已经从
+vendor 源码核实（`drivers/watchdog/mediatek/wdt/common/wdt_v2/mtk_wdt.{h,c}`）：
 
-### 下一步要写的代码
+```
+WDT_MODE   0x00   KEY 0x22000000 | EXTEN 0x0004 | ENABLE 0x0001
+WDT_LENGTH 0x04   字段在 bit15:5 = 秒数 * 64，低 5 位必须是 0x08，否则写入被忽略
+                  → 最长 2047/64 ≈ 31 s
+```
 
-- 最小可信标记：把 `bootshim/msdc.c` 里已验证的 polled-PIO 写搬进
-  `MT6765Pkg/Library/MsdcImplLib`，SEC 里写一行到 flashinfo。
-- 更省事的过渡方案：**看门狗当进度信标**——SEC 入口设 3 s 超时、过一段设 6 s、
-  DXE 入口再关掉；重启时间不同就说明走到了不同里程碑，不需要任何驱动。
+三级信标，每级重新武装一次（先 disarm，改 LENGTH，再 arm）：
+
+| 武装点 | 代码位置 | 超时 |
+|---|---|---|
+| SEC 入口 | `MT6765Pkg/Library/PlatformSecLib/PlatformSec.c` → `SetWatchdogBeacon(20)` | 20 s |
+| 过内存初始化 | `MT6765Pkg/Library/PlatformPeiLib/PlatformPei.c` → `SetWatchdogBeacon(30)` | 30 s |
+| DXE 分发成功 | `dandelionPkg/Drivers/PlatformProgressDxe/PlatformProgressDxe.c` | 2 s |
+
+**判读表**（从上电/logo 出现开始掐表）：
+
+| 观测到的复位延迟 | 含义 |
+|---|---|
+| ~10 s | 我们的 FD **根本没被执行**（还是 LK 自己武装的那个看门狗） |
+| ~20 s | SEC 入口跑到了，死在 `PlatformPeim` 之前 |
+| ~30 s | 过了内存初始化，死在 DXE 之前 |
+| ~2 s | **DXE core + dispatcher + FV 都活着**（我们的驱动跑了） |
+| 不重启 | 以上都没发生 / 看门狗被别的东西关了 |
+
+注意 DXE 那级故意**不关**看门狗而是改成 2 s，这样「到了 DXE」是一个阳性信号而不是静默。
+一旦 DXE 确认可达，第一件事就是把 `BEACON_SECONDS` 改成 0（改成关掉）。
+
+`PlatformPeiLib` 是新增的 MT6765 实现，**必须保留 Null 实例里的 `BuildFvHob()`**，
+否则 PEI 找不到 FV —— 这是覆盖平台 PEI 库时最容易漏的一行。
+
+### 下一步
+
+- 真正的 M2 判据：把 `bootshim/msdc.c` 里已验证的 polled-PIO 写搬进
+  `MT6765Pkg/Library/MsdcImplLib`，SEC 里写一行 `MT6765Pkg SEC alive` 到 flashinfo。
+- 然后才是 M3（点屏）、M4（FAT 卷）、M5（`UniXNU.efi`）。
+
+构建/打包环境与完整命令见 `docs/UEFI-BUILD-AND-PACKAGING.md`。
