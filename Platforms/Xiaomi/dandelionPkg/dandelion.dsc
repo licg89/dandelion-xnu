@@ -119,3 +119,4 @@
   # Temporary: see the comment in the driver.
   #
   dandelionPkg/Drivers/PlatformProgressDxe/PlatformProgressDxe.inf
+  dandelionPkg/Drivers/DandelionConsoleDxe/DandelionConsoleDxe.inf
