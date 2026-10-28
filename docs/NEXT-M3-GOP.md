@@ -69,3 +69,18 @@ if (!EFI_ERROR (St)) {
 1. 加 GOP 诊断三行 → 刷机 → 看是 NONE 还是 FOUND
 2. NONE：按 1/2 补配置；FOUND：调 DXE 顺序
 3. GOP 通了 → ConOut 自然可用 → M4（`MsdcDxe` + FAT）→ M5（`UniXNU.efi`）
+
+## Measured: GOP FOUND + GOP 720 OK (2026-10-28)
+
+The panel IS behind a GOP and the resolution is right (720x1600). So M3 is
+NOT a missing graphics driver: SimpleFbDxe works.
+
+What failed is ordering: PlatformProgressDxe has Depex TRUE, so it runs
+before GraphicsConsoleDxe has connected to the GOP handle. ConSplitter then
+has no console child yet and OutputString goes nowhere.
+
+Fix (next change): in PlatformProgressDxe, locate the GOP handle and call
+gBS->ConnectController (GopHandle, NULL, NULL, TRUE) before writing to
+ConOut, or move the driver after GraphicsConsoleDxe in the FVDXE list.
+
+
