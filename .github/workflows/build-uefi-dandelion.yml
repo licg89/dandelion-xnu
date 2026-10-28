@@ -80,7 +80,7 @@ jobs:
             git -C "$WORK" apply -p1 --verbose "$p"
           done
 
-      - name: Dandelion: SimpleFbDxe must use the real panel pitch
+      - name: SimpleFbDxe panel pitch for dandelion
         # Upstream sets PixelsPerScanLine = Width, i.e. it assumes the scanout
         # pitch equals the visible width.  dandelion scans out 736 pixels per
         # line (2944 bytes) with only 720 visible, so every console row was
