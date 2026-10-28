@@ -218,3 +218,59 @@ WDT_LENGTH 0x04   字段在 bit15:5 = 秒数 * 64，低 5 位必须是 0x08，�
 - 然后才是 M3（点屏）、M4（FAT 卷）、M5（`UniXNU.efi`）。
 
 构建/打包环境与完整命令见 `docs/UEFI-BUILD-AND-PACKAGING.md`。
+
+---
+
+# 结果：M2 达成（2026-10-28）
+
+两件事同时被证实。
+
+## 1. CI 能编 UEFI 固件了
+
+`.github/workflows/build-uefi-dandelion.yml` 从建立起**每一次都是失败**，原因只有一个：
+`Resources/MuPatches/` 里的补丁从来没有被应用。`MsdcDxe.c` 的 `Private` 死变量在
+`-Werror,-Wunused-but-set-variable` 下是硬错误，构建就停在那里。
+
+修法（`9e8650d`）：在 overlay 之后加一步
+
+```yaml
+for p in "$GITHUB_WORKSPACE"/dandelion-xnu/Resources/MuPatches/*.patch; do
+  git -C "$WORK" apply -p1 --verbose "$p"   # 必须是绝对路径，git -C 会切目录
+done
+```
+
+跑通后产物 `dandelion-fd` 里的 `SILICIUM_UEFI.fd` 基址正好是 `0x40080000`
+（两处：`0x168` 头和 `0xc0d8` 内存映射），和手工 patch 的二进制完全一致。
+
+**从此不需要本地 EDK2 树**：改代码 → push → 下 artifact → 打包 → 刷机。
+
+## 2. 三级色带证明 PEI 和 DXE 都跑到了
+
+色带是直接写 framebuffer（`0x7EC50000`，stride 2944，720 宽，取自
+`bootshim/fb.h`），**不经过 GOP、不经过 UEFI 图形栈**，所以 SEC 一进去就能画。
+
+实测现象：
+
+| 色带 | 位置 | 现象 |
+|---|---|---|
+| 🟩 绿（SEC） | 第 0–31 行 | 开机**一闪而过** |
+| 🟦 蓝（PEI） | 第 32–63 行 | 稳定留在顶部 |
+| ⬜ 白（DXE） | 第 64–95 行 | 稳定留在顶部 |
+
+**白条出现 = DXE core + dispatcher + 我们的 FV 全部工作。** 这是 M2 的正式判据。
+
+绿色为什么一闪而过：之后有东西重画了顶部（很可能是 DXE 阶段的显示初始化/logo
+重绘），而 32 行以下的蓝白没被覆盖。这不影响判读。
+
+## 现在的位置
+
+M2 ✅ 完成 → 下一步是 M3（文字控制台）与 M4（FAT 卷）。
+
+## 下一步（按顺序）
+
+1. 把 `BEACON_SECONDS` 改成 0（DXE 已确认可达，信标不再需要），观察设备是
+   停住还是继续复位 —— 这决定 DXE 之后是「在等我们」还是「有异常」。
+2. 把色带换成文字：复用 `bootshim/font.h` 的 8×16 点阵，SEC/PEI/DXE 各画一行
+   状态字，仍然不经过 GOP。
+3. 之后才是 `GraphicsConsoleDxe` + GOP，把 UEFI 自己的 `ConOut` 接上。
+4. M4：`MsdcDxe` + FAT，让 `UniXNU.efi` 能被加载。
