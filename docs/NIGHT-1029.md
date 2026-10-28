@@ -20,20 +20,27 @@
 ## 早上第一件事：刷 `boot-uefi-m5-dma.img`
 
 ```powershell
-# 1) 进 fastboot：长按电源 10 s 关机 → 电源 + 音量下
+# 一条命令搞定：检查 fastboot、刷 boot、重启，然后把"该拍哪里、怎么读"打在屏幕上
 cd D:\aios\dandelion-xnu
-& "C:\Users\li\AppData\Local\Android\Sdk\platform-tools\fastboot.exe" flash boot D:\aios\artifacts\boot-uefi-m5-dma.img
-& "C:\Users\li\AppData\Local\Android\Sdk\platform-tools\fastboot.exe" reboot
+powershell -File tools\flash.ps1
+
+# 它做的事情等价于：
+#   进 fastboot：长按电源 10 s 关机 → 电源 + 音量下
+#   fastboot flash boot artifacts\boot-uefi-m5-dma.img
+#   fastboot reboot
+#
+# 只想看镜像信息、不刷：powershell -File tools\flash.ps1 -Check
 ```
 
 镜像信息（这一版是唯一一次构建的产物，别和旧的混用）：
 
 | 文件 | 大小 | sha256 |
 |---|---|---|
-| `SILICIUM_UEFI.fd` | 2,097,152 | `0074011a…e7687` |
-| `boot-uefi-m5-dma.img` | 16,099,328 | `862c8631…131e3` |
+| `SILICIUM_UEFI.fd` | 2,097,152 | `e62b3482…8e269` |
+| `boot-uefi-m5-dma.img` | 16,099,328 | `9ec78b55…0982c` |
 
-恢复原厂：`fastboot flash boot D:\aios\artifacts\boot_backup.img`。
+恢复原厂：`powershell -File tools\flash.ps1 -Restore`
+（= `fastboot flash boot D:\aios\artifacts\boot_backup.img`）。
 
 ### 拍一张就行（这次真的随便拍）
 

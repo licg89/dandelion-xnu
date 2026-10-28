@@ -826,6 +826,12 @@ _R1_ANCHOR = "    if (IsRead) {"
 if text.count(_R1_ANCHOR) != 1:
     sys.exit("IsRead anchor appears %d times" % text.count(_R1_ANCHOR))
 _R1_CHECK = """    if ((SdMmcStatusBlk->Resp0 & 0xFFFFA080U) != 0) {
+      //
+      // Paint the data cell red as well: without it the panel cannot tell
+      // "the transfer was refused" from "the transfer never ran", and the cell
+      // is the one signal that survives everything printed afterwards.
+      //
+      MsdcTrace (22, 0x00FF0000);
       DEBUG ((DEBUG_ERROR, "ddn data cmd=%u refused, r1 has error bits", CommandBlk->CommandIndex));
       return EFI_DEVICE_ERROR;
     }

@@ -636,11 +636,17 @@
    if (EFI_ERROR(Status)) {
      return Status;
    }
-@@ -712,8 +1238,35 @@
+@@ -712,8 +1238,41 @@
    }
  
    if (IsDataTransfer) {
 +    if ((SdMmcStatusBlk->Resp0 & 0xFFFFA080U) != 0) {
++      //
++      // Paint the data cell red as well: without it the panel cannot tell
++      // "the transfer was refused" from "the transfer never ran", and the cell
++      // is the one signal that survives everything printed afterwards.
++      //
++      MsdcTrace (22, 0x00FF0000);
 +      DEBUG ((DEBUG_ERROR, "ddn data cmd=%u refused, r1 has error bits", CommandBlk->CommandIndex));
 +      return EFI_DEVICE_ERROR;
 +    }
@@ -673,7 +679,7 @@
        if (EFI_ERROR(Status)) {
          return Status;
        }
-@@ -739,6 +1292,7 @@
+@@ -739,6 +1298,7 @@
  
    // SW Reset
    MsdcReset (Private);
@@ -681,7 +687,7 @@
  
    // Clear FIFO
    MsdcClearFifo (Private);
-@@ -748,7 +1302,14 @@
+@@ -748,7 +1308,14 @@
  
    // Enable SDIO mode, otherwise cmd5 won't work
    // This bit disables R4 response CRC check for SDIO card
@@ -697,7 +703,7 @@
    // Disable detecting SDIO interrupts
    MsdcClrBits (Private, SDC_CFG, SDC_CFG_SDIOIDE);
  
-@@ -761,6 +1322,17 @@
+@@ -761,6 +1328,17 @@
  
    MsdcWrite (Private, MSDC_IOCON, 0);
  
@@ -715,7 +721,7 @@
    // Quirks
    //
    // [VERIFIED] These were MT6768 values.  MT6765 uses
-@@ -773,6 +1345,17 @@
+@@ -773,6 +1351,17 @@
    MsdcWrite (Private, MSDC_PATCH_BIT1, 0xFFFA0349);
  
    //
@@ -733,7 +739,7 @@
    // [VERIFIED] LK clears EMMC_CFG0.BOOTSUPP before card identification and
    // comments that leaving it set "may cause eMMC initialization to fail after
    // BROM operations" (LK msdc.c:2932-2938).  We are handed over by LK right
-@@ -1224,7 +1807,34 @@
+@@ -1224,7 +1813,34 @@
        return Status;
      }
    } else {
@@ -769,7 +775,7 @@
      if (EFI_ERROR(Status))
      {
        DEBUG ((DEBUG_ERROR, "MsdcDxe: EMMCSwitch failed with status %r\n", Status));
-@@ -1244,7 +1854,13 @@
+@@ -1244,7 +1860,13 @@
      return EFI_DEVICE_ERROR;
    }
  
@@ -784,7 +790,7 @@
  
    return Status;
  }
-@@ -1280,6 +1896,7 @@
+@@ -1280,6 +1902,7 @@
  
      MicroSecondDelay (100000);
    } while ((Ocr & BIT31) == 0);
@@ -792,7 +798,7 @@
  
    Status = CardAllSendCid (PassThru);
    if (EFI_ERROR (Status)) {
-@@ -1294,9 +1911,11 @@
+@@ -1294,9 +1917,11 @@
    }
  
    Private->SdInfo.CardType = EmmcCard;
@@ -804,7 +810,7 @@
  
    return Status;
  }
-@@ -1425,6 +2044,9 @@
+@@ -1425,6 +2050,9 @@
      }
  
      Private->TopMmioReg = Region.Address;
@@ -814,7 +820,7 @@
  
      MsdcInit(Private);
  
-@@ -1440,12 +2062,14 @@
+@@ -1440,12 +2068,14 @@
  
      if (EFI_ERROR(Status)) {
        DEBUG ((DEBUG_ERROR, "MsdcDxe: Failed to detect card! %r\n", Status));
