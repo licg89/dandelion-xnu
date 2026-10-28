@@ -24,6 +24,7 @@
 #include <Uefi.h>
 
 #include <Library/IoLib.h>
+#include <Protocol/GraphicsOutput.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiDriverEntryPoint.h>
 
@@ -153,6 +154,26 @@ PlatformProgressDxeEntryPoint (
   DandelionDrawString (16, 88,  (SystemTable->ConOut != NULL) ? "CONOUT YES" : "CONOUT NO", 0x00FFFF00, 0x00000000);
   DandelionDrawString (16, 120, "FD 40080000", 0x00AAAAAA, 0x00000000);
   DandelionPaintBand (0x00FFFFFF, 200);
+
+  //
+  // Is there a GOP at all?  SimpleFbDxe is already in the build, so if this
+  // says NONE the driver never found the panel (missing base address), and if
+  // it says FOUND the problem is only ConSplitter ordering.
+  //
+  {
+    EFI_GRAPHICS_OUTPUT_PROTOCOL  *Gop = NULL;
+    EFI_STATUS                     GopStatus;
+
+    GopStatus = gBS->LocateProtocol (&gEfiGraphicsOutputProtocolGuid, NULL, (VOID **)&Gop);
+    DandelionDrawString (16, 152, EFI_ERROR (GopStatus) ? "GOP NONE" : "GOP FOUND", 0x00FF00FF, 0x00000000);
+    if (!EFI_ERROR (GopStatus) && (Gop->Mode != NULL) && (Gop->Mode->Info != NULL)) {
+      DandelionDrawString (
+        16, 184,
+        (Gop->Mode->Info->HorizontalResolution == 720) ? "GOP 720 OK" : "GOP RES BAD",
+        0x00FF00FF, 0x00000000
+        );
+    }
+  }
 
   //
   // ConOut exists either way (ConSplitter always creates it), so the only real
