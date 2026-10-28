@@ -42,6 +42,13 @@
   INF MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.inf
   # M4 beacon: only dispatched when a SimpleFileSystem exists (see the .inf Depex).
   INF dandelionPkg/Drivers/StorageBeaconDxe/StorageBeaconDxe.inf
+  #
+  # M5 loader.  This file is the FV content list; APRIORI.inc only orders the
+  # dispatch.  Both are needed -- measured 2026-10-29: PayloadBootDxe compiled,
+  # was listed in APRIORI.inc, and did not appear in the firmware volume at all
+  # until this line existed (FVMAIN.inf is the ground truth: grep its file list).
+  #
+  INF dandelionPkg/Drivers/PayloadBootDxe/PayloadBootDxe.inf
 
   INF MdeModulePkg/Bus/Sd/EmmcDxe/EmmcDxe.inf
   INF MdeModulePkg/Bus/Sd/SdDxe/SdDxe.inf

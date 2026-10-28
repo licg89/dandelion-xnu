@@ -117,6 +117,16 @@ APRIORI DXE {
   #
   INF dandelionPkg/Drivers/StorageBeaconDxe/StorageBeaconDxe.inf
   #
+  # M5: the last thing this firmware does.  BdsDxe is not in the list at all, so
+  # this driver is the boot policy: try every FAT volume for \UniXNU.efi (and two
+  # fallback names), then fall back to the payload embedded in the FV, then paint
+  # blue/green/red at y 1570 to say which of those happened.
+  #
+  # It costs nothing to place it last: with no payload present it paints red and
+  # returns, which is exactly the state the board is in before M4.
+  #
+  INF dandelionPkg/Drivers/PayloadBootDxe/PayloadBootDxe.inf
+  #
   # GraphicsConsoleDxe is deliberately NOT here any more.
   #
   # Commenting it out in DXE.inc is NOT enough, and neither is removing it from

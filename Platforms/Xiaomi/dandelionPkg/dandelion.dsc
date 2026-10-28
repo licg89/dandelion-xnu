@@ -180,3 +180,18 @@
   # runs once FAT has a volume.  Its line on the panel is the M4 criterion.
   #
   dandelionPkg/Drivers/StorageBeaconDxe/StorageBeaconDxe.inf
+
+  #
+  # M5: find a payload and start it.  BdsDxe is not in this firmware (it
+  # dead-loops in ConSplitter against this panel), so this driver is the whole
+  # boot policy: FAT file first, firmware-volume image second.
+  #
+  dandelionPkg/Drivers/PayloadBootDxe/PayloadBootDxe.inf
+
+  #
+  # The M5 payload itself.  An application is not dispatched by DXE, so it
+  # costs nothing to have in the FV: PayloadBootDxe picks it up by file GUID and
+  # LoadImage's it.  It is how the load-and-start path gets verified before eMMC
+  # works.
+  #
+  dandelionPkg/Applications/PayloadHello/PayloadHello.inf
