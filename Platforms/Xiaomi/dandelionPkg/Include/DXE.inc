@@ -33,6 +33,10 @@
   INF MediaTekPkg/Drivers/GpioDxe/GpioDxe.inf
   INF MediaTekPkg/Drivers/ClockDxe/ClockDxe.inf
   INF MediaTekPkg/Drivers/PmicWrapperDxe/PmicWrapperDxe.inf
+  # MT6358PmicDxe stays for now: removing it from the FV made the whole DXE chain stop
+  # before DandelionConsoleDxe (the bars and SELFTEST disappeared), so something earlier
+  # in the list locates the PMIC protocol and trips over its absence.  Keep the driver,
+  # but never let MsdcImplLib write through it -- see PowerControl().
   INF MediaTekPkg/Drivers/MT6358PmicDxe/MT6358PmicDxe.inf
 
   INF MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.inf

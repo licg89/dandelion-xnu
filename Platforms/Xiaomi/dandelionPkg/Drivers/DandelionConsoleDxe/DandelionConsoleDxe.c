@@ -451,28 +451,8 @@ DandelionConsoleDxeEntryPoint (
   }
 
   //
-  // Ask the driver model to bind us right now instead of waiting for BDS's
-  // ConnectAll().  Measured 2026-10-28 19:4x: with this driver only present in
-  // the FV body, PlatformProgressDxe's ConOut probe produced no output while a
-  // direct OutputString call rendered fine -- i.e. ConSplitter had no
-  // framebuffer child yet, because BdsDxe had already been dispatched (its
-  // dependency was satisfied by SimpleTextInOutSerial's 80x25 serial console)
-  // and had printed everything to the serial port.
-  //
-  // Two things fix that together: this file is now listed in APRIORI.inc right
-  // after ConSplitterDxe, and the connect below makes ConPlatformDxe attach us
-  // immediately so ConOut works from the next statement onwards.
-  //
-  gBS->ConnectController (Handle, NULL, NULL, TRUE);
-
-  //
-  // Did that actually put us into ConSplitter?  Ask ConOut itself and draw the
-  // answer with our own OutputString, so a single photo settles it:
-  //
-  //   "COUT K" followed by two hex bytes  -> ConOut answered
-  //   "COUT X"                            -> ConOut has no mode / refused
-  //   "VIA CONOUT ..." appears            -> ConSplitter really forwards to us
-  //   "VIA CONOUT ..." missing            -> it does not, despite the connect
+  // Before taking ConOut over, record what it looked like: this is the only
+  // remaining question about the console stack, and one photo answers it.
   //
   {
     static CONST CHAR8 Hex[] = "0123456789ABCDEF";
@@ -530,6 +510,29 @@ DandelionConsoleDxeEntryPoint (
       gST->ConOut->OutputString (gST->ConOut, L"VIA CONOUT 0123456789");
     }
   }
+
+  //
+  // Publish ourselves as THE console.
+  //
+  // Why this and not ConSplitter: ConPlatformDxe/ConSplitterDxe bind console
+  // devices through the driver model, so a device only joins ConOut when
+  // something calls ConnectController for it -- and that call, from inside our
+  // own entry point, is what wedged the dispatcher in the previous build (the
+  // bars and SELFTEST were on the panel, nothing after the connect ever ran,
+  // and PlatformProgressDxe never got dispatched).
+  //
+  // On this board ConSplitter has nothing else to aggregate anyway: the serial
+  // console is gone (no UART) and GraphicsConsoleDxe is gone (720 pitch).  So
+  // pointing the system table's ConOut straight at our protocol is both
+  // sufficient and the shortest path to readable UEFI text -- BdsDxe and every
+  // UiApp read gST->ConOut, not ConSplitter, to print.
+  //
+  // This is a bring-up stage decision.  Once storage and UniXNU.efi work, the
+  // tidy version is to let ConPlatform bind us normally and drop these two
+  // lines.
+  //
+  gST->ConOut = &mTextOut;
+  gST->StdErr = &mTextOut;
 
   return Status;
 }

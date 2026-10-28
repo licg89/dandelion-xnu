@@ -1,4 +1,12 @@
 APRIORI DXE {
+  #
+  # Diagnostic driver first in the dispatch order (2026-10-28 21:0x).
+  #
+  # It draws its own screen markers before anything else can, so its output is
+  # the proof that the DXE dispatcher reached this point at all.  Everything
+  # else in this list runs after it.
+  #
+  INF dandelionPkg/Drivers/PlatformProgressDxe/PlatformProgressDxe.inf
   INF MdeModulePkg/Core/Dxe/DxeMain.inf
   INF MdeModulePkg/Universal/PCD/Dxe/Pcd.inf
 

@@ -24,10 +24,18 @@
   UefiDriverEntryPoint
 
 [Protocols]
+  gEfiBlockIoProtocolGuid            ## CONSUMES
   gEfiSimpleFileSystemProtocolGuid   ## CONSUMES
 
 #
-# The dependency IS the test: no filesystem, no dispatch, no line on the panel.
+# Depend on BlockIo, not on SimpleFileSystem (2026-10-28 21:4x): with the
+# filesystem dependency this driver only ever appeared if FAT had bound a
+# volume, which told us "M4 works" but not WHERE it stopped when it didn't.
+# BlockIo is the first thing the eMMC stack produces, so:
+#
+#   nothing on screen   -> MsdcDxe/EmmcDxe never produced a block device
+#   "BLOCK OK" only     -> block device exists, partition/FAT is the problem
+#   "BLOCK OK" + "FAT n"-> M4 done
 #
 [Depex]
-  gEfiSimpleFileSystemProtocolGuid
+  gEfiBlockIoProtocolGuid

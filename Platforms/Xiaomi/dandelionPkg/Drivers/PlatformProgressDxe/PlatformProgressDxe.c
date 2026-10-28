@@ -213,7 +213,8 @@ PlatformProgressDxeEntryPoint (
   // length.  Ask for whichever text mode has the most cells; on this panel
   // that is the resolution-derived one (~90x84).
   //
-  if ((SystemTable->ConOut != NULL) && (SystemTable->ConOut->Mode != NULL)) {
+  // SETMODE DISABLED 2026-10-28: ConSplitter's SetMode path is a hang suspect.
+  if (FALSE && (SystemTable->ConOut != NULL) && (SystemTable->ConOut->Mode != NULL)) {
     UINTN  BestMode;
     UINTN  BestArea;
     UINTN  Mode;

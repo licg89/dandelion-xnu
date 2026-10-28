@@ -38,7 +38,7 @@
   BUILD_TARGETS                  = RELEASE|DEBUG
   SKUID_IDENTIFIER               = DEFAULT
   FLASH_DEFINITION               = dandelionPkg/dandelion.fdf
-  USE_CUSTOM_DISPLAY_DRIVER      = 0
+  USE_CUSTOM_DISPLAY_DRIVER      = 1   # 2026-10-28 21:2x: keep SimpleFbDxe (and therefore GOP) out of the FV to test whether the 720-pitch streaks come from a GOP Blt consumer
 
   #
   # 0 = MT6765 (Helio P22)

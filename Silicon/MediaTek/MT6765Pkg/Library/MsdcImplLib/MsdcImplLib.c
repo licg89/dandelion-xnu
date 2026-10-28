@@ -129,6 +129,63 @@ STATIC MTK_GPIO_PROTOCOL *mGpio = NULL;
 STATIC MTK_CLOCK_PROTOCOL *mClock = NULL;
 STATIC MTK_PMIC_PROTOCOL *mPmic = NULL;
 
+/**
+  Print one short line to the panel console.
+
+  Why a library prints to the screen: dandelion has no UART, so the only way to
+  find out where the eMMC stack stops is to put markers on the panel.  DEBUG()
+  goes to a serial port that does not exist, so it is useless here.
+
+  Silent and harmless when ConOut is not up yet (gST may be NULL very early,
+  and ConOut is NULL before a console driver installs itself).
+**/
+STATIC
+VOID
+MsdcSay (
+  IN CONST CHAR8  *Tag
+  )
+{
+  CHAR16        Line[48];
+  UINTN         Index;
+  STATIC UINTN  Row = 27;
+
+  if ((gST == NULL) || (gST->ConOut == NULL) || (Tag == NULL)) {
+    return;
+  }
+
+  //
+  // Fixed row positions, not "wherever the cursor happens to be": the panel
+  // has a band of corrupted pixels from row ~34 downwards (source still
+  // unidentified), and the top of the screen is the only reliable place to
+  // read a marker.  Row 27 sits just below PlatformProgressDxe's own block
+  // (which ends around row 25) and above the corruption.
+  //
+  if (Row >= 34) {
+    Row = 27;
+  }
+
+  gST->ConOut->SetCursorPosition (gST->ConOut, 0, Row);
+
+  Line[0] = L'M';
+  Line[1] = L'S';
+  Line[2] = L'D';
+  Line[3] = L'C';
+  Line[4] = L':';
+  Line[5] = L' ';
+
+  for (Index = 0; (Index < 30) && (Tag[Index] != '\0'); Index++) {
+    Line[6 + Index] = (CHAR16)Tag[Index];
+  }
+
+  Line[6 + Index] = L'\r';
+  Line[7 + Index] = L'\n';
+  Line[8 + Index] = L'\0';
+
+  gST->ConOut->OutputString (gST->ConOut, Line);
+
+  Row++;
+}
+
 VOID
 GetSourceClockRate (
   UINT32 Index,
@@ -157,6 +214,8 @@ SourceClockControl (
   UINT32 Index,
   BOOLEAN Enable)
 {
+  MsdcSay ("clock");
+
   EFI_STATUS Status;
   UINT32 ClockId;
 
@@ -196,6 +255,8 @@ ClockControl (
   UINT32 Index,
   BOOLEAN Enable)
 {
+  MsdcSay ("clock");
+
   EFI_STATUS Status;
   UINT32 ClockId;
 
@@ -233,6 +294,8 @@ PowerControl (
   UINT32 Index,
   BOOLEAN Enable)
 {
+  MsdcSay ("power: no pmic (skipped)");
+
   //
   // 2026-10-28: deliberately does NOT touch the PMIC yet.
   //
@@ -267,6 +330,8 @@ VOID
 InitGpio (
   UINT32 Index)
 {
+  MsdcSay ("gpio");
+
 #if SOC_TYPE == 1
   //
   // MT6765 / MT6762G: the pin *range* is verified (GPIO122..133, MT6765 LK
@@ -309,43 +374,66 @@ MsdcLibConstructor (VOID)
 {
   EFI_STATUS Status;
 
+  MsdcSay ("ctor");
+
   // Locate Gpio Protocol
   Status = gBS->LocateProtocol (&gMediaTekGpioProtocolGuid, NULL, (VOID **)&mGpio);
   if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "Failed to Locate GPIO Protocol! Status = %r\n", Status));
-    ASSERT_EFI_ERROR (Status);
+    //
+    // 2026-10-28: was ASSERT_EFI_ERROR.  In a DEBUG build an ASSERT is a hang,
+    // and a hang here blocks the rest of the DXE dispatch -- BdsDxe and every
+    // later driver simply never run, which looks like "the firmware stops"
+    // with no way to tell why.  Report it on the panel and carry on; the MSDC
+    // init that follows will fail visibly instead of silently.
+    //
+    MsdcSay ("no gpio protocol");
+    mGpio = NULL;
   }
 
   // Locate Clock Protocol
   Status = gBS->LocateProtocol (&gMediaTekClockProtocolGuid, NULL, (VOID **)&mClock);
   if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "Failed to Locate Clock Protocol! Status = %r\n", Status));
-    ASSERT_EFI_ERROR (Status);
+    MsdcSay ("no clock protocol");
+    mClock = NULL;
   }
 
   // Locate PMIC Protocol
   Status = gBS->LocateProtocol (&gMediaTekPmicProtocolGuid, NULL, (VOID **)&mPmic);
   if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "Failed to Locate PMIC Protocol! Status = %r\n", Status));
-    ASSERT_EFI_ERROR (Status);
+    //
+    // Expected on dandelion: the only PMIC driver in the tree is MT6358, and
+    // this board carries an MT6357.  Not fatal any more -- the eMMC rails are
+    // already on because LK boots from that card.
+    //
+    MsdcSay ("no pmic protocol (ok)");
+    mPmic = NULL;
   }
 
-  // Set VMCH LDO Voltage
-  // TODO(MT6765): 3300000 mV is the MT6358 SD/eMMC I/O voltage. On MT6357 the
-  // VOSEL encoding differs (mask/shift), so the value written here would map
-  // to a different voltage once an MT6357 driver is in place - re-check.
-  Status = mPmic->RegulatorSetVoltage("ldo_vmch", 3300000);
-  if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "Failed to Set VMCH LDO Voltage! Status = %r\n", Status));
-    ASSERT_EFI_ERROR (Status);
+  if ((mGpio == NULL) || (mClock == NULL)) {
+    MsdcSay ("ctor: missing protocols");
+    return EFI_DEVICE_ERROR;
   }
 
-  // Set VMC LDO Voltage
-  Status = mPmic->RegulatorSetVoltage("ldo_vmc", 3300000);
-  if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "Failed to Set VMC LDO Voltage! Status = %r\n", Status));
-    ASSERT_EFI_ERROR (Status);
+  if (mPmic == NULL) {
+    MsdcSay ("ctor: no pmic, skipping voltages");
+    return EFI_SUCCESS;
   }
+
+  //
+  // 2026-10-28: do NOT write voltages through this protocol.
+  //
+  // The only PMIC driver in the tree is MT6358; dandelion carries an MT6357.
+  // Its regulator *names* resolve, so the calls would succeed and write
+  // MT6358 VOSEL encodings into MT6357 registers -- a wrong rail voltage, not
+  // an error code.  The eMMC rails are already on (LK boots from that card),
+  // so there is nothing to do here.
+  //
+  // The protocol itself must stay located: removing MT6358PmicDxe from the FV
+  // once made the whole DXE chain stop before DandelionConsoleDxe, so some
+  // other driver depends on it.  Keep the driver, skip the writes.
+  //
+  MsdcSay ("ctor: pmic present, writes skipped");
+  Status = EFI_SUCCESS;
 
   return Status;
 }
