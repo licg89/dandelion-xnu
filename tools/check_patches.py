@@ -42,6 +42,7 @@ EXPECT = {
         ("data timeout pinned", "0xff << 24"),
         ("signal path registers", "MSDC_PAD_TUNE0"),
         ("response captured", "ddn data cmd=%u r1=%08x"),
+        ("fatal R1 aborts the transfer", "refused, r1 has error bits"),
     ],
     MSDC_INF: [
         ("cache maintenance for DMA", "CacheMaintenanceLib"),

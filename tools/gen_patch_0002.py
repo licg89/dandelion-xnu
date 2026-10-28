@@ -815,6 +815,24 @@ if "CacheMaintenanceLib" not in inf_text:
     inf_text = inf_text.replace(OLD_LIB, NEW_LIB)
     open(inf_path, "w", encoding="utf-8", errors="surrogateescape", newline="").write(inf_text)
 
+
+# ---------------------------------------------------------------------------
+# An R1 with error bits means the card refused the command and will not send
+# data; waiting produces nothing but a DATTMO a moment later.  Same test
+# bootshim/msdc.c makes (R1_FATAL_MASK) before it waits for data.  The mask
+# leaves CURRENT_STATE (bits 12:9) and READY_FOR_DATA (bit 8) alone, so a card
+# that merely is not ready for data does not trip it.
+_R1_ANCHOR = "    if (IsRead) {"
+if text.count(_R1_ANCHOR) != 1:
+    sys.exit("IsRead anchor appears %d times" % text.count(_R1_ANCHOR))
+_R1_CHECK = """    if ((SdMmcStatusBlk->Resp0 & 0xFFFFA080U) != 0) {
+      DEBUG ((DEBUG_ERROR, "ddn data cmd=%u refused, r1 has error bits", CommandBlk->CommandIndex));
+      return EFI_DEVICE_ERROR;
+    }
+
+"""
+text = text.replace(_R1_ANCHOR, _R1_CHECK + _R1_ANCHOR)
+
 open(path, "w", encoding="utf-8", errors="surrogateescape", newline="").write(text)
 
 # Emit the patch: 0001-applied state -> final state.
