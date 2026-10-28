@@ -164,6 +164,35 @@ PlatformProgressDxeEntryPoint (
   UINT32  Length;
 
   //
+  // GraphicsConsoleDxe defaults to 80x25 with an 8x19 font, which occupies
+  // only the top-left 640x475 of a 720x1600 panel and is unreadable at arm's
+  // length.  Ask for whichever text mode has the most cells; on this panel
+  // that is the resolution-derived one (~90x84).
+  //
+  if ((SystemTable->ConOut != NULL) && (SystemTable->ConOut->Mode != NULL)) {
+    UINTN  BestMode;
+    UINTN  BestArea;
+    UINTN  Mode;
+    UINTN  Cols;
+    UINTN  Rows;
+
+    BestMode = SystemTable->ConOut->Mode->Mode;
+    BestArea = 0;
+    for (Mode = 0; Mode < SystemTable->ConOut->Mode->MaxMode; Mode++) {
+      if (EFI_ERROR (SystemTable->ConOut->QueryMode (SystemTable->ConOut, Mode, &Cols, &Rows))) {
+        continue;
+      }
+
+      if ((Cols * Rows) > BestArea) {
+        BestArea = Cols * Rows;
+        BestMode = Mode;
+      }
+    }
+
+    SystemTable->ConOut->SetMode (SystemTable->ConOut, BestMode);
+  }
+
+  //
   // Real text now: clear the top of the panel and write what we know.
   // There is no GOP and no ConSplitter on this board yet, so this is the same
   // direct framebuffer trick the bootshim uses -- and it means the DXE stage
