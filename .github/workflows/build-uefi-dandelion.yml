@@ -80,6 +80,18 @@ jobs:
             git -C "$WORK" apply -p1 --verbose "$p"
           done
 
+      - name: Dandelion: SimpleFbDxe must use the real panel pitch
+        # Upstream sets PixelsPerScanLine = Width, i.e. it assumes the scanout
+        # pitch equals the visible width.  dandelion scans out 736 pixels per
+        # line (2944 bytes) with only 720 visible, so every console row was
+        # sheared by 16 pixels.  Measured on hardware: the GOP reported 0x02D0
+        # (720) while our own text, drawn with a 2944-byte stride, is correct.
+        run: |
+          set -e
+          F="$WORK/Silicon/Silicium/SiliciumPkg/Drivers/SimpleFbDxe/SimpleFb.c"
+          sed -i 's|PixelsPerScanLine    = Width;|PixelsPerScanLine    = 736;  // dandelion: 2944 B pitch, 720 visible|' "$F"
+          grep -n "PixelsPerScanLine" "$F"
+
       - name: Disable the x86 NASM external dependency
         # mu_nasm packages the x86 assembler; an aarch64-only build never runs
         # it, and the feed is not reachable from CI.

@@ -55,7 +55,17 @@ gMemoryDescriptor[] = {
   {"AP MD C SMEM",       0x76000000, 0x00C00000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_BACK}, // [INHERITED]
   {"SPM Reserved",       0x77FF0000, 0x00010000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_BACK}, // [INHERITED]
   {"AP MD NC SMEM",      0x78000000, 0x01000000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_BACK}, // [INHERITED]
-  {"Display Reserved",   0x7D9B0000, 0x02250000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH}, // [INHERITED]
+  // [MEASURED] The panel framebuffer is at 0x7EC50000 (bootshim/fb.h; our own
+  //            text renders there on every boot).  SimpleFbDxe takes the
+  //            Address of the region named "Display Reserved" and publishes it
+  //            as the GOP framebuffer base, so that entry MUST be the panel.
+  //            lancelot's 0x7D9B0000 was inherited here and made the UEFI
+  //            console draw into DRAM at 0x7D9B0000 -- invisible, while
+  //            "GOP FOUND + GOP 720 OK" still looked healthy.  The rest of the
+  //            inherited carveout stays reserved below so DXE never allocates
+  //            pool on top of the display pipe.
+  {"Display Reserved L", 0x7D9B0000, 0x012A0000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH}, // [INHERITED] rest of lancelot's carveout
+  {"Display Reserved",   0x7EC50000, 0x00FB0000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH}, // [MEASURED] dandelion panel
   {"TEE SecMem",         0x7FC00000, 0x00200000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_BACK}, // [INHERITED]
   {"SSPM Reserved",      0x7FF00000, 0x000C0000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_BACK}, // [INHERITED]
   {"SCP Reserved",       0x9F900000, 0x00600000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_BACK}, // [INHERITED]
