@@ -97,12 +97,21 @@
   # much of it to print.
   #
   # 0x80000040 = DEBUG_ERROR | DEBUG_INFO.  Bit definitions in MdePkg.dec
-  # (gEfiMdePkgTokenSpaceGuid.PcdDebugPrintErrorLevel).  INFO is what
-  # MdeModulePkg's EmmcDxe/SdMmc print for its identification steps, so keeping
-  # it is worth the noise; drop to 0x80000000 (errors only) if it scrolls too
-  # fast to photograph.
+  # (gEfiMdePkgTokenSpaceGuid.PcdDebugPrintErrorLevel).
   #
-  gEfiMdePkgTokenSpaceGuid.PcdDebugPrintErrorLevel|0x80000040
+  # 2026-10-29 04:xx: dropped INFO.  The console keeps only its last 68 lines, and
+  # Mu's memory-attribute code prints several dozen INFO lines ("Subsys type N
+  # with size 0x.. is added to 64-bit table") in the middle of the eMMC bring-up.
+  # Those lines pushed the only lines that matter -- the `ddn ...` register dumps,
+  # which are DEBUG_ERROR -- out of the window between the transfer failing and
+  # the photo being taken.  Every diagnostic this project added uses DEBUG_ERROR
+  # for exactly this reason, and EmmcDxe's own useful messages
+  # ("Found EMMC device", "Failed to detect card") are errors too.
+  #
+  # Put 0x80000040 back if some INFO line turns out to be the one that explains a
+  # failure; it is a single-character change and CI builds in six minutes.
+  #
+  gEfiMdePkgTokenSpaceGuid.PcdDebugPrintErrorLevel|0x80000000
 
 [LibraryClasses]
   #

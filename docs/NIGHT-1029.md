@@ -36,8 +36,8 @@ powershell -File tools\flash.ps1
 
 | 文件 | 大小 | sha256 |
 |---|---|---|
-| `SILICIUM_UEFI.fd` | 2,097,152 | `e62b3482…8e269` |
-| `boot-uefi-m5-dma.img` | 16,099,328 | `9ec78b55…0982c` |
+| `SILICIUM_UEFI.fd` | 2,097,152 | `14a921bc…aee1c` |
+| `boot-uefi-m5-dma.img` | 16,099,328 | `63338774…097f2` |
 
 恢复原厂：`powershell -File tools\flash.ps1 -Restore`
 （= `fastboot flash boot D:\aios\artifacts\boot_backup.img`）。
