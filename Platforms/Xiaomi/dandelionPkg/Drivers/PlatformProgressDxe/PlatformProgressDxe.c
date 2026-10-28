@@ -182,6 +182,35 @@ PlatformProgressDxeEntryPoint (
   // UniXNU.efi, DarwinBoot -- can print normally.
   //
   if (SystemTable->ConOut != NULL) {
+    EFI_HANDLE  *GopHandles;
+    UINTN       GopCount;
+    UINTN       Index;
+
+    GopHandles = NULL;
+    GopCount   = 0;
+
+    //
+    // Our Depex is TRUE so we run before GraphicsConsoleDxe has connected to
+    // the GOP, and ConSplitter therefore has no console child yet.  Connect it
+    // ourselves; after this the console really reaches the panel.
+    //
+    if (!EFI_ERROR (
+          gBS->LocateHandleBuffer (
+                 ByProtocol,
+                 &gEfiGraphicsOutputProtocolGuid,
+                 NULL,
+                 &GopCount,
+                 &GopHandles
+                 )
+          ))
+    {
+      for (Index = 0; Index < GopCount; Index++) {
+        gBS->ConnectController (GopHandles[Index], NULL, NULL, TRUE);
+      }
+
+      gBS->FreePool (GopHandles);
+    }
+
     SystemTable->ConOut->OutputString (
       SystemTable->ConOut,
       L"\r\n\r\nCONOUT REACHES PANEL\r\n"
