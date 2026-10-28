@@ -59,6 +59,8 @@
 #define DANDELION_FB_STRIDE  2944
 #define DANDELION_FB_WIDTH   720
 
+#include "DandelionFont.h"
+
 STATIC
 VOID
 DandelionPaintBand (
@@ -78,6 +80,58 @@ DandelionPaintBand (
   }
 }
 
+STATIC
+VOID
+DandelionFillRect (
+  UINTN   Left,
+  UINTN   Top,
+  UINTN   Width,
+  UINTN   Height,
+  UINT32  Color
+  )
+{
+  volatile UINT32  *Row;
+  UINTN            X;
+  UINTN            Y;
+
+  for (Y = Top; Y < Top + Height; Y++) {
+    Row = (volatile UINT32 *)(UINTN)(DANDELION_FB_BASE + Y * DANDELION_FB_STRIDE) + Left;
+    for (X = 0; X < Width; X++) {
+      Row[X] = Color;
+    }
+  }
+}
+
+STATIC
+VOID
+DandelionDrawString (
+  UINTN        X,
+  UINTN        Y,
+  CONST CHAR8  *Text,
+  UINT32       Fg,
+  UINT32       Bg
+  )
+{
+  volatile UINT32  *Row;
+  UINTN            Column;
+  UINTN            Line;
+  UINT8            Bits;
+
+  for ( ; *Text != '\0'; Text++, X += 8) {
+    if ((*Text < 0x20) || (*Text > 0x7E)) {
+      continue;
+    }
+
+    for (Line = 0; Line < 16; Line++) {
+      Bits = mDandelionFont8x16[*Text - 0x20][Line];
+      Row  = (volatile UINT32 *)(UINTN)(DANDELION_FB_BASE + (Y + Line) * DANDELION_FB_STRIDE) + X;
+      for (Column = 0; Column < 8; Column++) {
+        Row[Column] = (Bits & (0x80 >> Column)) ? Fg : Bg;
+      }
+    }
+  }
+}
+
 EFI_STATUS
 EFIAPI
 PlatformProgressDxeEntryPoint (
@@ -87,8 +141,18 @@ PlatformProgressDxeEntryPoint (
 {
   UINT32  Length;
 
-  // White band under PEI's blue one: "DXE dispatched us".
-  DandelionPaintBand (0x00FFFFFF, 64);
+  //
+  // Real text now: clear the top of the panel and write what we know.
+  // There is no GOP and no ConSplitter on this board yet, so this is the same
+  // direct framebuffer trick the bootshim uses -- and it means the DXE stage
+  // can report state without any console stack at all.
+  //
+  DandelionFillRect (0, 0, DANDELION_FB_WIDTH, 200, 0x00000000);
+  DandelionDrawString (16, 24,  "DANDELION UEFI", 0x00FFFFFF, 0x00000000);
+  DandelionDrawString (16, 56,  "DXE OK", 0x0000FF00, 0x00000000);
+  DandelionDrawString (16, 88,  (SystemTable->ConOut != NULL) ? "CONOUT YES" : "CONOUT NO", 0x00FFFF00, 0x00000000);
+  DandelionDrawString (16, 120, "FD 40080000", 0x00AAAAAA, 0x00000000);
+  DandelionPaintBand (0x00FFFFFF, 200);
 
   // Disarm first: WDT_MODE with only the key clears ENABLE.
   MmioWrite32 (TOPRGU_BASE + WDT_MODE_OFFSET, WDT_MODE_KEY);
