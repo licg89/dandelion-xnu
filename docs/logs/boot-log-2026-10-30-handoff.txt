@@ -1,0 +1,42 @@
+DANDELION UEFI
+CONSOLE OK 80x68
+Oct 29 2026 17:19:06
+SELFTEST 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZDIRECT CALL 0123456789COUT 0 50x19EMMC OK div=26 sec=0747C000
+INH C=02201A99 S=FF027FFC k=1 C'=02210499
+INH C13 I=00000100 R=00000900 st=4
+INH C8 I=00001100 rev=08 bw=06 hs=01 sec=0747C000
+INH B1 I=00001100 S=45464920
+
+MSDC PASSTHRU
+PWR PS=81FF0002 DAT=FF CMD=1 CD=1 VEMC=1 vsel=3 3000mV w=1 f=0 BUS OK
+INHERIT OK
+BLOCK OK n=44
+FAT OK
+PayloadBoot: device tree 127044 bytes published
+PayloadBoot: device tree published as an EFI configuration table
+PayloadBoot: firmware log handed over, 562 bytes
+PayloadBoot: firmware log published as an EFI configuration table
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (679 bytes)
+PayloadBoot: firmware log written to flash
+PayloadBoot: log flush on a 2 s timer
+PayloadBoot: looking for a payload (FAT, then flashinfo, then FV)
+PayloadBoot: found \UniXNU.efi
+DARWINBOOT: loader v2 installed EL1
+UniXNU dandelion  (UniXNU 0.1.0)                                               config: \EFI\UniXNU\unixnu.toml                                                drivers 2 loaded / 0 failed    kits 0    acpi 0                                 > 1. XNU (dandelion)  [xnu]                                                      2. Return to firmware  [action]                                                3. DarwinBoot (dandelion)  [efi]                                               4. Restart  [action]                                                        Up/Down: select    Enter: boot    1-9: boot entry    Esc: stop timer           Booting XNU (dandelion) in 3 s                                                 Booting XNU (dandelion) in 2 s                                                 Booting XNU (dandelion) in 1 s                                                 DARWINBOOT: ARM64 va=0xFFFFFFF007004000 pa=0x4D004000 args=0x4DEFC000 entry=0x4D3D7488 owned=0x10000000
+DARWINBOOT: video base=0x0 display=0 row=0 width=0 height=0 depth=0
+DARWINBOOT: command line: -v keepsyms=1 debug=0x144
+DARWINBOOT: inputs validated; exiting boot services
+DARWINBOOT: hand-off to the kernel
+
+kernel   va 0xFFFFFFF007004000  pa 0x4D004000
+entry    pa 0x4D3D7488
+args     pa 0x4DEFC000  window 0x10000000 bytes
+video    base 0x0  0x0  row 0 bytes  0 bpp
+entry words D2ABF7C9 5280002A B900012A D2AFD8A9
+CurrentEL 1  SCTLR_EL1 0x30D0180D  TCR_EL1 0x280803518
+ID_AA64MMFR0_EL1 0x1122  (PARange 2, 4 KiB granule supported)
+ID_AA64PFR0_EL1  0x1002222
+
+Exiting boot services. A green bar across the top
+marks the loader handoff before the kernel branch.

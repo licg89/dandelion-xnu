@@ -403,3 +403,81 @@ MT8167  MT6833  MT6991  MT6765  MT6878  MT6768  MT6835  MT6993
 `unixnu` 在 Linux 上是能跑内核那一步的（`scripts/linux/setup-toolchain.py`），
 只有 `--skip-setup` 和 `seed-data-grow` 需要 macOS 的 `hdiutil`。
 也就是说**「必须 macOS」这条限制比我先前说的更宽松**。
+---
+
+## 10. 控制权交到 XNU 手里了（2026-10-30 01:2x）
+
+加了两件工具之后，`ExitBootServices` 之前的最后一段也能落盘了：
+
+1. **`EVT_SIGNAL_EXIT_BOOT_SERVICES` 回调** —— 在 `ExitBootServices` 内部、Boot Services
+   还能用的最后一刻刷一次日志（心跳定时器到那一刻就死了）；
+2. **DarwinBoot 补丁**（`tools/patch_darwinboot.py`）—— 把它的诊断同时 `Print` 到 ConOut，
+   因为 `DiagDraw` 画的 framebuffer 行会被 UniXNU 的重绘抹掉。
+
+于是日志第一次完整记下了跳转前的现场
+（[logs/boot-log-2026-10-30-handoff.txt](logs/boot-log-2026-10-30-handoff.txt)）：
+
+```
+PayloadBoot: found \UniXNU.efi
+DARWINBOOT: loader v2 installed EL1
+UniXNU dandelion (UniXNU 0.1.0) / config: \EFI\UniXNU\unixnu.toml
+drivers 2 loaded / 0 failed
+Booting XNU (dandelion) in 3 s / 2 s / 1 s
+DARWINBOOT: ARM64 va=0xFFFFFFF007004000 pa=0x4D004000 args=0x4DEFC000 entry=0x4D3D7488 owned=0x10000000
+DARWINBOOT: video base=0x0 display=0 row=0 width=0 height=0 depth=0
+DARWINBOOT: command line: -v keepsyms=1 debug=0x144
+DARWINBOOT: inputs validated; exiting boot services
+DARWINBOOT: hand-off to the kernel
+
+kernel   va 0xFFFFFFF007004000  pa 0x4D004000
+entry    pa 0x4D3D7488
+args     pa 0x4DEFC000  window 0x10000000 bytes
+video    base 0x0  0x0  row 0 bytes  0 bpp
+entry words D2ABF7C9 5280002A B900012A D2AFD8A9
+CurrentEL 1  SCTLR_EL1 0x30D0180D  TCR_EL1 0x280803518
+ID_AA64MMFR0_EL1 0x1122  (PARange 2, 4 KiB granule supported)
+ID_AA64PFR0_EL1  0x1002222
+```
+
+逐条读：
+
+| 读数 | 含义 |
+|---|---|
+| `va 0xFFFFFFF007004000 pa 0x4D004000` | 内核被搬到 **`0x4D004000`** —— 正是我们新声明的那 561 MiB `DRAM Low Conv` 区域里 ✓ 内存图那一改起了作用 |
+| `args 0x4DEFC000 window 0x10000000` | 256 MiB 窗口分配成功 ✓ |
+| `command line: -v keepsyms=1 debug=0x144` | **`UniXNU.toml` 里写的 `args` 真的进了内核命令行** ✓ |
+| `entry pa 0x4D3D7488` + `entry words` | 入口地址处是合理的 ARM64 指令 |
+| `CurrentEL 1` / `PARange 2 (40-bit)` / `4 KiB granule` | 交付时的 EL 与 MMU 参数 |
+| `inputs validated; exiting boot services` → `hand-off to the kernel` | **DarwinBoot 走完了全部检查并跳转** |
+| **`video base=0x0 … depth=0`** | ❗**没有交出显示** —— XNU 现在没有可画的 framebuffer |
+
+### 10.1 这意味着什么
+
+**从 LK 到 XNU 的整条链，今晚第一次走通了：**
+
+```
+LK → BootShim → UEFI(DXE) → eMMC BlockIo → FAT(flashinfo) → UniXNU
+   → UniXNUDxe(loader 协议) → DarwinBoot → 内存窗口 → ExitBootServices → 跳转
+```
+
+`boot refused` 和 `returned:` 都消失了，日志以 `hand-off to the kernel` 结束。
+参考实现（merlinx, MT6768）也是走到这一步之后才开始调内核的。
+
+### 10.2 下一个问题：XNU 没有输出通道
+
+两个具体缺口，按可做性排序：
+
+1. **`video base=0x0`** —— DarwinBoot 的视频交接没成功。它那条路径是**从文件读视频 blob**
+   （日志里 `DARWINBOOT: %s attr %lx size %lu limit %lu` 读的是 `EFI_FILE_INFO`），
+   上游对应的组件是 `GopFramebuffer`（"Mobile display and GPU scanout hand-off"）。
+   补上它，XNU 才有可能往面板上画。
+2. **XNU 侧的串口/日志 vtable** —— line A 已经设计过：
+   [UNIXNU-EMMC-CONSOLE.md](UNIXNU-EMMC-CONSOLE.md) 里把 `pexpert/arm/pe_serial.c`
+   接到我们自己的 eMMC 日志通道上。**这条路不依赖任何缺失输入，是我们独有的优势**：
+   XNU 一开口就能写进 `flashinfo`，`adb pull` 就能读。
+
+### 10.3 顺带记下的两个工具
+
+- **心跳 flush（2 秒）** + **EBS 时最后一次 flush** —— payload 无论卡住还是跳走，日志都保得住；
+- **静默心跳** —— 定时 flush 不再打印，否则它会把 DarwinBoot 画在 framebuffer 第 0..7 行的诊断擦掉
+  （这个坑踩了两次：第一次被自己的 flush 擦，第二次被 UniXNU 的重绘擦）。

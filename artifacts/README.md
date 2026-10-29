@@ -8,7 +8,7 @@ checkout 完整复现。构建与打包的完整环境见
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
-| `boot-uefi-mem.img` | 16,099,328 B | **当前上机版**：`flashinfo` = **15.875 MiB FAT 卷**（`\UniXNU.efi`、`\EFI\UniXNU\` 全套、**`kernel.macho` 14.2 MiB**）+ 日志块挪到 +15872 KiB；`UniXNU.efi` 同时以 FFS 文件进固件卷；启动项第一条是 `type = "xnu"` |
+| `boot-uefi-ebs.img` | 16,099,328 B | **当前上机版**：`flashinfo` = **15.875 MiB FAT 卷**（`\UniXNU.efi`、`\EFI\UniXNU\` 全套、**`kernel.macho` 14.2 MiB**）+ 日志块挪到 +15872 KiB；`UniXNU.efi` 同时以 FFS 文件进固件卷；启动项第一条是 `type = "xnu"` |
 | `panel-preview.png` | 720×1600 | `tools/render_panel_preview.py` 渲染的仪表区，**不用刷机就能看布局** |
 
 > 更早的几版（`boot-uefi-inh.img`、`boot-uefi-pv.img`、`boot-uefi-state.img`、
@@ -18,8 +18,8 @@ checkout 完整复现。构建与打包的完整环境见
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-200000c8e31ef99f1e1115b0b16d5fa67845849505ac695edbd2555e9b3f671b  SILICIUM_UEFI.fd
-533f78034e9a2eee82d81f2689f809bd2074f89d78083612918ee26184329a11  boot-uefi-mem.img
+412a48bf49d4f5f7fb9dcfc97e2143eafb14056ec0fc7f8c2a9a55fa4d6d0128  SILICIUM_UEFI.fd
+cce64a95f97becfdb72adfe22371cea49fd6bd0f26f6a904d3d49bb6ce5a573c  boot-uefi-ebs.img
 ```
 
 ## 这一版是什么（2026-10-29 21:2x，第十四版）——eMMC 读写全开，日志落盘
