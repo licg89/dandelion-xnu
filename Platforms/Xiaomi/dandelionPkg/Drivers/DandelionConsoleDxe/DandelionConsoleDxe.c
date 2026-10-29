@@ -55,6 +55,18 @@
 //
 #define DANDELION_CLEAR_ROWS  68
 
+//
+// Stringize the geometry so the header line cannot drift away from QueryMode().
+// It did: the line used to be a hand-written "CONSOLE OK 90x100", i.e. 100 rows,
+// which is DANDELION_ROWS (the whole framebuffer divided by the cell height) and
+// not the 68 rows the text area actually has.  Nothing broke, because
+// QueryMode() and PcdConOutColumn/PcdConOutRow both say 90x68 -- but a log line
+// that disagrees with the firmware is exactly the kind of thing that costs an
+// hour later.
+//
+#define DANDELION_WIDE_(x)  L ## #x
+#define DANDELION_WIDE(x)   DANDELION_WIDE_ (x)
+
 STATIC EFI_SIMPLE_TEXT_OUTPUT_MODE  mMode = {
   1,                // MaxMode
   0,                // Mode
@@ -650,7 +662,10 @@ DandelionConsoleDxeEntryPoint (
   mMode.CursorColumn = 0;
   mMode.CursorRow    = 0;
   DandelionOutputString (&mTextOut, L"DANDELION UEFI\r\n");
-  DandelionOutputString (&mTextOut, L"CONSOLE OK 90x100\r\n");
+  DandelionOutputString (
+    &mTextOut,
+    L"CONSOLE OK " DANDELION_WIDE (DANDELION_COLS) L"x" DANDELION_WIDE (DANDELION_CLEAR_ROWS) L"\r\n"
+    );
 
   //
   // Build stamp.

@@ -423,6 +423,7 @@ PublishDeviceTree (
   VOID                          *Blob;
   UINTN                         BlobSize;
   UINT32                        AuthenticationStatus;
+  UINT32                        Magic;
 
   Handles     = NULL;
   HandleCount = 0;
@@ -464,8 +465,19 @@ PublishDeviceTree (
     // shipping one that does not is worse than shipping none: every consumer
     // would fail somewhere far away from here.
     //
-    if (*(volatile UINT32 *)Blob != 0xD00DFEED) {
-      DEBUG ((DEBUG_ERROR, "PayloadBoot: FV device tree has a bad magic %08x\n", *(volatile UINT32 *)Blob));
+    // Read it byte by byte.  This used to be `*(volatile UINT32 *)Blob !=
+    // 0xD00DFEED`, which is a *little-endian* load of the four bytes D0 0D FE ED
+    // and therefore compares 0xEDFE0DD0 against 0xD00DFEED -- always false.  The
+    // device tree was never published, and the only trace was the log line
+    // `FV device tree has a bad magic EDFE0DD0`, whose two halves are the same
+    // number backwards.
+    //
+    Magic = ((UINT32)((UINT8 *)Blob)[0] << 24) |
+            ((UINT32)((UINT8 *)Blob)[1] << 16) |
+            ((UINT32)((UINT8 *)Blob)[2] << 8) |
+            (UINT32)((UINT8 *)Blob)[3];
+    if (Magic != 0xD00DFEEDu) {
+      DEBUG ((DEBUG_ERROR, "PayloadBoot: FV device tree has a bad magic %08x\n", Magic));
       continue;
     }
 
@@ -990,6 +1002,213 @@ FreezeConsole (
   }
 }
 
+/*
+  A payload that lives on the medium rather than in the firmware volume.
+
+  Why this exists: the FV has about 1.4 MiB of room left and the payload this
+  project is actually waiting for -- UniXNU.efi -- will not fit there together
+  with anything else.  The phone's own partitions cannot be used either: they are
+  ext4/f2fs, and EDK2 has no ext4 driver ("FAT NONE" in the log is that fact, not
+  a bug).  The one partition Android does not use is 'flashinfo', 16 MiB, and the
+  firmware already writes its log into it at +1 MiB.
+
+  So the payload goes at +2 MiB in the same partition, behind an eight-byte magic
+  and a length, and gets dropped in with adb from Android:
+
+      python tools/put_flash_payload.py UniXNU.efi -o out\payload.bin
+      adb push out\payload.bin /sdcard/payload.bin
+      adb shell su -c "dd if=/sdcard/payload.bin of=/dev/block/by-name/flashinfo bs=512 seek=4096 conv=notrunc"
+
+  The header is not decoration.  `LoadImage` needs the exact image size, and a PE
+  file does not carry one that can be trusted for that, so the sender states it
+  and a checksum proves the bytes survived the trip.
+*/
+#define PAYLOAD_FROM_FLASH_MAGIC   "DDNPAY01"
+#define PAYLOAD_FROM_FLASH_OFFSET  4096u        /* +2 MiB, log is at +1 MiB   */
+#define PAYLOAD_FROM_FLASH_MAX     (12u * 1024u * 1024u)
+
+/**
+  Find the 'flashinfo' partition on any whole-disk BlockIo handle.
+
+  Its own copy of the GPT walk rather than a refactor of FlushLogToFlash()'s: that
+  path is proven on hardware now, and the thing being added here is a fallback.
+  Folding the two together is a tidy-up, not a step towards M6.
+**/
+STATIC
+BOOLEAN
+FindFlashInfo (
+  OUT EFI_BLOCK_IO_PROTOCOL  **OutIo,
+  OUT EFI_LBA                *OutStart,
+  OUT EFI_LBA                *OutLast
+  )
+{
+  EFI_STATUS             Status;
+  EFI_HANDLE             *Handles;
+  UINTN                  HandleCount;
+  UINTN                  Index;
+  EFI_BLOCK_IO_PROTOCOL  *BlockIo;
+  UINT8                  Header[512];
+  UINT8                  *Table;
+  UINTN                  TableSize;
+  UINT32                 EntryCount;
+  UINT32                 EntrySize;
+  UINT32                 Walk;
+
+  Handles     = NULL;
+  HandleCount = 0;
+
+  Status = gBS->LocateHandleBuffer (ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &HandleCount, &Handles);
+  if (EFI_ERROR (Status)) {
+    return FALSE;
+  }
+
+  for (Index = 0; Index < HandleCount; Index++) {
+    if (EFI_ERROR (gBS->HandleProtocol (Handles[Index], &gEfiBlockIoProtocolGuid, (VOID **)&BlockIo))) {
+      continue;
+    }
+
+    if ((BlockIo->Media == NULL) || !BlockIo->Media->MediaPresent ||
+        BlockIo->Media->LogicalPartition || (BlockIo->Media->BlockSize != 512))
+    {
+      continue;
+    }
+
+    if (EFI_ERROR (BlockIo->ReadBlocks (BlockIo, BlockIo->Media->MediaId, 1, 512, Header))) {
+      continue;
+    }
+
+    if (CompareMem (Header, "EFI PART", 8) != 0) {
+      continue;
+    }
+
+    EntryCount = ReadLe32 (Header + 80);
+    EntrySize  = ReadLe32 (Header + 84);
+    if ((EntryCount == 0) || (EntryCount > 128) || (EntrySize < 128) || (EntrySize > 512)) {
+      continue;
+    }
+
+    TableSize = EntryCount * EntrySize;
+    TableSize = (TableSize + 511) & ~(UINTN)511;
+    Table     = NULL;
+    if (EFI_ERROR (gBS->AllocatePool (EfiBootServicesData, TableSize, (VOID **)&Table))) {
+      continue;
+    }
+
+    if (EFI_ERROR (BlockIo->ReadBlocks (
+                            BlockIo,
+                            BlockIo->Media->MediaId,
+                            (EFI_LBA)ReadLe64 (Header + 72),
+                            TableSize,
+                            Table
+                            )))
+    {
+      gBS->FreePool (Table);
+      continue;
+    }
+
+    for (Walk = 0; Walk < EntryCount; Walk++) {
+      if (!PartitionNameEquals (Table + Walk * EntrySize, LOG_PARTITION_NAME)) {
+        continue;
+      }
+
+      *OutIo    = BlockIo;
+      *OutStart = (EFI_LBA)ReadLe64 (Table + Walk * EntrySize + 32);
+      *OutLast  = (EFI_LBA)ReadLe64 (Table + Walk * EntrySize + 40);
+      gBS->FreePool (Table);
+      return (BOOLEAN)(*OutLast > *OutStart);
+    }
+
+    gBS->FreePool (Table);
+  }
+
+  return FALSE;
+}
+
+STATIC
+EFI_STATUS
+TryFlashPayload (
+  VOID
+  )
+{
+  EFI_BLOCK_IO_PROTOCOL  *BlockIo;
+  EFI_LBA                Start;
+  EFI_LBA                Last;
+  EFI_LBA                Target;
+  UINT8                  Header[512];
+  UINT32                 Size;
+  UINT32                 WantSum;
+  UINT32                 Sum;
+  UINT32                 Index;
+  UINTN                  Sectors;
+  UINT8                  *Image;
+  EFI_STATUS             Status;
+
+  if (!FindFlashInfo (&BlockIo, &Start, &Last)) {
+    return EFI_NOT_FOUND;
+  }
+
+  Target = Start + PAYLOAD_FROM_FLASH_OFFSET;
+  if ((Target + 2) >= Last) {
+    return EFI_NOT_FOUND;
+  }
+
+  if (EFI_ERROR (BlockIo->ReadBlocks (BlockIo, BlockIo->Media->MediaId, Target, 512, Header))) {
+    return EFI_NOT_FOUND;
+  }
+
+  if (CompareMem (Header, PAYLOAD_FROM_FLASH_MAGIC, 8) != 0) {
+    return EFI_NOT_FOUND;
+  }
+
+  Size    = ReadLe32 (Header + 8);
+  WantSum = ReadLe32 (Header + 12);
+  if ((Size < 64) || (Size > PAYLOAD_FROM_FLASH_MAX)) {
+    Say (L"PayloadBoot: flash payload has a bad size\r\n");
+    return EFI_NOT_FOUND;
+  }
+
+  Sectors = ((UINTN)Size + 511) / 512;
+  if ((Target + 1 + Sectors) > Last) {
+    Say (L"PayloadBoot: flash payload runs past the partition\r\n");
+    return EFI_NOT_FOUND;
+  }
+
+  Image = NULL;
+  Status = gBS->AllocatePool (EfiBootServicesData, Sectors * 512, (VOID **)&Image);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  if (EFI_ERROR (BlockIo->ReadBlocks (
+                          BlockIo,
+                          BlockIo->Media->MediaId,
+                          Target + 1,
+                          Sectors * 512,
+                          Image
+                          )))
+  {
+    Say (L"PayloadBoot: flash payload read failed\r\n");
+    return EFI_NOT_FOUND;
+  }
+
+  //
+  // The same cheap integrity check the log block uses, for the same reason: a
+  // read that silently returns garbage is the failure mode this bus produces.
+  //
+  Sum = 0;
+  for (Index = 0; Index < Size; Index++) {
+    Sum = Sum * 31 + Image[Index];
+  }
+
+  if (Sum != WantSum) {
+    Say (L"PayloadBoot: flash payload checksum mismatch\r\n");
+    return EFI_NOT_FOUND;
+  }
+
+  Say (L"PayloadBoot: using the payload from flashinfo\r\n");
+  return StartFromBuffer (Image, Size);
+}
+
 EFI_STATUS
 EFIAPI
 PayloadBootEntryPoint (
@@ -1029,9 +1248,13 @@ PayloadBootEntryPoint (
     Say (L"PayloadBoot: firmware log written to flash\r\n");
   }
 
-  Say (L"PayloadBoot: looking for a payload (FAT first, then FV)\r\n");
+  Say (L"PayloadBoot: looking for a payload (FAT, then flashinfo, then FV)\r\n");
 
   Status = TryFileSystem (&WhichName);
+  if (Status == EFI_NOT_FOUND) {
+    Status = TryFlashPayload ();
+  }
+
   if (Status == EFI_NOT_FOUND) {
     Status = TryFirmwareVolume ();
   }
@@ -1043,12 +1266,19 @@ PayloadBootEntryPoint (
     // "payload ran and failed".
     //
     PaintBar (PAYLOAD_BAR_FAIL);
-    Say (L"PayloadBoot: no payload found (this is expected before M4/M5)\r\n");
+    Say (L"PayloadBoot: no payload found\r\n");
+    //
+    // Flush again: the first flush happens before the search, so without this
+    // the log on flash can never contain the search's own verdict.  Same span,
+    // same magic, so it simply replaces the earlier block.
+    //
+    (VOID)FlushLogToFlash ();
     FreezeConsole ();
     return EFI_SUCCESS;
   }
 
   PaintBar (PAYLOAD_BAR_OK);
+  (VOID)FlushLogToFlash ();
   FreezeConsole ();
   return EFI_SUCCESS;
 }
