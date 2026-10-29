@@ -596,7 +596,7 @@ if ((dl_emmc_rd(DL_MSDC_CFG) & DL_CFG_CKSTB) == 0) printf("eMMC log: no MSDC clo
 
 ### 13.1 事实
 
-连续四次刷机（`boot-uefi-handoff.img` → `handoff2` → `handoff3`），固件日志都是
+连续四次刷机（`boot-uefi-redband.img` → `handoff2` → `handoff3`），固件日志都是
 **恰好 2673 字节**，且 `PublishEmmcHandoff()` 的日志行（连后来加的**无条件**那一行）
 一次都没出现。
 
