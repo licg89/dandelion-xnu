@@ -7,7 +7,54 @@
 
 ---
 
-## ★ 最新结论（2026-10-29 21:2x）——M4 完成，日志不再靠拍照
+## ★ 最新结论（2026-10-29 21:4x）——日志可读之后，四个 bug 自己浮出来了
+
+有了落盘日志（[logs/boot-log-2026-10-29-flash-payload.txt](logs/boot-log-2026-10-29-flash-payload.txt)，
+26 行，之前面板一张照片只能看到 68 行里的尾巴）立刻抓到四件事：
+
+```
+CONSOLE OK (720 / 8)x68
+BLOCK OK n=44
+FAT NONE
+PayloadBoot: device tree 127044 bytes published          ← 修好了，之前永远失败
+PayloadBoot: replacing the previous log at LBA 122111967 ← 日志可覆盖
+PayloadBoot: using the payload from flashinfo            ← payload 从介质加载
+PAYLOAD OK - the load/start path works
+```
+
+1. **device tree 从来没有发布过。** 校验写的是 `*(volatile UINT32 *)Blob != 0xD00DFEED`，
+   这是把字节 `D0 0D FE ED` **按小端**读成 `0xEDFE0DD0` —— 和常量恰好互为字节序颠倒，
+   永远不等。日志里那句 `bad magic EDFE0DD0` 一直是对的，只是没人读得到。
+   DarwinBoot / UniXNU 靠 `gFdtTableGuid` 找设备树，所以这是 M6 的硬前提。
+2. **payload 可以放在 `flashinfo + 2 MiB`。** FV 只剩 ~1.4 MiB，`UniXNU.efi` 塞不进；
+   手机分区是 ext4/f2fs，EDK2 读不了（`FAT NONE` 就是这个事实）。
+   查找顺序 **FAT → flashinfo → FV**，工具是 `tools/put_flash_payload.py`。
+3. **日志刷两次。** 第一次在 payload 之前（payload 可能卡住），第二次在 payload 返回之后，
+   否则日志里永远没有"payload 从哪来、成没成"。
+4. `CONSOLE OK 90x100` 是过期字面量（真实 90×68），改成运行时按 `QueryMode()` 同一批常量算。
+
+### 读日志的循环（不再拍照）
+
+```powershell
+powershell -File tools\flash.ps1                       # 1) 刷 UEFI 跑一轮
+# 2) 跑完按住 音量下+电源 进 fastboot，刷回原厂 boot 进 Android
+fastboot flash boot D:\aios\artifacts\boot_backup.img ; fastboot reboot
+# 3) 拉 flashinfo 并解码（拿到整个 64 KiB 环形日志）
+adb shell su -c "dd if=/dev/block/by-name/flashinfo of=/sdcard/fi.img bs=4096"
+adb pull /sdcard/fi.img out\fi.img
+python tools\extract_log_block.py out\fi.img --out out\last-boot.log --verbose
+```
+
+### 仍然待办
+
+| | |
+|---|---|
+| M6 DarwinBoot → XNU | ⬜ 缺外部产物（`UniXNU.efi` / `UniXNUDxe` / `DarwinBoot` / `UniXNURamDiskDxe`）。**投递通道已经通了**：产物一到，`tools/put_flash_payload.py` 推进 `flashinfo` 就能启动 |
+| `flashinfo` 里建 FAT | 想要 `FAT OK` 就得有 FAT 卷；但 `flashinfo` 前 64 KiB 是 MTK 的 `DOWNLOAD INFORMATION` 记录，别动 |
+
+---
+
+## ★ 更早一版（2026-10-29 21:2x）——M4 完成，日志不再靠拍照
 
 **eMMC 读写已全通，日志已经落盘。** 第一次成功取回的完整启动日志在
 [logs/boot-log-2026-10-29-first.txt](logs/boot-log-2026-10-29-first.txt)

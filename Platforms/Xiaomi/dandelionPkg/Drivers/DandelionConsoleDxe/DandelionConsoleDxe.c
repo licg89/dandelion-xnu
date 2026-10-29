@@ -56,16 +56,37 @@
 #define DANDELION_CLEAR_ROWS  68
 
 //
-// Stringize the geometry so the header line cannot drift away from QueryMode().
-// It did: the line used to be a hand-written "CONSOLE OK 90x100", i.e. 100 rows,
-// which is DANDELION_ROWS (the whole framebuffer divided by the cell height) and
-// not the 68 rows the text area actually has.  Nothing broke, because
-// QueryMode() and PcdConOutColumn/PcdConOutRow both say 90x68 -- but a log line
-// that disagrees with the firmware is exactly the kind of thing that costs an
-// hour later.
+// The header line reports the geometry QueryMode() returns, computed at run time.
+// It used to be a hand-written "CONSOLE OK 90x100" -- 100 is DANDELION_ROWS (the
+// whole framebuffer over the cell height), not the 68 rows the text area has.
+// Nothing broke, because QueryMode() and PcdConOutColumn/PcdConOutRow both say
+// 90x68, but a log line that contradicts the firmware costs an hour the day
+// someone trusts it.  Stringizing the macros does not work either: DANDELION_COLS
+// is an expression, so it expands to the text "(720 / 8)".  Hence a real format.
 //
-#define DANDELION_WIDE_(x)  L ## #x
-#define DANDELION_WIDE(x)   DANDELION_WIDE_ (x)
+STATIC
+UINTN
+AppendUint (
+  IN OUT CHAR16  *Out,
+  IN     UINTN   At,
+  IN     UINTN   Value
+  )
+{
+  CHAR16  Digits[12];
+  UINTN   Count;
+
+  Count = 0;
+  do {
+    Digits[Count++] = (CHAR16)(L'0' + (Value % 10));
+    Value /= 10;
+  } while (Value != 0);
+
+  while (Count > 0) {
+    Out[At++] = Digits[--Count];
+  }
+
+  return At;
+}
 
 STATIC EFI_SIMPLE_TEXT_OUTPUT_MODE  mMode = {
   1,                // MaxMode
@@ -662,10 +683,25 @@ DandelionConsoleDxeEntryPoint (
   mMode.CursorColumn = 0;
   mMode.CursorRow    = 0;
   DandelionOutputString (&mTextOut, L"DANDELION UEFI\r\n");
-  DandelionOutputString (
-    &mTextOut,
-    L"CONSOLE OK " DANDELION_WIDE (DANDELION_COLS) L"x" DANDELION_WIDE (DANDELION_CLEAR_ROWS) L"\r\n"
-    );
+  {
+    STATIC CONST CHAR16  Head[] = L"CONSOLE OK ";
+    CHAR16               Line[32];
+    UINTN                At;
+    UINTN                Index;
+
+    At = 0;
+    for (Index = 0; Head[Index] != L'\0'; Index++) {
+      Line[At++] = Head[Index];
+    }
+
+    At           = AppendUint (Line, At, DANDELION_COLS);
+    Line[At++]   = L'x';
+    At           = AppendUint (Line, At, DANDELION_CLEAR_ROWS);
+    Line[At++]   = L'\r';
+    Line[At++]   = L'\n';
+    Line[At]     = L'\0';
+    DandelionOutputString (&mTextOut, Line);
+  }
 
   //
   // Build stamp.
