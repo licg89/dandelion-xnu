@@ -1,6 +1,6 @@
 # 对照 merlinx（MT6768/MT6769Z，Redmi Note 9）：我们缺什么、我们有什么
 
-来源：`Dracen-W/UniXNU-merlinx` 分支 `merlinx-work` 的 `docs/devices/merlinx.md`，
+来源：[Dracen-W/UniXNU-merlinx](https://github.com/Dracen-W/UniXNU-merlinx) 分支 `merlinx-work` 的
 2026-10-30 读取。**它是目前最接近我们的参考实现** —— 同为小米、同为 MT676x 家族、
 同一套 MTK LK 引导链、同样没有 UART。
 
