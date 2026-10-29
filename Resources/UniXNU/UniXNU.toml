@@ -1,14 +1,23 @@
-# Runtime configuration for UniXNU, placed at \EFI\UniXNU\UniXNU.toml on the
-# volume UniXNU boots from.
+# Runtime configuration for UniXNU, placed at \EFI\UniXNU\UniXNU.toml on the FAT
+# volume the firmware puts at the start of the 'flashinfo' partition.
 #
 # Schema read from package/UniXNUPkg/Library/UniXNULib/Config.c: the file is
-# looked for in \EFI\UniXNU on a volume, every [[entry]] takes id / title / type
-# / action / path / args / confirm / initrd / dtb, `path` is relative to
-# \EFI\UniXNU, and `type` defaults to "efi".
+# looked for in \EFI\UniXNU on a volume; [[entry]] takes id / title / type /
+# action / path / args / confirm / initrd / dtb with `path` relative to
+# \EFI\UniXNU and `type` defaulting to "efi"; [[driver]] takes path / args /
+# connect / enabled (AddDriver, Config.c ~560).
 #
-# The built-in configuration this replaces is mBuiltinConfig in Config.c, which
-# is why the first running image said "no boot entry found": with no volume
-# there was no file, so UniXNU fell back to four actions and exited.
+# Entry order is deliberate.  UniXNU's UI does not go through our ConOut -- it
+# has its own font and draws GOP directly -- but everything it says through
+# UniXNULog does.  PayloadBootDxe flushes the log again after StartImage
+# returns, so if UniXNU parks at a menu waiting for a key, its messages never
+# reach the medium and the only way to read them is a photograph.
+#
+# Entry 1 is therefore "exit": after the timeout UniXNU returns to the firmware,
+# StartImage returns, and the second flush writes UniXNU's own log into flash.
+# DarwinBoot moves to entry 2 -- it has already been proven to load and return
+# Success (docs/M6-UNIXNU.md section 6), and proving it again is not worth losing
+# the log channel for.
 
 version = 1
 
@@ -18,6 +27,18 @@ rotate = 0
 
 [ui]
 title = "UniXNU dandelion"
+
+# UniXNUDxe installs the XNU loader protocol that DarwinBoot asks for.  Without
+# it Boot.c reports "xnu: no loader protocol installed; UniXNU does not provide
+# one", which is exactly what "drivers 0 loaded / 0 failed" on the panel meant.
+[[driver]]
+path = "UniXNUDxe.efi"
+
+[[entry]]
+id = "exit"
+title = "Return to firmware"
+type = "action"
+action = "exit"
 
 # The real thing eventually: DarwinBoot takes these arguments, builds XNU's
 # command line, paints a green bar at the top of the screen and branches to the
@@ -29,12 +50,6 @@ title = "DarwinBoot (dandelion)"
 type = "efi"
 path = "DarwinBoot.efi"
 args = "-v keepsyms=1 debug=0x144"
-
-[[entry]]
-id = "exit"
-title = "Return to firmware"
-type = "action"
-action = "exit"
 
 [[entry]]
 id = "reset"

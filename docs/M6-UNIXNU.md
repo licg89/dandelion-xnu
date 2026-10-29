@@ -177,3 +177,18 @@ PayloadBoot: firmware log published as an EFI configuration table
 
 不是功能阻塞项：菜单、启动项、`returned: Success` 都正常。但**在看 XNU 自己的控制台之前
 必须解决**，因为 XNU 也会按它看到的宽度排版。
+### 6.3 让日志能记到 UniXNU 自己的话
+
+UniXNU 的 **UI** 不走我们的 ConOut（它有自己的字体、直接画 GOP），所以列宽改不动它。
+但它的 **`UniXNULog` 走 ConOut** —— 也就是说，**只要它肯返回，它说的话就能进日志**。
+
+问题在于它起完一个启动项后会停在菜单等人按键，`StartImage` 不返回，`PayloadBootDxe`
+的第二次 flush 就永远轮不到。于是把配置改成：
+
+- `[[entry]]` 第 1 项 = `action = "exit"`（超时 3 秒自己返回固件）→ 第二次 flush 生效；
+- DarwinBoot 挪到第 2 项（它已经被证明能加载并返回 Success，再证明一次不值得用日志通道去换）；
+- 新增 `[[driver]] path = "UniXNUDxe.efi"` —— 这正是 `Boot.c:60` 那句
+  `xnu: no loader protocol installed; UniXNU does not provide one` 对应的驱动，
+  面板上的 `drivers 0 loaded / 0 failed` 就是「一个都没配」的意思。
+
+这一步只改 U 盘（FAT 卷），**不用重编固件**。
