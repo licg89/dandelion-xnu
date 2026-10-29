@@ -48,6 +48,11 @@
 // and docs/research/mtk-msdc-pio.md section 1.2.
 //
 #define MSDC0_BASE          0x11230000ULL
+//
+// The console framebuffer, so this driver can paint one progress bar without
+// needing GOP or ConOut (neither of which exists when it runs).
+//
+#define MSDC0_BASE_FB       0x7EC50000ULL
 #define R_CFG               0x000u
 #define R_PS                0x008u
 #define R_INT               0x00Cu
@@ -424,6 +429,51 @@ Stop:
   return Ok;
 }
 
+//
+// A one-pixel-per-something progress bar for reads, because the interesting
+// question right now is not "does BlockIo work" (it does) but "how far did the
+// 14.8 MB kernel read get before the machine stopped making progress".
+//
+// y 1092..1098 is between DandelionConsoleDxe's text area (rows 0..67, i.e.
+// y 0..1087) and the banner strip at 1100, so nothing overwrites it and it does
+// not cost a line of the scarce text area.
+//
+#define EMMC_BAR_TOP     1092u
+#define EMMC_BAR_BOTTOM  1099u
+#define EMMC_BAR_WIDTH   720u
+#define EMMC_BAR_PIXELS_PER_MIB  45u
+
+STATIC UINT64  mBytesRead;
+
+STATIC
+VOID
+EmmcPaintReadBar (
+  VOID
+  )
+{
+  volatile UINT32  *Row;
+  UINTN            Y;
+  UINTN            X;
+  UINTN            Lit;
+
+  Lit = (UINTN)((mBytesRead * EMMC_BAR_PIXELS_PER_MIB) >> 20);
+  if (Lit > EMMC_BAR_WIDTH) {
+    Lit = EMMC_BAR_WIDTH;
+  }
+
+  for (Y = EMMC_BAR_TOP; Y < EMMC_BAR_BOTTOM; Y++) {
+    Row = (volatile UINT32 *)(UINTN)(MSDC0_BASE_FB + (UINT64)Y * 2944);
+
+    for (X = 0; X < EMMC_BAR_WIDTH; X++) {
+      if (mBytesRead >= (15ULL << 20)) {
+        Row[X] = 0x0000FF00;
+      } else {
+        Row[X] = (X < Lit) ? 0x00FFFF00 : 0x00101010;
+      }
+    }
+  }
+}
+
 STATIC
 BOOLEAN
 ReadSectors (
@@ -443,6 +493,9 @@ ReadSectors (
     if (!DataXfer ((Blocks > 1) ? CMD18_W : CMD17_W, (UINT32)Lba, mBounce, Blocks, FALSE)) {
       return FALSE;
     }
+
+    mBytesRead += Blocks * BLOCK_SIZE;
+    EmmcPaintReadBar ();
 
     CopyMem (Buffer, mBounce, Blocks * BLOCK_SIZE);
     Lba   += Blocks;
@@ -524,7 +577,11 @@ EmmcReadBlocks (
     return EFI_INVALID_PARAMETER;
   }
 
-  return ReadSectors (Lba, Buffer, BufferSize) ? EFI_SUCCESS : EFI_DEVICE_ERROR;
+  if (!ReadSectors (Lba, Buffer, BufferSize)) {
+    return EFI_DEVICE_ERROR;
+  }
+
+  return EFI_SUCCESS;
 }
 
 STATIC
