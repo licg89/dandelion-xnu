@@ -1,7 +1,7 @@
 # 读到上游源码后的结论：`MSDC_INTEN` 被清掉，然后又在等它的状态位
 
 > 2026-10-29。依据：IMG_5728 的探针读数 + 上游
-> `Silicon/MediaTek/MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.c` 原文。
+> `MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.c（上游 uefi-a04br3 仓库，不在本仓库内）` 原文。
 
 ## 1. 探针读数（只读，未写控制器）
 
