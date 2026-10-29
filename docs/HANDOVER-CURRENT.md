@@ -3,15 +3,10 @@
 > 这份文件是**唯一入口**。换电脑后先读它，再读文末列出的历史文档。
 > 所有内容都已推到 GitHub，`main` 分支即最新。
 >
-> **2026-10-29 凌晨之后先读这两份**：
-> [`NIGHT-1029.md`](NIGHT-1029.md)（这一夜做了什么、早上刷哪个镜像、怎么判读）、
-> [`ANALYSIS-EMMC-DATA-PATH.md`](ANALYSIS-EMMC-DATA-PATH.md)（eMMC 数据通路的
-> 三份实现对照与判读表）。
->
-> **2026-10-29 晚之后先读这两份**（更新，覆盖上面两份的结论）：
-> [`RESUME-1029.md`](RESUME-1029.md)（卡零应答、供电是唯一剩下的解释）、
-> [`POWER-BEFORE-AFTER.md`](POWER-BEFORE-AFTER.md)（本轮的 P_before / VEMC / P_after
-> 探针：屏幕坐标、地址出处、判读表）。
+> **2026-10-29 深夜之后先读这一份**（它覆盖下面所有旧结论）：
+> [`RESUME-1029.md`](RESUME-1029.md)（当前状态、决定性证据链、下一个动作、别再踩的坑），
+> 配合 [`POWER-BEFORE-AFTER.md`](POWER-BEFORE-AFTER.md)（每一轮探针的读数与判读表）。
+> 本文件其余小节是更早的环境/流程总览，**已过期的以 RESUME-1029.md 为准**。
 
 ---
 
@@ -21,8 +16,11 @@
 有自己的 framebuffer 控制台（文字清晰、不再滚动糊屏）、有面板上的永久数字读数条、
 有 64 KiB 的内存日志（可写进 flash 再用脚本取回）、能**找 payload 并 LoadImage/StartImage**、
 能**把设备树作为 EFI 配置表发布**。
-**唯一还差的是 eMMC 的数据传输**：卡识别全过、命令全通，但第一个 512 字节读
-永远是 `DATTMO`（卡不发数据）；这一版同时试 PIO 和 DMA 两条通路。
+**唯一还差的是 eMMC 的数据传输**：卡的**命令通路已全部验证**（`CMD0→CMD1(bit31)→CMD2→CMD3→CMD7→CMD13 st=4`，
+`R1` 无错误位），但 `CMD8`/`CMD17` 的 512 字节数据相位里**卡不驱动任何 DAT 线**
+（`ps=EF/FF`、`gp=DF8/DFF`、FIFO 空、时钟一直在跑）。三种总线模式、CKPDN 清零、控制器软复位均无效。
+**当前正在做的事**：用 `CMD13` 读回卡的 `CURRENT_STATE`（`t=`）来区分“卡在发、主机没接住”
+和“卡根本没开始”。细节见 [`RESUME-1029.md`](RESUME-1029.md)。
 
 ---
 
@@ -34,7 +32,7 @@
 | M2 SEC / PEI / DXE | ✅ | 绿带 / 蓝带 / 屏幕文字 |
 | M3 GOP + ConOut 到面板 | ✅ | `GOP FOUND` + `GOP 720 OK` |
 | M3.5 UEFI 文字可读 | ✅ | `DandelionConsoleDxe`：2944 stride、不滚动、永久读数条 |
-| M4 eMMC → BlockIo → FAT | 🔄 | 卡识别通、数据读 `DATTMO`；见 `ANALYSIS-EMMC-DATA-PATH.md` |
+| M4 eMMC → BlockIo → FAT | 🔄 | **命令全通**（`C13 st=4`、`R1` 无错误）；数据相位卡不驱动 DAT，见 `RESUME-1029.md` §1 |
 | M5 找 payload 并启动 | 🔄 | `PayloadBootDxe` + FV 内嵌 `PayloadHello`（真 `UniXNU.efi` 还没产出） |
 | M6 DarwinBoot → XNU | ⬜ | 缺 `UniXNUDxe` / `DarwinBoot` / `UniXNURamDiskDxe` 源码，见 `M5-M6-PLAN.md` |
 
@@ -54,31 +52,40 @@
 
 ---
 
-## 4. 最近一次上机的确切画面（2026-10-29 01:0x，`boot-uefi-gpiofix.img`）
+## 4. 最近一次上机的确切画面（2026-10-29 深夜，`boot-uefi-state.img`）
+
+**这一节只列当前布局；数值与判读请看 [RESUME-1029.md](RESUME-1029.md) §2 和
+[POWER-BEFORE-AFTER.md](POWER-BEFORE-AFTER.md) §3。**
 
 屏幕从上到下：
 
-1. 顶部一条**洋红实心带**（framebuffer 第 26..33 行，约 y 26..33）—— 状态带，
-   洋红 = 只有我们的控制台报了到，**没有任何 MSDC 阶段覆盖它**
-2. 白色 `DANDELION UEFI`（被状态带压掉一半）、绿色 `DXE OK`、黄色 `CONOUT NO`
-   —— `PlatformProgressDxe` 直写 framebuffer 的诊断
-3. 中间大片"白横纹" —— **不是**驱动画的，是旧内容没被清掉（见 5.4(b)）
-4. 清晰可读的 `SELFTEST 0123456789` / `ABCDEFGHIJKLMNOPQRSTUVWXYZ` /
-   `DIRECT CALL 0123456789` / `COUT 0 90x19` —— 我们自己的 `OutputString`
-5. 底部**洋红实心条（y 1200..1280）+ 黄色实心条（y 1300..1380）** ——
-   `DandelionConsoleDxe` 入口处的自证标记
-6. 白条（y 1560..1591）—— `PlatformProgressDxe` 画的
+1. y 0..~100：控制台**回绕到顶部**后打印的内容（PayloadBoot: 与 MsdcDxe 的 `ddn` 日志行）；
+2. y ~760：`SELFTEST 0123456789` / `ABCDEFGHIJKLMNOPQRSTUVWXYZ` / `DIRECT CALL 0123456789`
+   —— 控制台自检；
+3. **y 848..1050：探针文字区（主证据，13 行，固定在第 53..65 行）**：
 
-读数结论：
+```
+PWR PS=81FF0002 DAT=FF CMD=1 CD=1 VEMC=1 vsel=3 3000mV w=1 f=0 BUS OK
+RST C=0200F09B
+H0 C=0200F09B S=FF007FFC P=81FF0002 N=00000001
+IO dir=000 do=000 din=00000DF7
+C0 I=00000100 cl=.. f=.. l=.. kc=..
+C1 n=4 I=00000100 R=C0FF8080
+C2 3=9B010059 2=32503036 1=34009DB2 0=3BB919C9
+C3 I=00000100 R=00000500 C7 I=00000100 R=00000700
+C13 I=00000100 R=00000900 st=4
+A8 I=0100 R=00000900 sz=00000000 ps=EF/FF gp=DF8/DFF f=00 k=14994 c6=00000000 t=4 r=1
+B8 / C8 / D8 ...（前一行失败才出现）
+B1 -  no data phase
+```
 
-- ✅ `DandelionConsoleDxe` 确实被调度、执行、安装协议（两条自证条都在）
-- ✅ 我们的渲染通道完全正确（`SELFTEST` / `DIRECT CALL` 都是 1:1 清晰）
-- ❌ 状态带是**洋红** ⇒ eMMC 一个阶段都没报 ⇒ 但这不是 eMMC 失败，
-  而是 **MSDC 的标记全部打在 ConOut 还不存在的时候**（见 5.4(a)）
-- ❌ 没有紫色 / 绿色 ⇒ 没有 BlockIo，也没有文件系统（M4 未达成）
+4. y ~1100/1140：两条横幅（`BLOCK NONE` / `FAT NONE` 为红色）—— 没有 BlockIo / FAT；
+5. y 1172/1186/1200：三条位图条（P_before / 采样 CMD0 的 AND / OR）+ x 400..560 的供电判读块；
+6. y 1400/1448/1496：24 个阶段格子（16..23 属于 MsdcDxe/EmmcDxe，是 M4 的证据）；
+7. y 1560：PlatformProgressDxe 的白条。
 
----
-
+> 文字区**只有 68 行**且**不滚动**（满后回绕到顶部覆盖最早的行），本驱动的 13 行从第 53 行开始。
+> 加诊断行必须先省掉别的行。
 ## 5. 下一步（按顺序做，都很小）
 
 ### 5.0 2026-10-28 晚：三个结构性发现（先看这一节）
