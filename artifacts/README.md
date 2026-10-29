@@ -8,7 +8,7 @@ checkout 完整复现。构建与打包的完整环境见
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
-| `boot-uefi-cmd0.img` | 16,099,328 B | **当前上机版**：先 `CMD0` 再 `CMD1`；CMD 波形用 GPIO122 逐样本计数（`cl=/f=/l=/kc=`），M4/M5 其余内容不变 |
+| `boot-uefi-init.img` | 16,099,328 B | **当前上机版**：先 `CMD0` 再 `CMD1`；CMD 波形用 GPIO122 逐样本计数（`cl=/f=/l=/kc=`），M4/M5 其余内容不变 |
 | `panel-preview.png` | 720×1600 | `tools/render_panel_preview.py` 渲染的仪表区，**不用刷机就能看布局** |
 
 > 更早的几版（`boot-uefi-ping.img`、`boot-uefi-power.img`、`boot-uefi-m5-probe.img` …）
@@ -18,65 +18,58 @@ checkout 完整复现。构建与打包的完整环境见
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-f4a0764546c3a53145aea39cd5f23689fe22fd2785c5c44b7b4a2ef20703ebc5  SILICIUM_UEFI.fd
-85e8caae324aa66476d71da3eb6776013a90a8d45f3431a4c79e948ca98bbdb4  boot-uefi-cmd0.img
+a946632e81d9e46ab9aa86b8bdab2b84842b61788536592b473a84537f763e5c  SILICIUM_UEFI.fd
+43fd099c9b931007a5f3e35b31d4010596e8db0b7e8489e95de74aa4d8fc2ee0  boot-uefi-init.img
 ```
 
-## 这一版是什么（2026-10-29 深夜，第三版）
+## 这一版是什么（2026-10-29 深夜，第四版）
 
-上一版（`boot-uefi-mux.img`）得到的读数（IMG_5744）：
+上一版（`boot-uefi-init.img`）拿到了**这台机器上 eMMC 的第一条有效响应**（IMG_5747）：
 
 ```
-MUX strap=00094A40 mode=2 m0=22222200 m1=11222222
-DIN 122..133=00000DFB
-PAD0=00000000 PAD1=00000000
-PING a I=00000200 R=00000000 cl=0 dA=00000DFA dO=00000DFF
+C0     I=00000100            cl=98  f=297 l=402  kc=14841
+PING a I=00000100 R=00FF8080 cl=129 f=13  l=221  kc=15232
 ```
 
-三件事：
+- `I=0x100` = **CMDRDY**（上一版一直是 `0x200` = CMDTMO）；
+- `R=00FF8080` = R3 的 OCR ⇒ **卡回了**；
+- 时间结构对得上：`C0` 的帧跨 105 个样本、98 个低（CMD0 的帧几乎全 0）；
+  `PING a` 跨 208 ≈ 2×105 ⇒ 命令帧 + 响应帧；
+- `kc≈15k/30k` ⇒ 时钟一直在跑。
 
-1. **复用是好的**，而且上一版的 `0xF` 是虚惊：每个引脚的 4 位模式字段里只有低 3 位是模式，
-   第 4 位是保留位。按 vendor 的写法整寄存器写一次再读回就是 `0x22222200`。
-2. **`MSDC_PS` 的 CMD 位（bit24）在控制器输出时被屏蔽**（`cl=0`），而同一个脚的 GPIO 输入
-   （`dA`/`dO` 的 bit0）确实翻转——**命令确实上了线**，时钟（bit2 = GPIO124）也在跑。
-3. `DIN=0xDFB`：12 个脚里只有 124（CLK）和 132 低，而 132 是 `DS`，vendor 的 pad 配置就是
-   `dsl:pd50k`（下拉）。**RSTB 是高的，DAT 全高。**
+**根因：卡不在 idle 状态，`CMD1` 对它是非法命令。`CMD0 → CMD1` 就是缺的那一步。**
+OCR 的 bit31=0 ⇒ 卡还在上电，规范要求重复 `CMD1` 直到 bit31=1。
 
-所以现在的事实是：**有电、复位放开、时钟在跑、命令在线上，就是没有 R3。**
+本版把卡**手工走到 TRAN**，一次钉死：
 
-本版只做一件事：按规范的顺序问 —— 上一版只发了 `CMD1`，而 **`CMD1` 只在 idle 状态合法**，
-被 LK 留在 TRAN（或卡在某个中间状态）的卡对它就是不理会，表现正好是"总线干净 + 超时"。
-于是：
-
-1. **先 `CMD0`（GO_IDLE_STATE，无应答）再 `CMD1`（SEND_OP_COND）**；
-2. 采样改用 **GPIO122（CMD 脚本身）**，并给出时间结构：
-   - `cl=` 读到 0 的样本数、`f=` / `l=` 第一次 / 最后一次读到 0 的迭代序号；
-   - `kc=` CLK 脚读到 0 的样本数（时钟在跑 ≈ 中间值）；
-3. `CMD0` 那行是**发射机自检**：它一定没有应答，所以它的 `f..l` 就是纯命令帧长度；
-   `CMD1` 的 `l` 如果约等于两倍帧长 ⇒ **卡其实回了，是这个控制器采样不到**（另一类 bug，
-   要去看 `MSDC_PAD_TUNE0` / `EMMC50_CFG0`）；
-4. `PING b` 用不带 bit30/bit31 的朴素 OCR 再发一次 `CMD1`，把"参数被拒"也排除掉。
+1. `C1 n=..`：重复 `CMD1` 直到 OCR bit31=1，`n` 是重试次数；
+2. `C2 3/2/1/0`：128 位 CID（R2，顺带证明长响应也能收）；
+3. `C3`：R6（RCA 用 1，跟 LK 一致）；`C7`：R1b 选中；
+4. `C13 ... st=..`：CURRENT_STATE，**4 = TRAN**。
 
 ### 怎么看屏幕
 
 **文字区是主证据**：
 
 ```
-C0 I=........ cl=... f=.. l=... kc=...
-PING a I=00000200 R=00000000 cl=... f=.. l=... kc=...
-PING b I=........ R=... cl=... f=.. l=... kc=...
-CARD ANSWERED | NO ANSWER
+C0 I=00000100 cl=.. f=.. l=.. kc=..
+PING a I=00000100 R=00FF8080 cl=.. f=.. l=.. kc=..
+C1 n=.. I=.. R=........
+C2 3=.. 2=.. 1=.. 0=..
+C3 I=.. R=..
+C7 I=.. R=..
+C13 I=.. R=.. st=..
 ```
 
 | 看到 | 结论 |
 |---|---|
-| `PING` 的 `I` 有 bit8（`...0100` 之类） | 卡回了，`R` 就是 OCR（bit31=1 表示上电完成） |
-| `C0` 的 `cl=0` | 控制器连无应答的 `CMD0` 都没发出去 ⇒ 主机侧（`SDC_CMD` 写回 / 时钟门 / 控制器复位） |
-| `C0` 的 `cl` 正常、`PING` 的 `l-f` 也差不多 | 命令帧发出去了，卡不回 ⇒ 卡有没有真拿到电 / 卡本身 |
-| `PING` 的 `l` ≈ 2×(帧长) | **卡回了，主机采样不到** ⇒ `MSDC_PAD_TUNE0`(0xF0) / `EMMC50_CFG0` |
-| `kc` 接近 0 或 30000 | 命令窗口里时钟没跑 ⇒ `MSDC_CFG.CKSTB` / topckgen |
+| `C13 ... st=4` | **卡在 TRAN**，硬件/控制器/时序/命令序列全部打通，剩下的是驱动 |
+| `CARD NOT READY`（`C1` 之后） | 卡一直 busy ⇒ OCR 窗口 / VEMC 电压 / 重试不够 |
+| `C2` 全 0 或超时 | 136 位长响应收不到 ⇒ `MSDC_PAD_TUNE0` / `EMMC50_CFG0` |
+| `C7` 超时 | 选中失败 / DAT0 busy 处理 |
+| 某一行 `I=00000200` | 那一条命令超时，看它前一行 |
 
-三条位图条（y 1172 / 1186 / 1200）仍是最新一次 `CMD1` 的 `PS` / AND / OR 备份；
+三条位图条（y 1172 / 1186 / 1200）仍是最新一次采样 `CMD1` 的 `PS` / AND / OR 备份；
 x 400..560 的方块是判读结论。逐条判读见 `docs/POWER-BEFORE-AFTER.md` §3。
 
 **再看底部格子**：三排 8 个 80×80（y 1400 / 1448 / 1496，间距 88，左边距 8）。
@@ -133,7 +126,7 @@ kernel 段 = gzip(SILICIUM_UEFI.fd) 607,232 B（FD 2,097,152 B）
 
 ```powershell
 adb reboot bootloader
-fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-cmd0.img
+fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-init.img
 fastboot reboot
 ```
 
@@ -158,5 +151,5 @@ wsl -d Ubuntu -e bash /mnt/d/aios/dandelion-xnu/tools/build-local.sh
 
 # 2. 打包 + 校验（读 toml 里的 base，自动断言 kernel_addr）
 cd /mnt/d/aios/dandelion-xnu
-python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-cmd0.img
+python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-init.img
 ```
