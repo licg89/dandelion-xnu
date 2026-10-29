@@ -88,6 +88,13 @@ def main():
     ap.add_argument("image", help="raw image containing the log block")
     ap.add_argument("--out", help="write the decoded text here (default: stdout)")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument(
+        "--lba",
+        type=int,
+        help="only consider the block at this sector (the firmware moved it from "
+             "32512 to 30512; the old one stays in the partition, still valid, and "
+             "silently wins if both are accepted)",
+    )
     args = ap.parse_args()
 
     with open(args.image, "rb") as fh:
@@ -98,6 +105,15 @@ def main():
         sys.exit("no log block found in %s" % args.image)
 
     # Later blocks win: the firmware overwrites the same span every boot.
+    if args.lba is not None:
+        wanted = args.lba * 512
+        blocks = [b for b in blocks if b[0] == wanted]
+        if not blocks:
+            sys.exit("no log block at sector %d" % args.lba)
+
+    # Highest offset wins.  The firmware log moved to a lower sector and the
+    # previous block is still there and still checksum-valid, so "last one found"
+    # is not the same as "the one this boot wrote".
     offset, block = blocks[-1]
 
     if args.verbose:
