@@ -37,7 +37,7 @@ if ($Restore) {
     throw "stock boot image not found at $Image"
   }
 } elseif ([string]::IsNullOrEmpty($Image)) {
-  $Image = Join-Path $repo "artifacts\boot-uefi-init.img"
+  $Image = Join-Path $repo "artifacts\boot-uefi-blockio.img"
 }
 
 if (-not (Test-Path $Image)) {
@@ -96,38 +96,45 @@ What to photograph: ONE shot of the whole lower half -- it must include the thre
 thin strip rows, the verdict patch and the three rows of cells.
 
   y 1172  cyan strip    P_before: MSDC_PS, the driver's very first read
-  y 1186  white strip   PS_AND: bits that stayed high during the hand-sent CMD1
+  y 1186  white strip   PS_AND: bits that stayed high during the sampled CMD0
   y 1200  cyan strip    PS_OR:  bits that were high at some point during it
   x 400..560 y 1197     verdict patch
   y 1216  dots          blue = block devices (x 8), green = volumes (x 380)
   y 1400/1448/1496      stage cells.  16..23 are MsdcDxe's; this driver does
                         not paint them any more, so they stay the M4 evidence.
-  text area             PS before=.. DAT=FF CMD=1 CD=1 / VEMC=.. en=N ANA=..
-                        MUX strap=.. mode=N m0=.. m1=.. / DIN 122..133=....
-                        C0 I=.. cl=.. f=.. l=.. kc=..      (CMD0: TX check)
-                        PING a I=.. R=.. cl=.. f=.. l=..   (sampled CMD1)
-                        C1 n=.. I=.. R=..                  (CMD1 until OCR b31)
-                        C2 3=.. 2=.. 1=.. 0=..             (CID, R2)
-                        C3 I=.. R=..    C7 I=.. R=..       (RCA, select)
-                        C13 I=.. R=.. st=..                (4 = TRAN)
+  text area             10 lines, fixed position (rows 53..62 of 68):
+                        PWR PS=.. DAT=.. CMD=.. CD=.. VEMC=.. vsel=.. w=.. f=..
+                        H0 C=.. E=.. I=.. R=..          (controller leftovers)
+                        H0 S=.. P=.. N=..               (SDC_CFG / PS / BLK_NUM)
+                        C0 I=.. cl=.. f=.. l=.. kc=..   (CMD0: TX self-check)
+                        C1 n=.. I=.. R=..               (CMD1 until OCR bit31)
+                        C2 3=.. 2=.. 1=.. 0=..          (CID, R2)
+                        C3 I=.. R=.. C7 I=.. R=..       (RCA, select)
+                        C13 I=.. R=.. st=..             (4 = TRAN)
+                        C8 I=.. sz=.. rv=.. bw=.. hs=.. (EXT_CSD, 512-byte read)
+                        B1 I=.. S=..                    (LBA 1, GPT header)
 
 Reading it, in this order:
 
-  0. `C13 ... st=4` is the goal: the card is in TRAN.  If that shows up, the
-     hardware, controller, clock and command sequence are all proven and what is
-     left is the UEFI driver, not the board.
+  0. `C13 st=4` + `C8 I=...0100` + `B1 S=45464920` is the goal: commands, a
+     128-bit response, a 512-byte data read and sector addressing all work, and
+     what is left is the UEFI driver, not the board.
 
   1. `C0` is the transmitter self-check: CMD0 has no response, so its f..l is
-     the pure 48-bit frame.  Compare CMD1's range against it: about twice means
-     the response frame is there as well.
+     the pure 48-bit frame.  About 100 samples low in one run is healthy.
 
   2. `C1 n=..` is how many CMD1 attempts it took for OCR bit 31 (power-up done)
      to come back set.  `CARD NOT READY` instead means the card stayed busy.
 
-  3. `C2` prints the 128-bit CID as four words -- a long response that CMD1
-     never exercises.
+  3. `C8` is the data phase.  Its `I` says which half failed: ...0100 XFER_COMPL
+     (good), ...4000 DATTMO (the card never started sending), ...8000 DATCRCERR
+     (data on the wire, sample window wrong).  `sz=` is SEC_COUNT in 512-byte
+     sectors, i.e. the size of the eMMC.
 
-  4. Any line whose `I` is 00000200 (CMDTMO) is the command that timed out; the
+  4. `B1 S=45464920` is "EFI " from the GPT header at LBA 1; anything else means
+     the read worked but the addressing or the partition table did not.
+
+  5. Any line whose `I` is 00000200 (CMDTMO) is the command that timed out; the
      line above it is where the sequence got that far.
 
 Full legend: docs\POWER-BEFORE-AFTER.md   Context: docs\RESUME-1029.md
