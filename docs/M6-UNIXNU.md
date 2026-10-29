@@ -481,3 +481,65 @@ LK → BootShim → UEFI(DXE) → eMMC BlockIo → FAT(flashinfo) → UniXNU
 - **心跳 flush（2 秒）** + **EBS 时最后一次 flush** —— payload 无论卡住还是跳走，日志都保得住；
 - **静默心跳** —— 定时 flush 不再打印，否则它会把 DarwinBoot 画在 framebuffer 第 0..7 行的诊断擦掉
   （这个坑踩了两次：第一次被自己的 flush 擦，第二次被 UniXNU 的重绘擦）。
+---
+
+## 11. XNU 侧 eMMC 日志：装好了，但通道没起来（2026-10-30 01:5x）
+
+### 11.1 这一轮做完的事
+
+1. `config/MASTER.arm64.dandelion` 加 `options XNU_EMMC_SERIAL=1`，内核 CI 重编。
+   **验证方式不是猜**：在新 `mach_kernel` 里 `strings` 出了这些
+   ```
+   eMMC log: handoff magic 0x%x ok %u lba 0x%x sectors %u
+   eMMC log: MSDC not where it should be, channel disabled
+   eMMC log: no MSDC clock, channel disabled
+   eMMC log: streaming to lba 0x%x (%u sectors)
+   emmc-log
+   ```
+   所以补丁确实编进去了。
+2. ADT 的 `emmc-log` 节点补上 **`reg`** —— `pe_serial.c` 的注册条件是
+   `ml_io_map(soc_base + *reg_prop, …) != 0 && log_lba != 0 && log_sectors >= 2`，
+   少了 `reg` 通道会**静默地永远不注册**。现在 5 个属性。
+3. flashinfo 重新划分，给通道腾出 256 KiB：
+   ```
+   0 .. 30000    FAT 卷
+   30000 .. 30512 XNU 日志通道
+   30512 .. 30640 固件日志块
+   ```
+
+### 11.2 结果：`sector 30000` 全零
+
+```
+no DLXLOG01 at sector 30000: found b'\x00'*8
+```
+
+固件日志照旧走到 `hand-off to the kernel`，所以**跳转本身没坏**，是内核侧没把通道拉起来。
+
+**这里有个先天的鸡生蛋问题**：内核自己那几条诊断（`MSDC not where it should be` /
+`no MSDC clock` / `bad handoff`）**是通过这条通道打的** —— 通道起不来，解释也就没了。
+所以靠日志查不出来。
+
+### 11.3 于是回到面板：内核自带探针阶梯
+
+`patches/xnu/dandelion-early-trace.patch` 里有一套**直接画在面板上的探针**
+（`DANDELION_PROBE(row, color)` → `dandelion_probe_bar()`，**x 480 起、宽 240 px**）：
+
+| row | 颜色 | 含义（补丁原文注释） |
+|---|---|---|
+| 990 | 白 | （另一处标记） |
+| 1000 | 蓝 | before the call |
+| 1020 | 绿 | after the call |
+| 1040 | 洋红 | mark returned |
+| 1060 | 橙 | debug inherit ok |
+| 1080 | 紫 | **startup→kprintf ok** |
+
+**这现在是唯一还看得见的 XNU 通道。** 下一次上机拍一张面板，看这几条横条出现到哪一格，
+就能知道 XNU 在 `arm_init` 里走到了哪一步 —— 以及它到底有没有开始执行。
+
+### 11.4 下一步
+
+1. **拍面板**，读探针阶梯（最便宜，且不依赖任何通道）；
+2. 如果连 990/1000 都没有 → 内核在 `arm_init` 之前就死了，要看 `start.s` / pmap 那一层；
+3. 如果有 1080 紫条 → `kprintf` 已经活了，只是 eMMC 通道没注册，那就查
+   `MSDC not where it should be` 的判据（很可能是它读 MSDC 版本寄存器的方式与
+   `DandelionEmmcDxe` 观察到的不同）。
