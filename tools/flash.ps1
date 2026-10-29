@@ -111,15 +111,16 @@ thin strip rows, the verdict patch and the three rows of cells.
                         C2 3=.. 2=.. 1=.. 0=..          (CID, R2)
                         C3 I=.. R=.. C7 I=.. R=..       (RCA, select)
                         C13 I=.. R=.. st=..             (4 = TRAN)
-                        C6 I=../.. n=.. st=..           (CMD6 back to 1-bit/default)
+                        A8 I=.. sz=.. ps=../.. f=.. c6=....  (8-bit host, card as LK left it)
+                        B8/C8 ...                      (only if the line above failed)
                         C8 I=.. sz=.. rv=.. bw=.. hs=.. (EXT_CSD, 512-byte read)
                         B1 I=.. S=..                    (LBA 1, GPT header)
 
 Reading it, in this order:
 
-  0. `C13 st=4` + `C8 I=...0100` + `B1 S=45464920` is the goal: commands, a
-     128-bit response, a 512-byte data read and sector addressing all work, and
-     what is left is the UEFI driver, not the board.
+  0. Any A8/B8/C8 line with `I=...1100` and a non-zero `sz`, plus
+     `B1 S=45464920`, is the goal: commands, a 128-bit response, a 512-byte data
+     read and sector addressing all work, and what is left is the UEFI driver.
 
   1. `C0` is the transmitter self-check: CMD0 has no response, so its f..l is
      the pure 48-bit frame.  About 100 samples low in one run is healthy.
@@ -127,10 +128,14 @@ Reading it, in this order:
   2. `C1 n=..` is how many CMD1 attempts it took for OCR bit 31 (power-up done)
      to come back set.  `CARD NOT READY` instead means the card stayed busy.
 
-  3. `C8` is the data phase.  Its `I` says which half failed: ...0100 XFER_COMPL
-     (good), ...4000 DATTMO (the card never started sending), ...8000 DATCRCERR
-     (data on the wire, sample window wrong).  `sz=` is SEC_COUNT in 512-byte
-     sectors, i.e. the size of the eMMC.
+  3. A8/B8/C8 are three bus modes -- 8-bit with the card as LK left it, 8-bit
+     default speed, then 1-bit -- and the first that works stops the ladder.
+     `I=...1100` is XFER_COMPL (good); `...0100` alone means the command answered
+     and no data ever started; `...4100` adds DATTMO, `...8100` DATCRCERR.
+     `sz=` is SEC_COUNT in 512-byte sectors.  `ps=AA/BB` is MSDC_PS sampled
+     through the whole wait: FF/FF means the card never drove DAT at all, FE/FF
+     means it did and the host missed it -- those two need opposite fixes.
+     `f=` is what was still queued in the FIFO.
 
   4. `B1 S=45464920` is "EFI " from the GPT header at LBA 1; anything else means
      the read worked but the addressing or the partition table did not.

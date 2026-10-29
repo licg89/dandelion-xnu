@@ -582,7 +582,8 @@ PaintBitStrip (
 
 /**
   Read one MSDC0 register.  Everything in this file that touches the controller
-  is a load, except the single bounded CMD12 in ProbeMsdcLeftovers().
+  is a load, except the command writes in SendCommand()/ReadDataBlock() and the
+  one SDC_CFG bus-width store in SetHostBusWidth().
 **/
 STATIC
 UINT32
@@ -591,6 +592,37 @@ Msdc0Read32 (
   )
 {
   return *(volatile UINT32 *)(UINTN)(MSDC0_MMIO_BASE + Offset);
+}
+
+STATIC
+VOID
+Msdc0Write32 (
+  IN UINTN   Offset,
+  IN UINT32  Value
+  )
+{
+  *(volatile UINT32 *)(UINTN)(MSDC0_MMIO_BASE + Offset) = Value;
+}
+
+/**
+  Set the host's data bus width (SDC_CFG[17:16]: 0 = 1-bit, 1 = 4-bit, 2 = 8-bit).
+
+  Kept separate from everything else because it is the one controller setting
+  the probe changes that LK also changes, and the point of the attempts in
+  ProbeCardAndMux() is to compare the two states rather than assume one.
+**/
+STATIC
+VOID
+SetHostBusWidth (
+  IN UINTN  Bits
+  )
+{
+  UINT32  Cfg;
+  UINT32  Field;
+
+  Field = (Bits >= 8) ? 2u : ((Bits >= 4) ? 1u : 0u);
+  Cfg   = Msdc0Read32 (SDC_CFG_OFS) & ~(3u << 16);
+  Msdc0Write32 (SDC_CFG_OFS, Cfg | (Field << 16));
 }
 
 /**
@@ -1137,6 +1169,9 @@ typedef struct {
   UINT32   IntStatus;
   UINT32   Resp0;
   UINT32   BytesLeft;
+  UINT32   PsAnd;      // DAT[7:0] bits that never went low during the wait
+  UINT32   PsOr;       // DAT[7:0] bits that were high at least once
+  UINT32   Fifo;       // MSDC_FIFOCS at the end: RXCNT in [7:0]
 } DATA_RESULT;
 
 //
@@ -1178,11 +1213,15 @@ ReadDataBlock (
   UINT32            Word;
   UINT32            Off;
   UINT32            Chunk;
+  UINT32            Ps;
 
   Result.Ok        = FALSE;
   Result.IntStatus = 0;
   Result.Resp0     = 0;
   Result.BytesLeft = (UINT32)Bytes;
+  Result.PsAnd     = 0xFF;
+  Result.PsOr      = 0x00;
+  Result.Fifo      = 0;
 
   Regs = (volatile UINT32 *)(UINTN)MSDC0_MMIO_BASE;
 
@@ -1225,6 +1264,17 @@ ReadDataBlock (
       break;
     }
 
+    //
+    // Sample the pin levels the controller sees.  MSDC_PS DAT[7:0] is bits
+    // 23..16; accumulating AND and OR over the whole wait answers exactly the
+    // question a dead data phase leaves open: is the card not driving the bus,
+    // or is the controller not taking what is on it?  ps=<and>/<or> with bit 0
+    // clear means DAT0 was low at some point, i.e. the card did start sending.
+    //
+    Ps = (Regs[MSDC_PS_OFS / 4] >> MSDC_PS_DAT_SHIFT) & MSDC_PS_DAT_MASK;
+    Result.PsAnd &= Ps;
+    Result.PsOr  |= Ps;
+
     for (;;) {
       Count = MSDC_FIFOCS_RXCNT (Regs[MSDC_FIFOCS_OFS / 4]);
       if ((Count == 0) || (Left == 0)) {
@@ -1257,11 +1307,88 @@ ReadDataBlock (
   Result.IntStatus = Regs[MSDC_INT_OFS / 4];
   Result.Resp0     = Regs[SDC_RESP0_OFS / 4];
   Result.BytesLeft = Left;
+  Result.Fifo      = Regs[MSDC_FIFOCS_OFS / 4];
   Regs[MSDC_INT_OFS / 4] = 0xFFFFFFFF;
 
   Result.Ok = (((Result.IntStatus & MSDC_INT_XFER_COMPL) != 0) && (Left == 0));
 
   return Result;
+}
+
+/**
+  One data-phase attempt: optionally CMD6 the card into another bus mode, set the
+  host's width to match, then read EXT_CSD and print where it stopped.
+
+  Print shape: `<tag> I=........ sz=........ ps=AA/BB f=.. c6=....`
+
+    I    MSDC_INT at the end.  ...0100 is CMDRDY alone (command ok, no data);
+         ...1100 adds XFER_COMPL; ...4100 includes DATTMO; ...8100 DATCRCERR.
+    sz   EXT_CSD SEC_COUNT -- meaningful only when the read worked.
+    ps   DAT[7:0] that never went low / that went high at least once, accumulated
+         over the whole wait.  ps=FF/FF means the controller never saw the card
+         drive the bus at all; ps=FE/FF means DAT0 was low at some point, i.e.
+         the card did start sending and the host missed it.
+    f    MSDC_FIFOCS.RXCNT still queued at the end: non-zero means bytes arrived.
+    c6   CMD6's interrupt word, 0000 when this attempt did not switch anything.
+
+  Returning Data.Ok is what lets the caller stop at the first mode that works
+  instead of flashing one image per hypothesis.
+**/
+STATIC
+BOOLEAN
+ExtCsdAttempt (
+  IN EFI_SYSTEM_TABLE  *SystemTable,
+  IN CHAR16            *Tag,
+  IN UINT32            Rca,
+  IN UINTN             HostBits,
+  IN BOOLEAN           DoSwitch,
+  IN UINT32            SwitchIndex,
+  IN UINT32            SwitchValue
+  )
+{
+  CARD_RESP    Sw;
+  CARD_RESP    Stat;
+  DATA_RESULT  Data;
+  UINT32       Sectors;
+  UINTN        Tries;
+
+  Sw.IntStatus = 0;
+
+  if (DoSwitch) {
+    Sw = SendCommand (6, (3u << 24) | (SwitchIndex << 16) | (SwitchValue << 8), SDC_CMD_RSP_R1B, 0);
+
+    //
+    // R1b: DAT0 is busy while the card reconfigures, so wait for TRAN before
+    // touching the data path.
+    //
+    Tries = 0;
+    do {
+      Stat = SendCommand (13, Rca << 16, SDC_CMD_RSP_R1, 0);
+      Tries++;
+      gBS->Stall (1000);
+    } while ((((Stat.Resp[0] >> 9) & 0xFu) != 4) && (Tries < 100));
+  }
+
+  SetHostBusWidth (HostBits);
+  SendCommand (16, 512, SDC_CMD_RSP_R1, 0);
+
+  Data    = ReadDataBlock (8, 0, mDataBlock, 512);
+  Sectors = (UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT] |
+            ((UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT + 1] << 8) |
+            ((UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT + 2] << 16) |
+            ((UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT + 3] << 24);
+
+  Say (SystemTable, Tag);
+  SayHex (SystemTable, L"I=", Data.IntStatus);
+  SayHex (SystemTable, L" sz=", Sectors);
+  SayHexN (SystemTable, L" ps=", Data.PsAnd, 2);
+  Say (SystemTable, L"/");
+  SayHexN (SystemTable, L"", Data.PsOr, 2);
+  SayHexN (SystemTable, L" f=", Data.Fifo, 2);
+  SayHexN (SystemTable, L" c6=", Sw.IntStatus, 4);
+  Say (SystemTable, L"\r\n");
+
+  return Data.Ok;
 }
 
 /**
@@ -1323,16 +1450,11 @@ ProbeCardAndMux (
   CARD_RESP        R6;
   CARD_RESP        Sel;
   CARD_RESP        Status;
-  CARD_RESP        BlkLen;
-  CARD_RESP        Switch1;
-  CARD_RESP        Switch2;
-  CARD_RESP        Stop;
-  DATA_RESULT      Data;
   DATA_RESULT      Gpt;
   UINTN            Tries;
   UINT32           Rca;
-  UINT32           Sectors;
   UINT32           Signature;
+  BOOLEAN          Worked;
 
   Strap = *(volatile UINT32 *)(UINTN)PINCTRL_STRAP_ADDR;
   Mode  = ((Strap & (1u << PINCTRL_STRAP_BIT)) != 0) ? 1 : 2;
@@ -1418,86 +1540,53 @@ ProbeCardAndMux (
   }
 
   //
-  // Past TRAN, the card is addressable -- but addressable is not the same as
-  // ready to move data, and IMG_5752 showed exactly that gap: every command
-  // answered and the data phase never started (`C8 I=00000100`, no XFER_COMPL
-  // and no DATTMO).  Two causes, both fixed here.
+  // Past TRAN the card is addressable -- but addressable is not the same as
+  // ready to move data.  IMG_5752 and IMG_5753 both show the same shape: every
+  // command answers, the data phase never starts (`I=00000100`, no XFER_COMPL,
+  // no DATTMO -- and at 400 kHz the controller's DTOC is ~11 minutes, so a
+  // missing DATTMO inside three seconds means nothing yet).  IMG_5753 also
+  // shows the CMD6 switches being accepted (I=00000100 twice, st=4 after n=1),
+  // so "the card ignored the switch" is not it either.
   //
-  // 1. The bus mode has to agree with the card.  LK brings this eMMC up in
-  //    8-bit HS200 and writes EXT_CSD 183/185 on the way; those two bytes are
-  //    card configuration and survive CMD0, so the card is still 8-bit when the
-  //    host -- 1-bit, default speed, SDC_CFG = 0xFF007FFC -- asks for a block.
-  //    Commands work because CMD is a single wire and its timing is the same in
-  //    every mode; data does not, which is why this only ever failed on the
-  //    data phase.  CMD6 write-byte is how to come back down: 0x03 in the top
-  //    byte, then the EXT_CSD index and value, no data phase, R1b.
+  // What is left is which side is silent, and that is cheap to answer: the
+  // ps=<and>/<or> field below is MSDC_PS sampled through the whole wait, i.e.
+  // the pin levels the controller itself sees.  ps=FF/FF -> the card never
+  // drove DAT.  ps=FE/FF or darker -> it did, and the host's data path is the
+  // problem.
   //
-  // 2. SDC_CMD's data-type field lives at bit 11, not bit 9 -- see the note on
-  //    SDC_CMD_DTYPE_SHIFT above.
+  // Three attempts, each a complete "make host and card agree, read a block"
+  // cycle, so one image covers the plausible modes instead of one flash per
+  // guess:
   //
-  // Then the two data questions that decide whether BlockIo is reachable:
+  //   A8  host 8-bit, card as LK left it (8-bit, HS200) -- what bootshim does
+  //   B8  host 8-bit, card HS_TIMING = 0 (default speed)
+  //   C8  host 1-bit, card BUS_WIDTH = 0 (+ the HS_TIMING from B8)
   //
-  //   CMD16  SET_BLOCKLEN 512  -- what LK leaves behind, made explicit.
-  //   CMD8   SEND_EXT_CSD      -- 512-byte DATA READ: capacity (SEC_COUNT),
-  //                               revision, bus width and HS timing.
-  //   CMD17  READ_BLOCK(LBA 1) -- the GPT header, i.e. the first sector of the
-  //                               thing a BlockIo would hand to FAT.
+  // The first one that works stops the ladder, and then CMD17 reads LBA 1 --
+  // the GPT header -- with the mode that just worked.
   //
-  // Both reads print the interrupt word, because "XFER_COMPL" versus "DATTMO"
-  // separates "the card sent nothing" from "the FIFO was never drained".
-  //
-  Switch1 = SendCommand (6, (3u << 24) | (EXT_CSD_BUS_WIDTH << 16) | (0u << 8), SDC_CMD_RSP_R1B, 0);
-  Switch2 = SendCommand (6, (3u << 24) | (EXT_CSD_HS_TIMING << 16) | (0u << 8), SDC_CMD_RSP_R1B, 0);
+  Worked = ExtCsdAttempt (SystemTable, L"A8 ", Rca, 8, FALSE, 0, 0);
 
-  //
-  // CMD6 is R1b: the card drives DAT0 busy while it reconfigures, so poll the
-  // status until it says TRAN + READY_FOR_DATA before touching the data path.
-  //
-  Tries = 0;
-  do {
-    Status = SendCommand (13, Rca << 16, SDC_CMD_RSP_R1, 0);
-    Tries++;
-    gBS->Stall (1000);
-  } while ((((Status.Resp[0] >> 9) & 0xFu) != 4) && (Tries < 100));
+  if (!Worked) {
+    (VOID) SendCommand (12, 0, SDC_CMD_RSP_R1B, SDC_CMD_STOP_CMD);
+    Worked = ExtCsdAttempt (SystemTable, L"B8 ", Rca, 8, TRUE, EXT_CSD_HS_TIMING, 0);
+  }
 
-  Say (SystemTable, L"C6 ");
-  SayHex (SystemTable, L"I=", Switch1.IntStatus);
-  SayHex (SystemTable, L"/", Switch2.IntStatus);
-  Say (SystemTable, L" n=");
-  SayDec (SystemTable, Tries);
-  Say (SystemTable, L" st=");
-  SayDec (SystemTable, (Status.Resp[0] >> 9) & 0xFu);
-  Say (SystemTable, L"\r\n");
-
-  BlkLen = SendCommand (16, 512, SDC_CMD_RSP_R1, 0);
-
-  Data    = ReadDataBlock (8, 0, mDataBlock, 512);
-  Sectors = (UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT] |
-            ((UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT + 1] << 8) |
-            ((UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT + 2] << 16) |
-            ((UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT + 3] << 24);
-
-  Say (SystemTable, L"C8 ");
-  SayHex (SystemTable, L"I=", Data.IntStatus);
-  SayHex (SystemTable, L" sz=", Sectors);
-  SayHexN (SystemTable, L" rv=", mDataBlock[EXT_CSD_REV], 2);
-  SayHexN (SystemTable, L" bw=", mDataBlock[EXT_CSD_BUS_WIDTH], 2);
-  SayHexN (SystemTable, L" hs=", mDataBlock[EXT_CSD_HS_TIMING], 2);
-  SayHexN (SystemTable, L" c16=", BlkLen.IntStatus, 4);
-  Say (SystemTable, L"\r\n");
+  if (!Worked) {
+    (VOID) SendCommand (12, 0, SDC_CMD_RSP_R1B, SDC_CMD_STOP_CMD);
+    Worked = ExtCsdAttempt (SystemTable, L"C8 ", Rca, 1, TRUE, EXT_CSD_BUS_WIDTH, 0);
+  }
 
   //
   // A failed data phase leaves the card mid-transfer with DAT0 held low; LK
   // sends CMD12 after every failed transfer and MediaTek's driver never did,
   // which is why the round after a failure looked like a dead card
-  // (docs/ANALYSIS-EMMC-DATA-PATH.md section 1.2).  Put it back before asking
-  // again.
+  // (docs/ANALYSIS-EMMC-DATA-PATH.md section 1.2).
   //
-  if (!Data.Ok) {
-    Stop = SendCommand (12, 0, SDC_CMD_RSP_R1B, SDC_CMD_STOP_CMD);
-    Say (SystemTable, L"stop ");
-    SayHex (SystemTable, L"I=", Stop.IntStatus);
-    Say (SystemTable, L"\r\n");
+  if (!Worked) {
+    (VOID) SendCommand (12, 0, SDC_CMD_RSP_R1B, SDC_CMD_STOP_CMD);
+    Say (SystemTable, L"B1 -  no data phase\r\n");
+    return;
   }
 
   Gpt       = ReadDataBlock (17, 1, mDataBlock, 512);
