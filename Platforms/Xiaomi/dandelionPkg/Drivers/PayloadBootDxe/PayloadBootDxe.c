@@ -534,6 +534,13 @@ PublishDeviceTree (
 //
 #define LOG_PARTITION_OFFSET   30512
 #define LOG_SECTOR            512
+//
+// Where FlushLogToFlash found 'flashinfo', in whole-disk sectors.  Set by
+// FlushLogToFlash; PublishEmmcHandoff uses it instead of scanning the GPT a
+// second time, because that second scan reported no partition while this one
+// works every boot.
+//
+STATIC EFI_LBA  mFlashInfoStart;
 #define LOG_TEXT_MAX          ((LOG_WRITE_SECTORS - 1) * LOG_SECTOR)
 //
 // One buffer each, reused for every flush including the periodic ones.
@@ -869,6 +876,7 @@ FlushLogToFlash (
       continue;
     }
 
+    mFlashInfoStart = (EFI_LBA)FlashInfoStart;
     Target = (EFI_LBA)(FlashInfoStart + LOG_PARTITION_OFFSET);
 
     if (!SpanIsFree (BlockIo, Target, LOG_WRITE_SECTORS)) {
@@ -1146,14 +1154,11 @@ PublishEmmcHandoff (
   VOID
   )
 {
-  EFI_BLOCK_IO_PROTOCOL  *BlockIo;
-  EFI_LBA                Start;
-  EFI_LBA                Last;
   EMMC_HANDOFF           *Handoff;
   UINT32                 Version;
   UINT32                 Cfg;
 
-  if (!FindFlashInfo (&BlockIo, &Start, &Last)) {
+  if (mFlashInfoStart == 0) {
     return;
   }
 
@@ -1163,7 +1168,7 @@ PublishEmmcHandoff (
   Handoff           = (EMMC_HANDOFF *)(UINTN)EMMC_HANDOFF_PA;
   Handoff->Magic     = EMMC_HANDOFF_MAGIC;
   Handoff->Ok        = 1;
-  Handoff->Lba       = (UINT32)(Start + EMMC_LOG_LBA_OFFSET);
+  Handoff->Lba       = (UINT32)(mFlashInfoStart + EMMC_LOG_LBA_OFFSET);
   Handoff->Sectors   = EMMC_LOG_SECTORS;
   Handoff->ClockDiv  = EMMC_LOG_CLKDIV;
   Handoff->Reserved  = 0;
@@ -1171,7 +1176,7 @@ PublishEmmcHandoff (
   DEBUG ((
     DEBUG_ERROR,
     "PayloadBoot: emmc handoff lba %lu sectors %u div %u; msdc ver 0x%08x (want 0x%08x) cfg 0x%08x ckstb %u\n",
-    (UINT64)(Start + EMMC_LOG_LBA_OFFSET),
+    (UINT64)(mFlashInfoStart + EMMC_LOG_LBA_OFFSET),
     EMMC_LOG_SECTORS,
     EMMC_LOG_CLKDIV,
     Version,
@@ -1434,11 +1439,15 @@ PayloadBootEntryPoint (
   // not run -- which is why the whole thing is guarded and painted instead of
   // asserted.
   //
-  PublishEmmcHandoff ();
-
   if (!EFI_ERROR (FlushLogToFlash ())) {
     Say (L"PayloadBoot: firmware log written to flash\r\n");
   }
+
+  //
+  // After the first flush, because it is what learns where flashinfo is.
+  // The line it prints is captured by the ExitBootServices flush.
+  //
+  PublishEmmcHandoff ();
 
   //
   // From here on the payload owns the machine, and it may never come back.  Keep
