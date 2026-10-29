@@ -8,7 +8,7 @@ checkout 完整复现。构建与打包的完整环境见
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
-| `boot-uefi-3modes.img` | 16,099,328 B | **当前上机版**：`CMD0` → `CMD1`(到 OCR bit31) → `CMD2/3/7/13` 走到 TRAN，然后 `CMD16/CMD8/CMD17` **真读 512 字节**（EXT_CSD + LBA 1）；整段日志压到 10 行 |
+| `boot-uefi-datwin.img` | 16,099,328 B | **当前上机版**：`CMD0` → `CMD1`(到 OCR bit31) → `CMD2/3/7/13` 走到 TRAN，然后 `CMD16/CMD8/CMD17` **真读 512 字节**（EXT_CSD + LBA 1）；整段日志压到 10 行 |
 | `panel-preview.png` | 720×1600 | `tools/render_panel_preview.py` 渲染的仪表区，**不用刷机就能看布局** |
 
 > 更早的几版（`boot-uefi-ping.img`、`boot-uefi-power.img`、`boot-uefi-m5-probe.img` …）
@@ -18,67 +18,60 @@ checkout 完整复现。构建与打包的完整环境见
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-b747d94fc2d8a6045a0fa5684bcb008515d7972b5ca81ce654a882375d0b843e  SILICIUM_UEFI.fd
-37c5199383ee4f3ab60df764789d6428da32cd742c2b15f363ba1719ad1d455b  boot-uefi-3modes.img
+4ea725c67f18162411d813d0e883443a5b23b671696e9bdd97b00b099f7da289  SILICIUM_UEFI.fd
+2e1536b33e45d6e9481a8fc7c33f970e1ae4214f3998826294ba8112ad49fb5a  boot-uefi-datwin.img
 ```
 
-## 这一版是什么（2026-10-29 深夜，第七版）
+## 这一版是什么（2026-10-29 深夜，第八版）
 
-上一版（`boot-uefi-1bit.img`）把 dtype 挪到了 bit 11、并用 CMD6 把卡切回 1-bit。
-IMG_5753 的结果是**两条都不成立**：
+上一版（`boot-uefi-3modes.img`）一次跑了三种总线模式，IMG_5754：
 
 ```
 C13 I=00000100 R=00000900 st=4
-C6  I=00000100/00000100 n=1 st=4     两个 CMD6 都被接受，卡回到 TRAN
-C8  I=00000100 sz=00000000 ...       数据相位还是没开始
+A8  I=00000100 sz=00000000 ps=EF/FF f=00 c6=0000
+B8  I=00000100 sz=00000000 ps=EF/FF f=00 c6=0100
+C8  I=00000100 sz=00000000 ps=EF/FF f=00 c6=0100
+B1  -  no data phase
 ```
 
-所以现在的问题不再是"用哪种模式"，而是**谁没说话**。这一版：
+`ps=EF/FF` = `MSDC_PS` 里 DAT[7:0] 的 AND/OR：**DAT0..7 一直是高，只有 DAT4 抖过**。
+发 512 字节的卡不会只驱动一根线，而命令/CID/选中全正常 ⇒ 数据线“没人发”。
+这一版就是把“到底是谁”钉下来：
 
-1. `ReadDataBlock` 在整个等待窗口里累加 `MSDC_PS` 的 DAT[7:0]，打出 `ps=AND/OR`：
-   - `ps=FF/FF` ⇒ 控制器**从没看见卡驱动数据线**；
-   - `ps=FE/FF` ⇒ 卡在发、**主机没接住**。
-   两种情况下一步完全不同。
-2. 一次刷机跑**三种模式**，第一个成功就停：
+1. `IO dir=000 do=000 ies=........`：引脚 122..133 的方向位/输出值，以及
+   MSDC0 pad 块的输入使能（0x10002000+0x10）；
+2. `IO ioc=.. f60=.. adv=..`：`MSDC_IOCON` / 0x60 / `SDC_ADV_CFG0`；
+3. 每次数据尝试多一组 **`gp=AND/OR`**：同一时刻从 **GPIO 的 DIN** 再读一遍
+   这 12 个脚（bit0 = 引脚 122，CLK 和 DAT 都在里面）。
 
-| 行 | 主机 | 卡 | 含义 |
-|---|---|---|---|
-| `A8` | 8-bit | LK 留下的（8-bit HS200） | bootshim 用的那套，已知能读写 |
-| `B8` | 8-bit | CMD6 `HS_TIMING=0` | 8-bit default speed |
-| `C8` | 1-bit | CMD6 `BUS_WIDTH=0` | 上一版失败的那个组合 |
+判读分叉：
 
-成功时再读 LBA 1 打 `B1`。
+| `ps`（控制器） | `gp`（GPIO） | 结论 |
+|---|---|---|
+| 安静 | 安静 | 卡没驱动数据线 |
+| 安静 | 有变化 | **控制器/s pad 输入通路**看不到，卡其实在发 |
+| 有变化 | 有变化 | 数据到了控制器，问题在 FIFO / 收尾 |
+| `dir` 数据脚=1 | — | GPIO 在驱动总线，和卡抢 |
 
 ### 怎么看屏幕
 
-**文字区是主证据**（最多 12 行，第 53..64 行）：
-
 ```
 PWR PS=81FF0002 DAT=FF CMD=1 CD=1 VEMC=1 vsel=3 3000mV w=1 f=0 BUS OK
-H0 C=0200F09B E=00000000 I=00000000 R=00000B00
-H0 S=FF007FFC P=81FF0002 N=00000001
+H0 C=.. S=.. P=.. N=..
 C0 I=.. cl=.. f=.. l=.. kc=..
 C1 n=.. I=.. R=........
 C2 3=.. 2=.. 1=.. 0=..
 C3 I=.. R=.. C7 I=.. R=..
 C13 I=.. R=.. st=..
-A8 I=.. sz=.. ps=../.. f=.. c6=....
+IO dir=000 do=000 ies=........
+IO ioc=........ f60=........ adv=........
+A8 I=.. sz=.. ps=../.. gp=.../.. f=.. c6=....
 B8 ...（A8 失败才出现）
 C8 ...（B8 失败才出现）
 B1 I=.. S=..
 ```
 
-| 看到 | 结论 |
-|---|---|
-| 任一 `A8`/`B8`/`C8` 的 `I=...1100` + `sz` 非零 + `B1 S=45464920` | **数据通路打通**，那一行的模式就是可用模式 |
-| 三行都 `I=...0100` 且 `ps=FF/FF` | 卡根本没驱动 DAT ⇒ 卡侧（模式/上电/供电） |
-| `ps=FE/FF` 或更低 | 卡在发、主机没接住 ⇒ `SDC_FIFO_CFG` / `MSDC_IOCON` / `SDC_ADV_CFG0` |
-| `f=` 非 0 | 字节到了 FIFO，是 drain/中断的问题 |
-| `I=...8100`（DATCRCERR） | 采样窗口不对 ⇒ `MSDC_PAD_TUNE0` |
-| `B1 -` | 三种模式都没成，按 `ps=` 分叉 |
-
-三条位图条（y 1172 / 1186 / 1200）现在是采样版 `CMD0` 的 `PS` / AND / OR；
-x 400..560 的方块是供电判读结论。逐条判读见 `docs/POWER-BEFORE-AFTER.md` §3。
+逐条判读见 `docs/POWER-BEFORE-AFTER.md` §3。
 
 **再看底部格子**：三排 8 个 80×80（y 1400 / 1448 / 1496，间距 88，左边距 8）。
 **格子存在 = 那个阶段到达过**，所以一张照片就是完整状态向量：
@@ -134,7 +127,7 @@ kernel 段 = gzip(SILICIUM_UEFI.fd) 607,744 B（FD 2,097,152 B）
 
 ```powershell
 adb reboot bootloader
-fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-3modes.img
+fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-datwin.img
 fastboot reboot
 ```
 
@@ -159,5 +152,5 @@ wsl -d Ubuntu -e bash /mnt/d/aios/dandelion-xnu/tools/build-local.sh
 
 # 2. 打包 + 校验（读 toml 里的 base，自动断言 kernel_addr）
 cd /mnt/d/aios/dandelion-xnu
-python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-3modes.img
+python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-datwin.img
 ```
