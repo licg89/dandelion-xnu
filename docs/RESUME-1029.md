@@ -1,0 +1,104 @@
+# 从这里继续（2026-10-29 晚）
+
+> 给下一个会话的第一份文件。读完这一页就该知道「现在在哪、下一步做什么、别再碰什么」。
+
+---
+
+## 1. 一句话现状
+
+固件能跑到 BDS、能加载 payload、能显示文字；**M4 的真问题不是数据通路，而是 eMMC 很可能根本没上电**。
+卡从来**没有**回应过任何 UEFI 命令；之前看到的 `R1=0x900`（TRAN）是 LK 交接前留在寄存器里的**过期值**。
+
+---
+
+## 2. 决定性证据链（按时间）
+
+| 步骤 | 现象 | 结论 |
+|---|---|---|
+| 早期 | `cmd 7/8/9 failed: status=0x12`，`r1=00000900` | 曾误判为「卡在 TRAN、只是没等到完成」 |
+| 探针 1 | `INT=00000000`，`INTEN=000BFFFF` | 曾误判为「INTEN 门控、轮询看不到事件」 |
+| 双 host 探针 | `H0 C=0200F09B E=00000000 I=00000000 R=00000B00`<br>`H1 C=0200789B E=00000000 I=00000000 R=00000000` | eMMC 在 **H0**；H1 无卡 |
+| CMD12 探针 | `S=FF007FFC  P=81FF0002  N=00000001`<br>`CMD12 I=00000200  R=00000000` | **决定性** |
+
+## 3. 为什么说「卡没上电」
+
+三个独立事实指向同一结论：
+
+1. **`CMD12 I=0x200` = `MSDC_INT_CMDTMO`**
+   控制器把命令发出去了，自己的超时也正常触发 ⇒ `MSDC_INT` 工作正常，
+   「INTEN 门控」的假设**被否掉**。而 `R=0` ⇒ 卡**零应答**。
+
+2. **`C = 0x0200F09B`，分频位 bit8..15 = `0xF0`**
+   这仍是 ~400 kHz 的**初始化档位**。若识别真的走完，`MsdcSetMclk(50MHz)` 与
+   `MsdcSetBusWidth(8)` 一定会改掉它和 `S`。
+   ⇒ `EmmcIdentification` **从来没走过第一关**。
+
+3. **`S = 0xFF007FFC`，bit17..16 = `00`**
+   总线宽度仍是 1-bit，同样是「没进过识别流程」的证据。
+
+4. **`P = 0x81FF0002`，低 8 位 = `0x02`**
+   eMMC 空闲时 DAT0..7 应被上拉为**全 1**。DAT0 = 低，符合
+   「卡 busy」或「卡没供电、上拉不成立」。
+
+5. **`E = 0x00000000`**
+   驱动从没配置过 `INTEN`（上游只在轮询前清位），说明它**没走到需要中断的阶段**。
+
+**因此：`R1=0x00000900`、状态 4/5 这些都不是 UEFI 这条路径产生的，是 LK 的残留。**
+
+## 4. 根因方向
+
+`PowerControl()` 走 PMIC 的 `vmmc` / `vemmc` 轨：
+
+- dandelion 用 **MT6357**
+- 仓库继承的 PMIC 驱动是 **MT6358**
+- LDO 编号 / 电压表对不上 ⇒ 写进去的是错的寄存器 ⇒ 卡一直没电
+
+这就是项目一开始标记的已知阻塞点，现在有了**直接证据**。
+
+## 5. 下一步实验（只做这一件）
+
+目标：证明「上电前/后 DAT 线电平有没有变」。
+
+1. 在 `StorageBeaconDxe`（我们自己的驱动，`Platforms/Xiaomi/dandelionPkg/Drivers/StorageBeaconDxe/`）
+   里，**在读取任何东西之前**先读一次 `MSDC_PS`（offset 0x08），记为 `P_before`；
+2. 读一次 PMIC 的 `vemmc` / `vmmc` 控制寄存器（走 `MTK_PMIC_PROTOCOL` 或直接 MMIO），记为 `V`；
+3. 再读一次 `MSDC_PS`，记为 `P_after`；
+4. 三个值都画到面板（位图条 + 文本）。
+
+判据：
+
+| 观察 | 结论 | 动作 |
+|---|---|---|
+| `P_after` 低 8 位 ≠ `0xFF` | **供电没成** | 修 MT6357 的 LDO 表（当前用 MT6358 驱动） |
+| `P_after` = `0xFF` 但命令仍无应答 | 供电 OK | 才轮到时钟 / pad tuning / CMD 线 |
+| `V` 读出来是 `0xFFFFFFFF` 或 `0` | PMIC 窗口不对 | 先修 PMIC 的寄存器基址 |
+
+## 6. 不要再走的弯路（每一条都有实测反证）
+
+- ❌ 「卡在 DATA 态」—— 那个 `R=0xB00` 是 LK 残留
+- ❌ 「`INTEN` 门控导致轮询失效」—— `CMD12` 已经证明 `INT` 正常报 `CMDTMO`
+- ❌ 「PIO vs DMA 通路」—— 命令都没人应答，通路无从谈起
+- ❌ 「总线宽度 8-bit 不匹配」—— 从未走到设置宽度那一步
+- ❌ 「clock 太快」—— 现在就是 400 kHz 初始化档
+- ❌ 「`GraphicsConsoleDxe` 的 pitch 导致横纹」—— 真因是 `FillRow` 只清了 1/16 行
+
+## 7. 关键文件
+
+| 文件 | 用途 |
+|---|---|
+| `Platforms/Xiaomi/dandelionPkg/Drivers/StorageBeaconDxe/StorageBeaconDxe.c` | **下一步改这里**：双 host 探针 + CMD12，已有 `PaintBits` / `HexString` / `Say` 可复用 |
+| `Platforms/Xiaomi/dandelionPkg/Library/MemoryMapLib/MemoryMapLib.c` | `MSDC-0 0x11230000`、`MSDC-1 0x11240000`、`Display Reserved 0x7EC50000` |
+| `Resources/MuPatches/0002-MsdcDxe-dandelion-panel-markers.patch` | 上游 eMMC 驱动的补丁（**改它要同步 hunk 行数，别手改**） |
+| `docs/ANALYSIS-EMMC-DATA-PATH.md` | PIO/DMA 通路调研（现在优先级下降） |
+| `docs/ANALYSIS-INTEN-GATED-POLL.md` | 上面被否掉的那个假设，留作记录 |
+| `artifacts/boot-uefi-m5-probe.img` | 已验证可跑的镜像 |
+
+## 8. 工程约定（别破坏）
+
+- CI：push 到 `Platforms/**`、`Silicon/**`、`Resources/**`、workflow 会触发；**只改 docs 不会触发**（需要一次无害的代码改动来触发）
+- 三个检查器在 CI 里跑：`check_modules.py` / `check_patches.py` / `check_docs.py`。
+  `check_docs.py` 会把 `` `Silicon/...` `` 这种代码跨度当成**本仓库路径**，引用上游文件时要写成
+  `MediaTekPkg/Drivers/...（上游仓库）`。
+- 刷机：`tools/flash.ps1 -Image artifacts\boot-uefi-*.img`；
+  打包必须 `--kernel-addr 0x40080000`；`fastboot boot` 在本机不可用，只能 `flash boot`。
+- 拍照判读：**先说「我读到的是 X」，等确认后再分析**（这一轮吃过两次亏）。
