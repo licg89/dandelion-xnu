@@ -9,7 +9,7 @@
 # It is written to the *start* of the 'flashinfo' partition (16 MiB, unused by
 # Android).  The layout inside that partition is now:
 #
-#     0      .. 14 MiB   this FAT volume
+#     0         .. 15872 KiB  this FAT volume
 #     15 MiB .. 15 MiB+  the firmware's own log block (128 sectors)
 #
 # which is why the volume is 14336 KiB and LOG_PARTITION_OFFSET in
@@ -32,7 +32,7 @@ set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 OUT=${ESP_OUT:-$REPO/out/unixnu-esp.img}
 SRC=$REPO/Resources/UniXNU
-SIZE_KIB=${ESP_SIZE_KIB:-14336}
+SIZE_KIB=${ESP_SIZE_KIB:-16256}
 LABEL=${ESP_LABEL:-UNIXNU}
 
 print_steps() {
@@ -81,11 +81,12 @@ fi
 # What UniXNU reads at runtime: the config, the loader it starts, and the drivers
 # it can load through its own [driver] list.  kernel.macho joins them once the
 # macOS build produces one.
-for f in UniXNU.toml DarwinBoot.efi UniXNUDxe.efi UniXNURamDiskDxe.efi kernel.macho; do
+for f in UniXNU.toml DarwinBoot.efi UniXNUDxe.efi UniXNURamDiskDxe.efi mach_kernel; do
   if [ -f "$SRC/$f" ]; then
-    mcopy -i "$OUT" "$SRC/$f" "::/EFI/UniXNU/$f"
-  elif [ "$f" = "kernel.macho" ]; then
-    echo "note: no $SRC/kernel.macho yet -- the volume is ready for it"
+    if [ "$f" = "mach_kernel" ]; then dst="::/EFI/UniXNU/kernel.macho"; else dst="::/EFI/UniXNU/$f"; fi
+    mcopy -i "$OUT" "$SRC/$f" "$dst"
+  elif [ "$f" = "mach_kernel" ]; then
+    echo "note: no $SRC/mach_kernel yet -- run tools/ci/fetch_kernel.ps1"
   else
     echo "warning: $SRC/$f is missing, leaving it out"
   fi

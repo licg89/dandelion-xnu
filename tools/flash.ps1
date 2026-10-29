@@ -1,6 +1,6 @@
 # Flash the current dandelion UEFI image, and say what to look for afterwards.
 #
-#   powershell -File tools\flash.ps1            # flash artifacts/boot-uefi-kernelslot.img
+#   powershell -File tools\flash.ps1            # flash artifacts/boot-uefi-xnu.img
 #   powershell -File tools\flash.ps1 -Image <path>   # flash something else
 #   powershell -File tools\flash.ps1 -Restore        # put the stock boot image back
 #   powershell -File tools\flash.ps1 -Check          # report only, flash nothing
@@ -37,7 +37,7 @@ if ($Restore) {
     throw "stock boot image not found at $Image (out\ is gitignored; copy it from the old machine)"
   }
 } elseif ([string]::IsNullOrEmpty($Image)) {
-  $Image = Join-Path $repo "artifacts\boot-uefi-kernelslot.img"
+  $Image = Join-Path $repo "artifacts\boot-uefi-xnu.img"
 }
 
 if (-not (Test-Path $Image)) {

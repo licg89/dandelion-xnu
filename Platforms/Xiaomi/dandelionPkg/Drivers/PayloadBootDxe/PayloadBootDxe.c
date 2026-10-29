@@ -523,15 +523,15 @@ PublishDeviceTree (
 // squeezed into 1 MiB, which is fine for a boot manager but not for a kernel.
 // The layout is now:
 //
-//     0            .. 14 MiB   FAT volume, containing \UniXNU.efi, \EFI\UniXNU\*
+//     0            .. 15.875 MiB  FAT volume: \UniXNU.efi, \EFI\UniXNU\*, kernel
 //                              and, later, the kernel
-//     15 MiB       .. 15 MiB+  this log block (128 sectors)
+//     16256 KiB    .. 16256 KiB+  this log block (128 sectors)
 //
-// 15 MiB of 32768 sectors, so 30720.  tools/mk_unixnu_esp.sh builds a filesystem
+// 15872 KiB of 32768 sectors, so 32512 -- the volume was 14 MiB until the kernel  tools/mk_unixnu_esp.sh builds a filesystem
 // that stops short of it, and extract_log_block.py scans for the magic on every
 // sector boundary, so the pull offset does not have to be kept in sync anywhere.
 //
-#define LOG_PARTITION_OFFSET   30720
+#define LOG_PARTITION_OFFSET   32512
 #define LOG_SECTOR            512
 
 STATIC

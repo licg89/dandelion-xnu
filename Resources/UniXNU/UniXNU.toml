@@ -35,6 +35,13 @@ title = "UniXNU dandelion"
 path = "UniXNUDxe.efi"
 
 [[entry]]
+id = "xnu"
+title = "XNU (dandelion)"
+type = "xnu"
+path = "kernel.macho"
+args = "-v keepsyms=1 debug=0x144"
+
+[[entry]]
 id = "exit"
 title = "Return to firmware"
 type = "action"
