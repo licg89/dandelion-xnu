@@ -343,3 +343,63 @@ Status = AllocateWindow (&Kernel, WindowSize, &Address);   // WindowSize = 0 →
 所以下一步就是在 ADT 里（`chosen` 节点，或 DarwinBoot 的 `AdtNode` 搜索的那个位置）
 补 `window-size` —— 一个 32 位字节数，比如 256 MiB。顺带可能要补
 `ramdisk` / `trustcache` / `addon` 的偏移（否则它们保持 `MAX_UINTN`；只有在 `KeepPacked` 时才致命）。
+---
+
+## 9. 生态现状核实：MTK 的边界到底在哪（2026-10-30 00:3x）
+
+前面几节我两次把话说得不准，这里按仓库里的证据改正。
+
+### 9.1 事实
+
+`UniXNU/UniXNU` 的 `devices.toml` 里 **MTK 设备不止一台**：
+
+```
+MT8167  MT6833  MT6991  MT6765  MT6878  MT6768  MT6835  MT6993
+```
+
+其中 `MT6765` 那一条是 `name = "dandelion" / repository = "licg89/UniXNU-dandelion"`，
+**就是我们自己的仓库**（licg89 = 用户本人），只是登记过，不是上游在维护。
+
+真正的一手 MTK 实现在 **mouseos**（这套生态的作者）名下，而且做的就是 MTK：
+
+| 仓库 | 说明（原文） |
+|---|---|
+| `uefi-a04br3` | UEFI firmware for Benesse TAB-A04-BR3 (**MT8167**) —— 我们的固件就是 fork 它的 |
+| `UniXNU-a04br3` | UniXNU device support for a04br3 (MT8167) *(work in progress)* |
+| `UniXNU-mt8167-common` | 共享 MT8167 支持 |
+| `NativeMsdc` | **MediaTek MT8167 MSDC eMMC block storage driver for UniXNU** |
+| `xnu_kernel_benesse_a04br3` | WIP: XNU kernel for a04br3 (MT8167). Experimental; **watchdog boot loop, OS boot incomplete** |
+| `xnu_bootshim_benesse_a04br3` | 同上，**OS boot incomplete** |
+| `xnu_device_benesse_a04br3` | 同上，**OS boot incomplete** |
+
+社区还有 `Dracen-W/UniXNU-merlinx`（MT6768/6769z，无「已启动」声明）和
+`stanveyjiang/UniXNU-camellia`（MT6833，无描述）。
+
+### 9.2 所以正确的说法是
+
+- **不是「MTK 不行」** —— 内核能被加载、能进 DarwinBoot，这条路在 MTK 上是通的（我们自己已经走到 `boot refused: Out of Resources`）；
+- **也不是「MTK 已经启动了 iOS」** —— 参考实现（MT8167）在自己的仓库描述里写着 **"OS boot incomplete"**、watchdog boot loop；
+- 真正被 UniXNU 跑到 userland 的是**高通**平台（sheng SM8550、umi SM8250、picasso 等）。
+
+**因此本项目要瞄准的靶子是：让 XNU 在这台 MT6765 上真正跑起来（打出自己的早期输出）。
+这件事在 MTK 上目前没人做到过 —— mouseos 的 MT8167 也停在 "OS boot incomplete"。**
+这不是「iOS 桌面」，但它是这条路上一个真实、有边界、可能被跨过的台阶。
+
+### 9.3 对我们最直接有用的两个上游资产
+
+1. **`mouseos/NativeMsdc`** —— MT8167 的 MSDC eMMC 驱动。我们的 `DandelionEmmcDxe` 是手写的，
+   在自己的硬件上已经验证过（`FAT OK`）；但长期应该对齐它的形态，因为「存储驱动」在上游是有位置的。
+2. **`mouseos/UniXNU-a04br3` 的仓库结构** —— `board.toml configs drivers package patches scripts unixnu.lock`。
+   对比我们自己的 `licg89/UniXNU-dandelion`（line A 时代，缺 `package/` 和 `unixnu.lock`），
+   差别说明**我们的设备仓库还没迁移到当前 UniXNU 的格式**。
+
+### 9.4 两条路，都要走
+
+| 路线 | 内容 | 性质 |
+|---|---|---|
+| 快路 | 给 ADT 补 `window-size`，拿到绿条、看 XNU 是否打印 | 小时级，继续手工**
+| 正路 | 把 `UniXNU-dandelion` 迁移到当前设备仓库格式，用 `./unixnu build payload` 生成 payload（内核 + `.adt` + kexts + 正确的 `window-size` 都在里面） | 天级，一劳永逸 |
+
+`unixnu` 在 Linux 上是能跑内核那一步的（`scripts/linux/setup-toolchain.py`），
+只有 `--skip-setup` 和 `seed-data-grow` 需要 macOS 的 `hdiutil`。
+也就是说**「必须 macOS」这条限制比我先前说的更宽松**。
