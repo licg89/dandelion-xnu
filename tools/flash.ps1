@@ -32,9 +32,9 @@ if (-not (Test-Path $fastboot)) {
 }
 
 if ($Restore) {
-  $Image = "D:\aios\artifacts\boot_backup.img"
+  $Image = Join-Path $repo "out\boot_backup.img"
   if (-not (Test-Path $Image)) {
-    throw "stock boot image not found at $Image"
+    throw "stock boot image not found at $Image (out\ is gitignored; copy it from the old machine)"
   }
 } elseif ([string]::IsNullOrEmpty($Image)) {
   $Image = Join-Path $repo "artifacts\boot-uefi-state.img"
