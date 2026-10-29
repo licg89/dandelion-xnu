@@ -111,9 +111,16 @@ def main():
         if not blocks:
             sys.exit("no log block at sector %d" % args.lba)
 
-    # Highest offset wins.  The firmware log moved to a lower sector and the
-    # previous block is still there and still checksum-valid, so "last one found"
-    # is not the same as "the one this boot wrote".
+    # More than one valid block means the firmware moved the log and left the old
+    # one behind, still checksum-valid.  Do not guess: neither the offset order nor
+    # the size says which boot wrote which.  (The log moved 32512 -> 30512, so the
+    # stale block is the one at the HIGHER offset -- pref-erring either end is wrong.)
+    if len(blocks) > 1:
+        print("found %d valid log blocks:" % len(blocks))
+        for index, (where, info) in enumerate(blocks):
+            print("  sector %-6d size %-6d lba %d" % (where // 512, info["size"], info["lba"]))
+        sys.exit("pass --lba <sector> to choose one; the later block is not reliably the newest")
+
     offset, block = blocks[-1]
 
     if args.verbose:
