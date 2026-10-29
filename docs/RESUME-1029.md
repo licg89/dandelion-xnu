@@ -266,7 +266,7 @@ R1=0x00000900，无错误位），但**没有任何一根 DAT 被驱动**：
 | 1–3 | boot-uefi-power/mux/... | PS=81FF0002（DAT=FF CMD=1 CD=1）、VEMC en=1 3000mV、m0=22222200、DIN=0xDFB | **供电/引脚/复用/复位全部排除** |
 | 4 | boot-uefi-cmd0.img | C0 I=00000100（此前一直是 0x200 CMDTMO）、PING a R=00FF8080 | 卡第一次回话；根因：**卡不在 idle，CMD1 非法** ⇒ 必须先 CMD0 |
 | 5 | boot-uefi-init.img | C1 n=1 R=C0FF8080（bit31=1） | 上电完成；C2..C13 被控制台行数截断（非失败） |
-| 6 | boot-uefi-readbar.img | C13 st=4、C8 I=00000100 sz=0、B1 S=0 | 进 TRAN；数据相位不存在 |
+| 6 | boot-uefi-quiet.img | C13 st=4、C8 I=00000100 sz=0、B1 S=0 | 进 TRAN；数据相位不存在 |
 | 7 | boot-uefi-1bit.img | C6 I=0100/0100 n=1 st=4、C8 I=0100 | CMD6 被接受；仍无数据 |
 | 8 | boot-uefi-3modes.img | 三种模式 A8/B8/C8 全 ps=EF/FF | 模式不是原因 |
 | 9 | boot-uefi-datwin.img | **崩溃**：读 0x10002010 触发 translation fault | **pad 块不在内存映射里**，别直接读 |
@@ -299,7 +299,7 @@ R1=0x00000900，无错误位），但**没有任何一根 DAT 被驱动**：
 
 ### 3.1 先看 `PV` 行：`SDC_RESP0` 到底跟不跟着命令走
 
-**刷 `artifacts/boot-uefi-readbar.img`**（sha256 `c66cd965…`，2026-10-29 20:3x 本地构建），
+**刷 `artifacts/boot-uefi-quiet.img`**（sha256 `c66cd965…`，2026-10-29 20:3x 本地构建），
 `C13` 那行后面会多出一行：
 
 ```
@@ -335,7 +335,7 @@ A8 I=0100 R=00000900 sz=00000000 ps=EF/FF gp=DF8/DFF f=00 k=14994 c6=00000000 t=
 刷机（手机必须在 fastboot；MTK LK 不支持 `fastboot boot`）：
 
 ```powershell
-powershell -File tools\flash.ps1        # 默认就是 boot-uefi-readbar.img
+powershell -File tools\flash.ps1        # 默认就是 boot-uefi-quiet.img
 # 手机关机：长按电源 ~10 s；然后 电源 + 音量下 进 fastboot
 ```
 
@@ -373,7 +373,7 @@ GitHub API 用 git credential fill 取 token 后带 Bearer；匿名会被限流�
 
 **已经在 git 里、不用重建就能刷的**：
 
-- `artifacts\boot-uefi-readbar.img`（16 MB，当前上机镜像，sha256 `c66cd965…`）
+- `artifacts\boot-uefi-quiet.img`（16 MB，当前上机镜像，sha256 `c66cd965…`）
 
 另外 D:\aios\xnu（Apple xnu-8796.141.3 的本地移植，**线 A，已冻结**）**没有可推送的远端**：
 已在那棵树里提交为分支 dandelion-port（5a023ec），并把整份改动的 patch 放进本仓库

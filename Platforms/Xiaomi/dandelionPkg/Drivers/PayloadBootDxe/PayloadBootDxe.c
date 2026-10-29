@@ -541,6 +541,16 @@ STATIC CHAR8  mLogText[LOG_TEXT_MAX];
 STATIC UINT8  mLogSectors[LOG_WRITE_SECTORS * LOG_SECTOR];
 STATIC EFI_EVENT  mFlushTimer;
 STATIC BOOLEAN    mFlushBusy;
+//
+// Set once the payload is about to start.  From then on the flush is a heartbeat,
+// and it must not print: DarwinBoot draws its own diagnostics on the framebuffer
+// (AllocateWindow prints "NO WINDOW ... BIG RUN ..." and up to seven "FREE ..."
+// rows at y rows 0..7 when it cannot place the kernel), and two DEBUG lines every
+// two seconds overwrote exactly that.  Measured 2026-10-30: the whole screen was
+// our own "replacing the previous log" flood and the diagnostic that would have
+// explained the failure was gone.
+//
+STATIC BOOLEAN    mFlushQuiet;
 STATIC VOID       EFIAPI  FlushTickEntry (IN EFI_EVENT Event, IN VOID *Context);
 
 STATIC
@@ -861,7 +871,9 @@ FlushLogToFlash (
 
     if (!SpanIsFree (BlockIo, Target, LOG_WRITE_SECTORS)) {
       if (SpanIsOurs (BlockIo, Target)) {
-        DEBUG ((DEBUG_ERROR, "PayloadBoot: replacing the previous log at LBA %lu\n", (UINT64)Target));
+        if (!mFlushQuiet) {
+          DEBUG ((DEBUG_ERROR, "PayloadBoot: replacing the previous log at LBA %lu\n", (UINT64)Target));
+        }
       } else {
         DEBUG ((DEBUG_ERROR, "PayloadBoot: log span at LBA %lu is not free, refusing\n", (UINT64)Target));
         continue;
@@ -923,12 +935,14 @@ FlushLogToFlash (
       continue;
     }
 
-    DEBUG ((
-      DEBUG_ERROR,
-      "PayloadBoot: firmware log written to LBA %lu (%u bytes)\n",
-      (UINT64)Target,
-      TextSize
-      ));
+    if (!mFlushQuiet) {
+      DEBUG ((
+        DEBUG_ERROR,
+        "PayloadBoot: firmware log written to LBA %lu (%u bytes)\n",
+        (UINT64)Target,
+        TextSize
+        ));
+    }
     TickBarLeft ();
     return EFI_SUCCESS;
   }
@@ -1315,6 +1329,7 @@ PayloadBootEntryPoint (
   //
   mFlushTimer = NULL;
   mFlushBusy  = FALSE;
+  mFlushQuiet = TRUE;
   if (!EFI_ERROR (gBS->CreateEvent (
                           EVT_TIMER | EVT_NOTIFY_SIGNAL,
                           TPL_CALLBACK,
