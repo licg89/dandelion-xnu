@@ -110,9 +110,9 @@ thin strip rows, the verdict patch and the three rows of cells.
                         C2 3=.. 2=.. 1=.. 0=..          (CID, R2)
                         C3 I=.. R=.. C7 I=.. R=..       (RCA, select)
                         C13 I=.. R=.. st=..             (4 = TRAN)
-                        IO dir=000 do=000 ies=........  (pins 122..133 / MSDC0 pads)
+                        IO dir=000 do=000 din=FFF       (pins 122..133, GPIO windows)
                         IO ioc=.. f60=.. adv=..         (controller leftovers)
-                        A8 I=.. sz=.. ps=../.. gp=.../.. f=.. c6=....
+                        A8 I=.. R=.. sz=.. ps=../.. gp=.../... f=.. c6=....
                         B8/C8 ...                       (only if the line above failed)
                         B1 I=.. S=..                    (LBA 1, GPT header)
 

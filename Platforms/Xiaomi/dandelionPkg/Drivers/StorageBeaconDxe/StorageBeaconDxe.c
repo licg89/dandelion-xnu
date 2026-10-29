@@ -186,18 +186,15 @@
 #define EMMC_PIN_FIRST       122
 #define EMMC_PIN_LAST        133
 //
-// The MSDC0 pads are configured in their own block, NOT in the controller and not
-// in the pinctrl block: docs/research/mtk6765-drivers.md section 1.6 lists
-// MSDC0_IO_PAD_BASE = 0x10002000 with DRV +0x00, IES +0x10, PUPD +0x30,
-// R0 +0x50, R1 +0x60 (vendor sets PUPD=0x401, R0=0xBFE, R1=0x401 for pull-up).
-// IES is the input-enable mask: with a data pin's bit clear the controller
-// simply cannot see the card on that lane, which is one of the two ways a data
-// phase can look dead.
+// The MSDC0 pads live in their own block (docs/research/mtk6765-drivers.md
+// section 1.6: MSDC0_IO_PAD_BASE = 0x10002000, DRV +0x00, IES +0x10,
+// PUPD +0x30, R0 +0x50, R1 +0x60), and that block is NOT in this platform's
+// memory map: reading it faults (IMG_5755, X8 = 0x10002010).  Do not read it
+// from here without adding the region to the memory map first; the input-enable
+// question is answered through the GPIO block instead (see PinGroupBits()).
 //
 #define MSDC0_PAD_BASE       0x10002000ULL
-#define MSDC0_PAD_DRV_OFS    0x00
 #define MSDC0_PAD_IES_OFS    0x10
-#define MSDC0_PAD_PUPD_OFS   0x30
 
 //
 // SDC_CMD response type field (MsdcDxe.c switch on ResponseType):
@@ -1442,13 +1439,14 @@ ExtCsdAttempt (
 
   Say (SystemTable, Tag);
   SayHex (SystemTable, L"I=", Data.IntStatus);
+  SayHex (SystemTable, L" R=", Data.Resp0);
   SayHex (SystemTable, L" sz=", Sectors);
   SayHexN (SystemTable, L" ps=", Data.PsAnd, 2);
   Say (SystemTable, L"/");
   SayHexN (SystemTable, L"", Data.PsOr, 2);
   SayHexN (SystemTable, L" gp=", Data.GpAnd, 3);
   Say (SystemTable, L"/");
-  SayHexN (SystemTable, L"", Data.GpOr, 2);
+  SayHexN (SystemTable, L"", Data.GpOr, 3);
   SayHexN (SystemTable, L" f=", Data.Fifo, 2);
   SayHexN (SystemTable, L" c6=", Sw.IntStatus, 4);
   Say (SystemTable, L"\r\n");
@@ -1742,7 +1740,14 @@ ProbeMsdcLeftovers (
   Say (SystemTable, L"IO ");
   SayHexN (SystemTable, L"dir=", PinGroupBits (PINCTRL_DIR_OFS), 3);
   SayHexN (SystemTable, L" do=", PinGroupBits (PINCTRL_DOUT_OFS), 3);
-  SayHex (SystemTable, L" ies=", *(volatile UINT32 *)(UINTN)(MSDC0_PAD_BASE + MSDC0_PAD_IES_OFS));
+  //
+  // Deliberately not the MSDC0 pad block at 0x10002000: it is outside this
+  // platform's memory map, and reading it is a translation fault at the third
+  // level, which is what IMG_5755 is -- the DxeCore exception dump with
+  // X8 = 0x10002010.  The pad's input-enable mask is therefore inferred from
+  // the GPIO window (gp=) instead of read.
+  //
+  SayHex (SystemTable, L" din=", PinGroupBits (PINCTRL_DIN_OFS));
   Say (SystemTable, L"\r\n");
 
   Say (SystemTable, L"IO ");
