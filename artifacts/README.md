@@ -8,7 +8,7 @@ checkout 完整复现。构建与打包的完整环境见
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
-| `boot-uefi-blockio.img` | 16,099,328 B | **当前上机版**：`CMD0` → `CMD1`(到 OCR bit31) → `CMD2/3/7/13` 走到 TRAN，然后 `CMD16/CMD8/CMD17` **真读 512 字节**（EXT_CSD + LBA 1）；整段日志压到 10 行 |
+| `boot-uefi-1bit.img` | 16,099,328 B | **当前上机版**：`CMD0` → `CMD1`(到 OCR bit31) → `CMD2/3/7/13` 走到 TRAN，然后 `CMD16/CMD8/CMD17` **真读 512 字节**（EXT_CSD + LBA 1）；整段日志压到 10 行 |
 | `panel-preview.png` | 720×1600 | `tools/render_panel_preview.py` 渲染的仪表区，**不用刷机就能看布局** |
 
 > 更早的几版（`boot-uefi-ping.img`、`boot-uefi-power.img`、`boot-uefi-m5-probe.img` …）
@@ -18,34 +18,39 @@ checkout 完整复现。构建与打包的完整环境见
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-29754419dfd99d4f9c84ec9445d6764fef471114d123b807d4a38c7be6cddeb5  SILICIUM_UEFI.fd
-91d210971a374bac35d6dde93cf572994e434e0c23332347dfbed859a68e09a7  boot-uefi-blockio.img
+73f1ad6425a064205937a3a9e262e180819fb69b0a7b602802c8ac0aba96f873  SILICIUM_UEFI.fd
+77a6a1c375627fc859cc0e46980f6a091ff9727ebaab3d7ab1f89d14eda15ebe  boot-uefi-1bit.img
 ```
 
-## 这一版是什么（2026-10-29 深夜，第五版）
+## 这一版是什么（2026-10-29 深夜，第六版）
 
-上一版（`boot-uefi-init.img`）把卡走到了 `CMD1` 有应答，读数（IMG_5750）：
+上一版（`boot-uefi-blockio.img`）第一次真的去读数据，IMG_5752 的读数把问题
+切成了两半：
 
 ```
-C0     I=00000100 cl=97  f=297 l=402 kc=14767
-PING a I=00000100 R=00FF8080 cl=125 f=15 l=222 kc=15187
-C1 n=1 I=00000100 R=C0FF8080
+C13 I=00000100 R=00000900 st=4          ← 命令全通：卡在 TRAN、被选中
+C8  I=00000100 sz=00000000 rv=00 ...    ← 只有 CMDRDY：没有 XFER_COMPL，也没有 DATTMO
+B1  I=00000100 S=00000000
 ```
 
-- `C1 n=1`：第一轮 `CMD1` 的 OCR 就带 **bit31=1**（上电完成）、bit30=1（扇区模式）；
-- **`C1` 之后没有字，不是失败**：文字区 68 行，`DandelionConsoleDxe` 的自检把光标留在
-  第 53 行，本驱动只剩 15 行预算；上一版要吃 21 行，`C2..C13` 被画到最后一行之外。
+两个原因，这一版都修：
 
-本版两件事：
+1. **`SDC_CMD` 的数据类型字段在 bit 11，不是 bit 9**（vendor 的注释：
+   `blklen<<16 | go_irq<<15 | stop<<14 | rw<<13 | dtype<<11 | rsptyp<<7 | opcode`，
+   CMD8 的现成命令字是 `0x02000888`）。写成 bit9 的结果是 rsptyp=5、dtype=0，
+   控制器根本没开数据通路；而**卡看不到主机的 dtype 字段**，CMD8 对它就是要发
+   512 字节，于是卡一直拉着 DAT0，后面的命令全部超时。
+2. **总线模式不匹配**：LK 把卡按 8-bit HS200 拉起来（写了 `EXT_CSD[183]/[185]`），
+   这两个字节是卡的配置、CMD0 不清；主机这边是 1-bit default（`SDC_CFG=0xFF007FFC`）。
+   命令走 CMD 单线无所谓，数据走 DAT 就不来。现在 TRAN 之后用 **CMD6 write-byte**
+   把 183/185 写回 0，再轮询 CMD13 到 TRAN+READY。
 
-1. **日志压到 10 行**（供电一整行、去掉 H1/CMD12/PING），整段固定落在
-   y 848..1008，绝不会被挤出屏幕；
-2. **真的读数据**：`C13 st=4` 之后跑 `CMD16`(SET_BLOCKLEN 512)、
-   `CMD8`(SEND_EXT_CSD，512 字节 PIO 读)、`CMD17`(LBA 1，即 GPT 头)。
+另外：`C8` 失败后会补一条真正的 **`CMD12 stop`**（`SDC_CMD` bit14），因为失败的
+数据相位会让卡一直占着 DAT0 —— LK 每次失败都发 CMD12，Mu 驱动从来不發。
 
 ### 怎么看屏幕
 
-**文字区是主证据**：
+**文字区是主证据**（11 行，固定在第 53..63 行）：
 
 ```
 PWR PS=81FF0002 DAT=FF CMD=1 CD=1 VEMC=1 vsel=3 3000mV w=1 f=0 BUS OK
@@ -56,19 +61,21 @@ C1 n=.. I=.. R=........
 C2 3=.. 2=.. 1=.. 0=..
 C3 I=.. R=.. C7 I=.. R=..
 C13 I=.. R=.. st=..
+C6 I=../../.. n=.. st=..           ← 写回 1-bit / default speed
 C8 I=.. sz=.. rv=.. bw=.. hs=.. c16=....
 B1 I=.. S=..
+stop I=..                          ← 只在 C8 失败时出现
 ```
 
 | 看到 | 结论 |
 |---|---|
-| `C13 st=4` + `C8 I=...0100` + `B1 S=45464920` | **整条存储通路打通**（命令/长响应/512 字节数据读/扇区寻址），剩下的纯粹是驱动 |
-| `C8 I=...4000`（DATTMO） | 命令通了、数据相位没起来 ⇒ 查 `SDC_CMD` 的 blklen/DTYP、`MSDC_CFG.PIO` |
-| `C8 I=...8000`（DATCRCERR） | 数据在线上但采样窗口不对 ⇒ `MSDC_PAD_TUNE0` / `EMMC50_CFG0` |
-| `C8 sz=00000000` | EXT_CSD 全零 ⇒ 读到的不是 EXT_CSD |
+| `C13 st=4` + `C6 st=4` + `C8 I=...0100` + `B1 S=45464920` | **整条存储通路打通**（命令/长响应/512 字节数据读/扇区寻址），剩下纯粹是驱动 |
+| `C8 I=...0100 sz=0` 且 `C6 st=4` | 模式改回来了、数据还不来 ⇒ 主机也切 8-bit（`SDC_CFG[17:16]=2`）再试 |
+| `C8 I=...4000`（DATTMO） | 控制器开了通路、卡不发 ⇒ 时序 / `MSDC_IOCON` 采样边沿 |
+| `C8 I=...8000`（DATCRCERR） | 数据在线上、采样窗口不对 ⇒ `MSDC_PAD_TUNE0` / `EMMC50_CFG0` |
+| `C6 st≠4` | CMD6 被拒或卡一直 busy |
 | `B1 S≠45464920` | 能读但内容不对 ⇒ 扇区模式 / LBA 偏移 / 分区表位置 |
 | `NOT IN TRAN` | `C13` 状态不是 4 ⇒ 回看 `C2`/`C3`/`C7` |
-| `CARD NOT READY` | 卡一直 busy ⇒ OCR 窗口 / VEMC / 重试次数 |
 | 某行 `I=00000200` | 那条命令超时，看它上一行 |
 
 三条位图条（y 1172 / 1186 / 1200）现在是采样版 `CMD0` 的 `PS` / AND / OR；
@@ -128,7 +135,7 @@ kernel 段 = gzip(SILICIUM_UEFI.fd) 607,232 B（FD 2,097,152 B）
 
 ```powershell
 adb reboot bootloader
-fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-blockio.img
+fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-1bit.img
 fastboot reboot
 ```
 
@@ -153,5 +160,5 @@ wsl -d Ubuntu -e bash /mnt/d/aios/dandelion-xnu/tools/build-local.sh
 
 # 2. 打包 + 校验（读 toml 里的 base，自动断言 kernel_addr）
 cd /mnt/d/aios/dandelion-xnu
-python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-blockio.img
+python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-1bit.img
 ```

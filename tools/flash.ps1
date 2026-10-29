@@ -37,7 +37,7 @@ if ($Restore) {
     throw "stock boot image not found at $Image"
   }
 } elseif ([string]::IsNullOrEmpty($Image)) {
-  $Image = Join-Path $repo "artifacts\boot-uefi-blockio.img"
+  $Image = Join-Path $repo "artifacts\boot-uefi-1bit.img"
 }
 
 if (-not (Test-Path $Image)) {
@@ -111,6 +111,7 @@ thin strip rows, the verdict patch and the three rows of cells.
                         C2 3=.. 2=.. 1=.. 0=..          (CID, R2)
                         C3 I=.. R=.. C7 I=.. R=..       (RCA, select)
                         C13 I=.. R=.. st=..             (4 = TRAN)
+                        C6 I=../.. n=.. st=..           (CMD6 back to 1-bit/default)
                         C8 I=.. sz=.. rv=.. bw=.. hs=.. (EXT_CSD, 512-byte read)
                         B1 I=.. S=..                    (LBA 1, GPT header)
 
