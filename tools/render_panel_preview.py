@@ -40,8 +40,16 @@ LABELS = ["INTR", "MCFG", "FIFO", "SSTS", "DCRC",
 # tools/gen_small_font.py: ORDER
 FONT_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ= "
 
+# StorageBeaconDxe.c: BEACON_STRIP_* / BEACON_DOTS_*
+STRIP_PS_BEFORE = 1172
+STRIP_PS_AFTER = 1186
+STRIP_VEMC = 1200
+DOTS_TOP = 1216
+DOTS_VOLUMES_X = 380
+
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
+DIM = (0x20, 0x20, 0x20)
 
 
 def load_font(header_path):
@@ -86,6 +94,13 @@ class Canvas(object):
                     self.fill(x + col * PANEL_SCALE, y + row * PANEL_SCALE,
                               PANEL_SCALE, PANEL_SCALE, WHITE)
 
+    def bit_strip(self, y, count, value, colour):
+        """StorageBeaconDxe.c: PaintBitStrip -- 9 px squares, groups of eight."""
+        for bit in range(count):
+            left = 8 + bit * 21 + (bit >> 3) * 6
+            self.fill(left, y, 9, 9,
+                      colour if (value >> bit) & 1 else DIM)
+
     def text(self, x, y, s, font):
         for ch in s:
             self.glyph(x, y, font.get(ch, font[" "]))
@@ -124,6 +139,9 @@ def main():
     ap.add_argument("--scmd", default="0x02000888")
     ap.add_argument("--scfg", default="0x05000009")
     ap.add_argument("--blkn", default="1")
+    ap.add_argument("--p-before", default="0x81FF0002")
+    ap.add_argument("--p-after", default="0x81FF0002")
+    ap.add_argument("--vemc", default="0x0501")
     ap.add_argument("--cells", default="6:yellow,7:red")
     args = ap.parse_args()
 
@@ -135,12 +153,20 @@ def main():
     # shows where the console stops.
     canvas.fill(0, 1087, WIDTH, 2, (40, 40, 40))
 
-    # StorageBeaconDxe banners (y 1100 and 1140, 30 px tall) and dot rows.
-    canvas.fill(8, 1100, 704, 30, (255, 0, 0))
-    canvas.fill(8, 1140, 704, 30, (255, 0, 0))
-    canvas.fill(8, 1190, 20, 20, (0, 0, 255))
-    canvas.fill(8, 1220, 20, 20, (0, 0, 255))
-    canvas.fill(36, 1220, 20, 20, (0, 0, 255))
+    # StorageBeaconDxe banners (y 1100 and 1140, 30 px tall).
+    canvas.fill(0, 1100, WIDTH, 30, (255, 0, 0))
+    canvas.fill(0, 1140, WIDTH, 30, (255, 0, 0))
+
+    # Power probe (StorageBeaconDxe.c ProbePower): P_before, P_after, VEMC.
+    canvas.bit_strip(STRIP_PS_BEFORE, 32, int(args.p_before, 16), (0, 255, 255))
+    canvas.bit_strip(STRIP_PS_AFTER, 32, int(args.p_after, 16), (255, 255, 0))
+    canvas.bit_strip(STRIP_VEMC, 16, int(args.vemc, 16), (255, 0, 255))
+
+    # One dot row, two counts: block devices from x 8, volumes from x 380.
+    for i in range(min(4, 12)):
+        canvas.fill(8 + i * 28, DOTS_TOP, 20, 20, (128, 0, 255))
+    for i in range(min(2, 12)):
+        canvas.fill(DOTS_VOLUMES_X + i * 28, DOTS_TOP, 20, 20, (0, 255, 0))
 
     values = [
         args.intr, args.mcfg, args.fifo, args.ssts, args.dcrc,
