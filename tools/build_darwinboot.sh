@@ -32,6 +32,13 @@ if [ ! -f "$UNIXNU_WORK/package/UniXNUPkg/UniXNUPkg.dec" ]; then
   git clone --depth 1 "$UNIXNU_SRC" "$UNIXNU_WORK"
 fi
 
+#
+# Our patch over upstream: make AllocateWindow's placement diagnostic also go to
+# ConOut, because UniXNU redraws its menu the moment the entry returns and wipes
+# the framebuffer rows it is drawn on.  ConOut is what reaches the flash log.
+#
+python3 "$REPO/tools/patch_darwinboot.py" "$WORK"
+
 if [ ! -x "$EDK/BaseTools/Source/C/bin/GenFw" ]; then
   echo "== building GenFw and GenSec (a full BaseTools make needs the brotli submodule)"
   make -C "$EDK/BaseTools/Source/C" -j"$(nproc)" GenFw GenSec
