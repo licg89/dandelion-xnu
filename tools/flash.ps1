@@ -113,7 +113,7 @@ thin strip rows, the verdict patch and the three rows of cells.
                         C13 I=.. R=.. st=..             (4 = TRAN)
                         IO dir=000 do=000 din=FFF       (pins 122..133, GPIO windows)
                         IO ioc=.. f60=.. adv=..         (controller leftovers)
-                        A8 I=.. R=.. sz=.. ps=../.. gp=.../... f=.. k=..... c6=....
+                        A8 I=.. R=.. sz=.. ps=../.. gp=.../... f=.. k=..... c6=.... t=. r=.
                         B8/C8/D8 ...                    (only if the line above failed)
                         D8 is the same 1-bit attempt with CKPDN cleared
                         B1 I=.. S=..                    (LBA 1, GPT header)

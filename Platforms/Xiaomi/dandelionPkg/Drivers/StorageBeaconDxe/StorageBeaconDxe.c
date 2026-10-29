@@ -1454,7 +1454,7 @@ ReadDataBlock (
   host's width to match, then read EXT_CSD and print where it stopped.
 
   Print shape:
-  `<tag> I=.... R=........ sz=........ ps=AA/BB gp=CCC/DD f=.. k=..... c6=........`
+  `<tag> I=.... R=........ sz=........ ps=AA/BB gp=CCC/DD f=.. k=.. c6=.. t=. r=.`
 
     I    MSDC_INT at the end.  ...0100 is CMDRDY alone (command ok, no data);
          ...1100 adds XFER_COMPL; ...4100 includes DATTMO; ...8100 DATCRCERR.
@@ -1468,7 +1468,12 @@ ReadDataBlock (
          independent windows onto the same pads: if the pins move in gp and not
          in ps, the controller's input path is the broken half, not the card.
     f    MSDC_FIFOCS.RXCNT still queued at the end: non-zero means bytes arrived.
-    c6   CMD6's interrupt word, 0000 when this attempt did not switch anything.
+    c6   CMD6's R1, all zeroes when this attempt did not switch anything (bit 7
+         set would mean the card refused the switch).
+    t    the card's CURRENT_STATE, read back with CMD13 right after the failed
+         read: 4 = TRAN (the card never started the transfer), 5 = DATA (it did
+         start and is being clocked, so the loss is on the host side).
+    r    READY_FOR_DATA from that same status.
 
   Returning Data.Ok is what lets the caller stop at the first mode that works
   instead of flashing one image per hypothesis.
@@ -1512,6 +1517,16 @@ ExtCsdAttempt (
   SendCommand (16, 512, SDC_CMD_RSP_R1, 0);
 
   Data    = ReadDataBlock (8, 0, mDataBlock, 512);
+
+  //
+  // Ask the card what it thinks happened.  If the data phase really started, the
+  // card is in DATA (5) with READY_FOR_DATA clear while it waits for its block to
+  // be shifted out; if it never started, the card is still in TRAN (4).  That
+  // separates 'the card is sending and the host drops it' from 'the card never
+  // starts', which nothing on the host side can tell apart.
+  //
+  Stat = SendCommand (13, Rca << 16, SDC_CMD_RSP_R1, 0);
+
   Sectors = (UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT] |
             ((UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT + 1] << 8) |
             ((UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT + 2] << 16) |
@@ -1531,6 +1546,10 @@ ExtCsdAttempt (
   Say (SystemTable, L" k=");
   SayDec (SystemTable, Data.ClkLow);
   SayHex (SystemTable, L" c6=", Sw.Resp[0]);
+  Say (SystemTable, L" t=");
+  SayDec (SystemTable, (Stat.Resp[0] >> 9) & 0xFu);
+  Say (SystemTable, L" r=");
+  SayDec (SystemTable, (Stat.Resp[0] >> 8) & 1u);
   Say (SystemTable, L"\r\n");
 
   return Data.Ok;
