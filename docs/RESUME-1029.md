@@ -7,7 +7,46 @@
 
 ---
 
-## ★ 最新结论（2026-10-29 22:0x）——**M6 不再是「外部依赖卡住」**
+## ★ 最新结论（2026-10-29 22:2x）——**UniXNU 在我们的固件上有了自己的启动项**
+
+一整条链在真机上成立，日志 + 面板双证（[M6-UNIXNU.md](M6-UNIXNU.md) §6）：
+
+```
+INHERIT OK
+BLOCK OK n=44
+FAT OK                                   ← flashinfo 里的 1 MiB FAT 卷
+PayloadBoot: device tree 127044 bytes published
+```
+
+```
+        ... dandelion   (UniXNU 0.1.0)
+        config: \EFI\UniXNU\UniXNU.toml
+      > 1. DarwinBoot (dandelion)  [efi]
+        2. Return to firmware  [action]
+        3. Restart  [action]
+        "DarwinBoot (dandelion)" returned: Success
+```
+
+```
+固件 → eMMC BlockIo → 分区 → FAT(flashinfo) → UniXNU.efi(flashinfo 槽)
+   → \EFI\UniXNU\UniXNU.toml → DarwinBoot.efi → 返回 Success
+```
+
+**M6 的「加载 UniXNU」「给它启动项」两步都成立。** DarwinBoot 是 `returned` 而不是跳转，
+因为它没有内核可跳 —— **绿条不是失败，是「真的走到跳转那一刻」的标志**。
+
+### 下一步（按代价排序）
+
+1. **定 80 vs 90 列**（§4 / §6.2）：UniXNU 与 XNU 都按 80 列排版，我们的控制台是 90。
+   在看 XNU 输出之前必须先定，否则整屏都是断行；
+2. **给 DarwinBoot 一个内核**：`kernel.macho` 需要 macOS + Xcode，或改用 Apple IPSW 的
+   kernelcache（不需编译，但需要设备 profile）；
+3. `UniXNURamDiskDxe` 的 initrd 路径（`/chosen` 里的 `linux,initrd-start/end`）——
+   我们自己发布了设备树，往 `/chosen` 里加两个属性就能让它把 payload 卷挂起来。
+
+---
+
+## ★ 更早一版（2026-10-29 22:0x）——M6 不再是「外部依赖卡住」
 
 `docs/UNIXNU-BUILD-NOTES.md` 说内核要 macOS，于是 M6 被记成卡在外部产物。**这个判断错了一半**：
 内核确实要 macOS，但 **`UniXNU.efi`、`UniXNUDxe`、`UniXNURamDiskDxe`、`DarwinBoot` 全是普通 EDK2 包，
@@ -227,7 +266,7 @@ R1=0x00000900，无错误位），但**没有任何一根 DAT 被驱动**：
 | 1–3 | boot-uefi-power/mux/... | PS=81FF0002（DAT=FF CMD=1 CD=1）、VEMC en=1 3000mV、m0=22222200、DIN=0xDFB | **供电/引脚/复用/复位全部排除** |
 | 4 | boot-uefi-cmd0.img | C0 I=00000100（此前一直是 0x200 CMDTMO）、PING a R=00FF8080 | 卡第一次回话；根因：**卡不在 idle，CMD1 非法** ⇒ 必须先 CMD0 |
 | 5 | boot-uefi-init.img | C1 n=1 R=C0FF8080（bit31=1） | 上电完成；C2..C13 被控制台行数截断（非失败） |
-| 6 | boot-uefi-fdt.img | C13 st=4、C8 I=00000100 sz=0、B1 S=0 | 进 TRAN；数据相位不存在 |
+| 6 | boot-uefi-80col.img | C13 st=4、C8 I=00000100 sz=0、B1 S=0 | 进 TRAN；数据相位不存在 |
 | 7 | boot-uefi-1bit.img | C6 I=0100/0100 n=1 st=4、C8 I=0100 | CMD6 被接受；仍无数据 |
 | 8 | boot-uefi-3modes.img | 三种模式 A8/B8/C8 全 ps=EF/FF | 模式不是原因 |
 | 9 | boot-uefi-datwin.img | **崩溃**：读 0x10002010 触发 translation fault | **pad 块不在内存映射里**，别直接读 |
@@ -260,7 +299,7 @@ R1=0x00000900，无错误位），但**没有任何一根 DAT 被驱动**：
 
 ### 3.1 先看 `PV` 行：`SDC_RESP0` 到底跟不跟着命令走
 
-**刷 `artifacts/boot-uefi-fdt.img`**（sha256 `c66cd965…`，2026-10-29 20:3x 本地构建），
+**刷 `artifacts/boot-uefi-80col.img`**（sha256 `c66cd965…`，2026-10-29 20:3x 本地构建），
 `C13` 那行后面会多出一行：
 
 ```
@@ -296,7 +335,7 @@ A8 I=0100 R=00000900 sz=00000000 ps=EF/FF gp=DF8/DFF f=00 k=14994 c6=00000000 t=
 刷机（手机必须在 fastboot；MTK LK 不支持 `fastboot boot`）：
 
 ```powershell
-powershell -File tools\flash.ps1        # 默认就是 boot-uefi-fdt.img
+powershell -File tools\flash.ps1        # 默认就是 boot-uefi-80col.img
 # 手机关机：长按电源 ~10 s；然后 电源 + 音量下 进 fastboot
 ```
 
@@ -334,7 +373,7 @@ GitHub API 用 git credential fill 取 token 后带 Bearer；匿名会被限流�
 
 **已经在 git 里、不用重建就能刷的**：
 
-- `artifacts\boot-uefi-fdt.img`（16 MB，当前上机镜像，sha256 `c66cd965…`）
+- `artifacts\boot-uefi-80col.img`（16 MB，当前上机镜像，sha256 `c66cd965…`）
 
 另外 D:\aios\xnu（Apple xnu-8796.141.3 的本地移植，**线 A，已冻结**）**没有可推送的远端**：
 已在那棵树里提交为分支 dandelion-port（5a023ec），并把整份改动的 patch 放进本仓库

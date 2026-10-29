@@ -38,7 +38,25 @@
 #define DANDELION_FB_WIDTH   720
 #define DANDELION_FB_HEIGHT  1600
 
-#define DANDELION_COLS       (DANDELION_FB_WIDTH / 8)    // 90
+//
+// 80 columns, not the 90 the 720-pixel width would allow at 8 px per glyph.
+//
+// Everything that runs above this console -- UniXNU's boot menu and, later, XNU's
+// own console -- lays text out for 80 columns and pads each line to 80 characters,
+// relying on the terminal to wrap.  At 90 columns it never wraps there, so a padded
+// line runs into the next one and the beginning of it scrolls off: on hardware that
+// looked like the UniXNU title reading "...U dandelion" and "...nfig:".
+//
+// DrawGlyph() advances 8 px per glyph regardless (Column * 8), so this change only
+// affects where lines wrap, what QueryMode() reports and where the cursor is
+// clamped.  The cost is 80 unused pixels on the right; the benefit is that a guest
+// which assumes 80 columns is readable, which matters more than our own log lines
+// being 10 characters wider.
+//
+// PcdConOutColumn in dandelion.dsc must stay equal to this, or ConSplitterDxe
+// asserts (CORRECTIONS C-series, "PcdConOutColumn/Row must equal QueryMode").
+//
+#define DANDELION_COLS       80
 #define DANDELION_ROWS       (DANDELION_FB_HEIGHT / 16)  // 100
 
 //

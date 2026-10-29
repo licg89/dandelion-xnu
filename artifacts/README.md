@@ -8,7 +8,7 @@ checkout 完整复现。构建与打包的完整环境见
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
-| `boot-uefi-fdt.img` | 16,099,328 B | **当前上机版**：修好 device tree 发布（之前 magic 按小端比较，永远失败）；新增「从 `flashinfo` +2 MiB 加载 payload」；payload 返回后再刷一次日志 |
+| `boot-uefi-80col.img` | 16,099,328 B | **当前上机版**：控制台改成 **80 列**（UniXNU / XNU 都按 80 列排版），`flashinfo` 里已有 1 MiB FAT 卷，UniXNU 有自己的启动项 |
 | `panel-preview.png` | 720×1600 | `tools/render_panel_preview.py` 渲染的仪表区，**不用刷机就能看布局** |
 
 > 更早的几版（`boot-uefi-inh.img`、`boot-uefi-pv.img`、`boot-uefi-state.img`、
@@ -18,8 +18,8 @@ checkout 完整复现。构建与打包的完整环境见
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-15fb7c6b2966c0ca0504ff6277ca3eea60c82cc026086ac9cec7295f5f41a782  SILICIUM_UEFI.fd
-29adeff639feb7c10bde362f927a3563d5d2c246f659332e08c96986ad32ef19  boot-uefi-fdt.img
+0f8c69d415ebe1fca4ea597a25f73545b3972c445bbb379fddfa9e10cb947cd5  SILICIUM_UEFI.fd
+03ee8f47a7c2e78dd4f9a7ed402719d15220c55d267886aa3dc13e59b93faa9a  boot-uefi-80col.img
 ```
 
 ## 这一版是什么（2026-10-29 21:2x，第十四版）——eMMC 读写全开，日志落盘

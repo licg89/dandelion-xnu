@@ -158,7 +158,7 @@
 # single mode and the whole fallback path disappear.
 #
 [PcdsDynamicDefault]
-  gEfiMdeModulePkgTokenSpaceGuid.PcdConOutColumn|90
+  gEfiMdeModulePkgTokenSpaceGuid.PcdConOutColumn|80
   gEfiMdeModulePkgTokenSpaceGuid.PcdConOutRow|68
 
 [Components]

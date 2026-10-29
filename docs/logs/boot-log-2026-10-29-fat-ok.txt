@@ -1,0 +1,18 @@
+DANDELION UEFI
+CONSOLE OK (720 / 8)x68
+Oct 29 2026 13:32:36
+SELFTEST 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZDIRECT CALL 0123456789COUT 0 50x19EMMC OK div=26 sec=0747C000
+INH C=02201A99 S=FF027FFC k=1 C'=02210499
+INH C13 I=00000100 R=00000900 st=4
+INH C8 I=00001100 rev=08 bw=06 hs=01 sec=0747C000
+INH B1 I=00001100 S=45464920
+
+MSDC PASSTHRU
+PWR PS=81FF0002 DAT=FF CMD=1 CD=1 VEMC=1 vsel=3 3000mV w=1 f=0 BUS OK
+INHERIT OK
+BLOCK OK n=44
+FAT OK
+PayloadBoot: device tree 127044 bytes published
+PayloadBoot: device tree published as an EFI configuration table
+PayloadBoot: firmware log handed over, 569 bytes
+PayloadBoot: firmware log published as an EFI configuration table

@@ -94,3 +94,66 @@ UniXNU 的 UI 假定的控制台宽度是 **80 列**，每行补齐到 80 个字
 第 3、4 步可以先用一个**假内核**验证：DarwinBoot 收到控制权后会打
 `DARWINBOOT: command line:` 并在顶部画一条**绿条**再跳转。只要看到绿条，
 就说明「UniXNU → DarwinBoot → 跳转」整条链路是通的，内核可以最后再补。
+
+---
+
+## 6. 第二个里程碑：FAT 挂上了，UniXNU 读到了配置，DarwinBoot 起来了
+
+上一节说 `no boot entry found` 是因为**没有卷可读**。这一轮把 1 MiB 的 FAT12 卷写进
+`flashinfo` 开头（`tools/mk_unixnu_esp.sh`），里面放 `\EFI\UniXNU\` 四个文件，
+于是同一次启动里三件事一起成立：
+
+日志（`flashinfo+1 MiB`，[logs/boot-log-2026-10-29-fat-ok.txt](logs/boot-log-2026-10-29-fat-ok.txt)）：
+
+```
+INHERIT OK
+BLOCK OK n=44
+FAT OK                                    ← M4 最初的判据，第一次诚实地成立
+PayloadBoot: device tree 127044 bytes published
+PayloadBoot: firmware log published as an EFI configuration table
+```
+
+面板（[images/m6-unixnu-menu.png](images/m6-unixnu-menu.png)）：
+
+```
+        ... dandelion   (UniXNU 0.1.0)
+        config: \EFI\UniXNU\UniXNU.toml          ← 我们的配置被读到了
+      > 1. DarwinBoot (dandelion)  [efi]        ← 我们的启动项，3 秒后自动选中
+        2. Return to firmware  [action]
+        3. Restart  [action]
+        ...
+        "DarwinBoot (dandelion)" returned: Success   ← DarwinBoot 被加载、执行、返回
+        drivers 0 loaded / 0 failed    kits 0    acpi 0
+```
+
+所以链路现在是：
+
+```
+固件 → DandelionEmmcDxe BlockIo → 44 个句柄 → 分区 → FAT（flashinfo 里的 1 MiB）
+   → PayloadBootDxe 从 flashinfo 槽加载 UniXNU.efi
+   → UniXNU 读到 \EFI\UniXNU\UniXNU.toml
+   → 选中 DarwinBoot.efi → LoadImage/StartImage → 返回 Success
+```
+
+**M6 的「加载并启动 UniXNU」和「给它一个启动项」两步都成立。** 日志只有 686 字节
+（第一次 flush），因为 UniXNU 起完 DarwinBoot 后回到自己的菜单等人按键，
+`StartImage` 还没返回 —— 面板底部那条**橙色** payload 横条就是证据：
+`PayloadBootDxe` 还停在「正在找 payload」的颜色里。
+
+### 6.1 DarwinBoot 为什么是 returned 而不是跳转
+
+`DarwinBoot.efi` 的职责是「接住参数 → 打 `DARWINBOOT: command line:` → 画绿条 →
+关 MMU → 跳内核」。没有内核它就没有可跳的目标，于是正常返回。
+所以**绿条不是失败**，它是「真的走到跳转那一刻」的标志，而下一次需要给它一个内核。
+
+### 6.2 顺带暴露的呈现问题（已经写在 §4，现在更明显）
+
+面板上图里标题行是 `...U dandelion` / `...nfig:` —— 左边被吃掉了。
+原因还是 §4 那一条：UniXNU 按 **80 列**排版并补齐到 80，我们的控制台是 **90 列**，
+于是它的行被拆到了下一行开头。菜单项本身（不带补齐）是正常的，所以这个问题
+只影响 UniXNU 的标题/状态行。
+
+修法二选一，必须在看 XNU 输出之前定：
+
+- `PcdConOutColumn` / `QueryMode()` 改成 80 —— UniXNU 与 XNU 排版都对，我们日志每行少 10 字符；
+- 保持 90，确认 UniXNU 是否读 `Mode->CursorColumn` / `QueryMode` 来决定列数。
