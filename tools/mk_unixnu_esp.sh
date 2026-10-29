@@ -32,7 +32,7 @@ set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 OUT=${ESP_OUT:-$REPO/out/unixnu-esp.img}
 SRC=$REPO/Resources/UniXNU
-SIZE_KIB=${ESP_SIZE_KIB:-16256}
+SIZE_KIB=${ESP_SIZE_KIB:-15000}
 LABEL=${ESP_LABEL:-UNIXNU}
 
 print_steps() {

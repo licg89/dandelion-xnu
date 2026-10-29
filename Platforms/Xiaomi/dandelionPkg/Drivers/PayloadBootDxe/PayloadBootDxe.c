@@ -532,7 +532,7 @@ PublishDeviceTree (
 // that stops short of it, and extract_log_block.py scans for the magic on every
 // sector boundary, so the pull offset does not have to be kept in sync anywhere.
 //
-#define LOG_PARTITION_OFFSET   32512
+#define LOG_PARTITION_OFFSET   30512
 #define LOG_SECTOR            512
 #define LOG_TEXT_MAX          ((LOG_WRITE_SECTORS - 1) * LOG_SECTOR)
 //
