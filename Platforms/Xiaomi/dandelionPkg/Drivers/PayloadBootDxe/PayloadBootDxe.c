@@ -45,6 +45,7 @@
 #include <Protocol/SimpleFileSystem.h>
 #include <Protocol/FirmwareVolume2.h>
 #include <Protocol/LoadedImage.h>
+#include <Guid/EventGroup.h>
 #include <Protocol/BlockIo.h>
 #include <Protocol/DandelionLog.h>
 
@@ -551,6 +552,7 @@ STATIC BOOLEAN    mFlushBusy;
 // explained the failure was gone.
 //
 STATIC BOOLEAN    mFlushQuiet;
+STATIC EFI_EVENT  mEbsEvent;
 STATIC VOID       EFIAPI  FlushTickEntry (IN EFI_EVENT Event, IN VOID *Context);
 
 STATIC
@@ -1065,6 +1067,31 @@ FlushTickEntry (
   mFlushBusy = FALSE;
 }
 
+/**
+  One last flush on the way out of boot services.
+
+  The heartbeat timer dies the moment ExitBootServices runs, so everything the
+  payload prints after the last tick -- and DarwinBoot prints a lot there: the
+  kernel's virtual and physical base, the entry point, the command line,
+  "inputs validated; exiting boot services", "hand-off to the kernel" -- was lost
+  to the log every time.  An EVT_SIGNAL_EXIT_BOOT_SERVICES notification runs
+  inside ExitBootServices, while boot services still work, which is the last
+  moment a BlockIo write is possible.
+
+  This is what makes the hand-off readable without a photograph: after it, the
+  log ends with whatever DarwinBoot said right before it left.
+**/
+STATIC
+VOID
+EFIAPI
+OnExitBootServices (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  (VOID)FlushLogToFlash ();
+}
+
 STATIC
 VOID
 FreezeConsole (
@@ -1330,6 +1357,19 @@ PayloadBootEntryPoint (
   mFlushTimer = NULL;
   mFlushBusy  = FALSE;
   mFlushQuiet = TRUE;
+
+  //
+  // Last chance to write: a notification that runs inside ExitBootServices.
+  //
+  mEbsEvent = NULL;
+  (VOID)gBS->CreateEventEx (
+               EVT_NOTIFY_SIGNAL,
+               TPL_NOTIFY,
+               OnExitBootServices,
+               NULL,
+               &gEfiEventExitBootServicesGuid,
+               &mEbsEvent
+               );
   if (!EFI_ERROR (gBS->CreateEvent (
                           EVT_TIMER | EVT_NOTIFY_SIGNAL,
                           TPL_CALLBACK,

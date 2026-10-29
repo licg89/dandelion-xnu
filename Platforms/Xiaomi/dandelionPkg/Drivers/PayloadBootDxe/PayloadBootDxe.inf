@@ -48,6 +48,7 @@
 [Guids]
   gEfiFileInfoGuid                   ## SOMETIMES_CONSUMES
   gDandelionLogTableGuid             ## PRODUCES
+gEfiEventExitBootServicesGuid      ## CONSUMES
 
 #
 # Always dispatched: "no payload found" is a result worth painting, and a depex
