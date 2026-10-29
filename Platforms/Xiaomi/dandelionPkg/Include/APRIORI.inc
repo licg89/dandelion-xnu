@@ -27,17 +27,21 @@ APRIORI DXE {
   INF MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
 
   #
-  # 2026-10-29 01:0x -- MsdcDxe is back here, BEFORE the console, and this time
-  # it can stay: MsdcImplLib's markers no longer go through ConOut at all, they
-  # paint straight into the framebuffer (see MsdcStage/MsdcSay).  The previous
-  # build had it after the console for text output, and the panel showed the
-  # console's own proof bars but *no* MSDC cells whatsoever, i.e. the dispatcher
-  # never reached it.  Two candidates: BdsDxe takes over the moment a real
-  # SimpleTextOut appears (BdsEntry never returns), or the console's entry point
-  # dies before returning.  Putting storage first makes the eMMC result
-  # independent of that question -- which is the whole point of M4.
+  # 2026-10-29 20:3x -- MsdcDxe is GONE, not reordered.
   #
-  INF MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.inf
+  # Everything above was about *where* it ran.  The question was wrong: running
+  # it at all is what costs the data path.  Its bring-up resets the controller,
+  # sends CMD0 and re-initialises the card, and a card re-initialised that way
+  # answers every command and then never drives DAT0..7 (IMG_5760: four bus
+  # modes, identical I=0100 / ps=EF/FF / k=14999).  bootshim/msdc.c gets reads
+  # and writes out of the same controller on the same phone by inheriting LK's
+  # state and touching only the clock divider -- see docs/EMMC-LOG.md.
+  #
+  # So MSDC0 must be untouched when StorageBeaconDxe runs, and StorageBeaconDxe
+  # is now the eMMC driver (InheritProbe) rather than a reporter on top of one.
+  # Its Depex is TRUE, so it needs nothing from here to dispatch.
+  #
+# INF MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.inf
 
   INF MdeModulePkg/Bus/Sd/EmmcDxe/EmmcDxe.inf
   INF MdeModulePkg/Bus/Sd/SdDxe/SdDxe.inf

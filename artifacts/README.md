@@ -8,19 +8,39 @@ checkout 完整复现。构建与打包的完整环境见
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
-| `boot-uefi-pv.img` | 16,099,328 B | **当前上机版**：在 `boot-uefi-state.img` 基础上多了一行 **`PV`**——用 `CMD13 → CMD10 → CMD13` 证明 `SDC_RESP0` 真的跟着命令走（而不是留着上一条命令的残留） |
+| `boot-uefi-inh.img` | 16,099,328 B | **当前上机版**：`MsdcDxe` 已从 FV 里移除，改由 `StorageBeaconDxe` 的 **`InheritProbe()`** 逐字照抄 `bootshim/msdc.c` 的「继承、绝不重新初始化」路径，打印 4 行 `INH` |
 | `panel-preview.png` | 720×1600 | `tools/render_panel_preview.py` 渲染的仪表区，**不用刷机就能看布局** |
 
-> 更早的几版（`boot-uefi-state.img`、`boot-uefi-blockio.img`、`boot-uefi-power.img` …）
-> 不再跟着仓库一起变大：它们仍在 git 历史里，需要时 `git log -- artifacts/` 取。
-> 仓库里只保留当前版本。
+> 更早的几版（`boot-uefi-pv.img`、`boot-uefi-state.img`、`boot-uefi-blockio.img`、
+> `boot-uefi-power.img` …）不再跟着仓库一起变大：它们仍在 git 历史里，需要时
+> `git log -- artifacts/` 取。仓库里只保留当前版本。
 
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-27b7393f660818e74250a864a9078cd206421e1e58bd3c62133fa7fc54455d61  SILICIUM_UEFI.fd
-c1baecb7ca36af2b5dcd6dc95f47186f18624a289fa6e78fd6b9428cc56ee1fd  boot-uefi-pv.img
+c268f67cd383ba7f27106d3f6e130a24814740f0c7eda3fcb293c2e2bb5fa6f5  SILICIUM_UEFI.fd
+ba70223d8d8d043aadc00d26a89c7d94dc301ff65ce572c6517a46e57304fc07  boot-uefi-inh.img
 ```
+
+## 这一版是什么（2026-10-29 20:3x，第十二版）
+
+上一版（`boot-uefi-pv.img`）的读数（IMG_5760）回答了两件事，一件是误读，一件是真答案。
+
+**误读**：`PV pre=00000900 a=00000900 b0=00000000 c=00400900 STALE`。判据选错了命令 ——
+`CMD10`（SEND_CID）只在 **stby** 态合法，TRAN 态下卡回的是 48 位错误响应而主机在等 136 位，
+所以 `b0=0`；`ILLEGAL_COMMAND` 锁存后由下一条 CMD13 报出来，所以 `c` 多了 bit22。
+`b0 != a` 已经证明 `SDC_RESP0` **是活的**。反证：上一版没有 `PV` 这一行，同一位置的
+`c6` 是 `00000900`；这一版 `PV` 先发了一次非法 CMD10，`c6` 就变成 `00400800`（同一个 bit22）。
+
+**真答案**：`A8/B8/C8/D8` 四轮逐字相同，说明位宽/时序不是变量；`k≈15000/30000` 说明时钟
+一直在跑。而 **line A 的 `bootshim/msdc.c` 早就在同一台手机上读写过 eMMC**
+（[`docs/EMMC-LOG.md`](../docs/EMMC-LOG.md)：写入 5159 字节并读回校验通过），它的策略是
+「继承 LK 留下的控制器与卡状态，**绝不重新初始化**」，而 UEFI 侧做的正是它的反面。
+
+这一版改动：`MsdcDxe` 从 `Include/DXE.inc` + `Include/APRIORI.inc` 整条移除；
+`StorageBeaconDxe` Depex 改 `TRUE`；新增 `InheritProbe()`；四轮阶梯缩成单条 `A8`。
+完整判读见 [`docs/ANALYSIS-INHERIT-VS-REINIT.md`](../docs/ANALYSIS-INHERIT-VS-REINIT.md)，
+更正见 [`docs/CORRECTIONS.md`](../docs/CORRECTIONS.md) C15。
 
 ## 这一版是什么（2026-10-29 深夜，第十一版）
 

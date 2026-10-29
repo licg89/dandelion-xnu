@@ -30,27 +30,26 @@
   gEfiSdMmcPassThruProtocolGuid      ## CONSUMES
 
 #
-# Depend on the pass-through protocol (2026-10-29 00:3x).
+# No dependency any more (2026-10-29 20:3x).
 #
-# Two earlier choices were both wrong for different reasons:
+# It used to depend on gEfiSdMmcPassThruProtocolGuid, i.e. on MsdcDxe having
+# installed it.  MsdcDxe is now out of the firmware volume on purpose: its
+# bring-up resets the controller, sends CMD0 and walks the card up from IDLE
+# again, and IMG_5760 shows that a card re-initialised that way will answer
+# every command and then send no data at all.  The driver that replaced it does
+# the opposite -- inherit LK's controller and card state, exactly as
+# bootshim/msdc.c does, which is the only configuration that has ever moved a
+# byte on this board (docs/EMMC-LOG.md).  See InheritProbe().
 #
-#   SimpleFileSystem -> only ran once FAT had already bound a volume, i.e. it
-#                       could report success but never say where it stopped;
-#   BlockIo          -> ran only after EmmcDxe had bound, which is precisely the
-#                       binding that never happens on this platform: nothing
-#                       calls ConnectController for the pass-through handle
-#                       (BDS would, and BDS does not get that far here).
-#
-# Depending on SdMmcPassThru means this driver is dispatched the instant
-# MsdcDxe installs it -- early enough to run the connect sweep itself and
-# produce the BlockIo handle rather than wait for one.
+# Dispatch order is therefore governed by the FV list (Include/DXE.inc), which
+# places this driver after the console so its output has somewhere to go.
 #
 # Cell map on the panel (y 1400, 80x80, pitch 88):
 #
-#   6 yellow  this driver ran -> the pass-through protocol exists
+#   6 yellow  this driver ran
 #   4 purple  a BlockIo handle exists
 #   7 red     connect sweep finished with no block device
 #   5 green   a SimpleFileSystem mounted
 #
 [Depex]
-  gEfiSdMmcPassThruProtocolGuid
+  TRUE

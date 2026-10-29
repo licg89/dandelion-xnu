@@ -7,6 +7,34 @@
 
 ---
 
+## ★ 最新结论（2026-10-29 20:3x）——先读这一节
+
+**答案一直在仓库里：line A 的 `bootshim/msdc.c` 已经在同一台手机上读写过 eMMC**
+（[EMMC-LOG.md](EMMC-LOG.md)：往 `flashinfo` 写入 5159 字节并逐字节读回校验通过）。
+它的策略是**「继承 LK 留下的控制器与卡状态，绝不重新初始化」**，而 UEFI 侧这几轮做的
+恰好是它的反面：复位控制器、发 CMD0、从 IDLE 重新初始化卡、把主机位宽改掉。
+
+`EXT_CSD[183]`（`BUS_WIDTH`）和 `EXT_CSD[185]`（`HS_TIMING`）是**卡的配置，CMD0 清不掉**，
+所以重新初始化之后卡仍然是 LK 留下的 8 位 HS 模式，而主机已经把自己设成了 1 位 ——
+这就是「命令全通、DAT 一根都不动」的具体形态。
+
+完整判读见 [ANALYSIS-INHERIT-VS-REINIT.md](ANALYSIS-INHERIT-VS-REINIT.md)，
+更正见 [CORRECTIONS.md](CORRECTIONS.md) C15。本轮改动：
+
+- `MsdcDxe` 从 `Include/DXE.inc` + `Include/APRIORI.inc` **整条移除**；
+- `StorageBeaconDxe` Depex 改 `TRUE`，新增 `InheritProbe()`（逐字照抄 `host_bringup()`），
+  打印 `INH C=.. S=.. k=.. C'=..` / `INH C13 ..` / `INH C8 .. rev=.. bw=.. hs=.. sec=..` /
+  `INH B1 .. S=..`；
+- `A8/B8/C8/D8` 四轮阶梯缩成单条 `A8`；
+- `PV ... STALE` 是误读（CMD10 在 TRAN 态非法，bit22 是锁存后由下一条 CMD13 报出的），
+  `SDC_RESP0` **是活的**，本仓库所有 R1 都可信。
+
+**下一个动作**：看 `INH` 四行。`INH C8 I=...1100`（含 `XFER_COMPL`）+ `INH B1 S=45464920`
+就是成功，接下来把 `bootshim/msdc.c` 的读路径整体搬成一个 `DandelionEmmcDxe` 产出 `BlockIo`，
+M4 收尾；判读表在 [ANALYSIS-INHERIT-VS-REINIT.md](ANALYSIS-INHERIT-VS-REINIT.md) §5。
+
+---
+
 ## 0. 项目全貌（30 秒）
 
 **目标**：把 Apple 的 XNU 移植到 **Xiaomi Redmi 9A（dandelion，MT6762G / MT6765）**，在真机启动到用户态。
@@ -94,7 +122,7 @@ R1=0x00000900，无错误位），但**没有任何一根 DAT 被驱动**：
 
 ### 3.1 先看 `PV` 行：`SDC_RESP0` 到底跟不跟着命令走
 
-**刷 `artifacts/boot-uefi-pv.img`**（sha256 `c1baecb7…`，2026-10-29 20:0x 本地构建），
+**刷 `artifacts/boot-uefi-inh.img`**（sha256 `ba70223d…`，2026-10-29 20:3x 本地构建），
 `C13` 那行后面会多出一行：
 
 ```
@@ -130,7 +158,7 @@ A8 I=0100 R=00000900 sz=00000000 ps=EF/FF gp=DF8/DFF f=00 k=14994 c6=00000000 t=
 刷机（手机必须在 fastboot；MTK LK 不支持 `fastboot boot`）：
 
 ```powershell
-powershell -File tools\flash.ps1        # 默认就是 boot-uefi-pv.img
+powershell -File tools\flash.ps1        # 默认就是 boot-uefi-inh.img
 # 手机关机：长按电源 ~10 s；然后 电源 + 音量下 进 fastboot
 ```
 
@@ -168,7 +196,7 @@ GitHub API 用 git credential fill 取 token 后带 Bearer；匿名会被限流�
 
 **已经在 git 里、不用重建就能刷的**：
 
-- `artifacts\boot-uefi-pv.img`（16 MB，当前上机镜像，sha256 `c1baecb7…`）
+- `artifacts\boot-uefi-inh.img`（16 MB，当前上机镜像，sha256 `ba70223d…`）
 
 另外 D:\aios\xnu（Apple xnu-8796.141.3 的本地移植，**线 A，已冻结**）**没有可推送的远端**：
 已在那棵树里提交为分支 dandelion-port（5a023ec），并把整份改动的 patch 放进本仓库

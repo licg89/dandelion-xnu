@@ -39,8 +39,28 @@
   # but never let MsdcImplLib write through it -- see PowerControl().
   INF MediaTekPkg/Drivers/MT6358PmicDxe/MT6358PmicDxe.inf
 
-  INF MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.inf
-  # M4 beacon: only dispatched when a SimpleFileSystem exists (see the .inf Depex).
+  #
+  # MsdcDxe is deliberately NOT in the firmware volume any more (2026-10-29
+  # 20:3x).  Two reasons, both measured:
+  #
+  #   1. Its bring-up is the thing that breaks the data path.  It resets the
+  #      controller (MSDC_CFG.RST), sends CMD0, walks the card up from IDLE and
+  #      sets the host bus width -- while the card's own bus width lives in
+  #      EXT_CSD[183] and survives CMD0.  After that every command answers and
+  #      no data ever arrives (IMG_5757..IMG_5760: I=0100, ps=EF/FF, k=14999).
+  #   2. bootshim/msdc.c reads and writes the same controller from bare metal on
+  #      the same phone precisely by NOT doing any of that -- it inherits LK's
+  #      state and only slows the clock (docs/EMMC-LOG.md has the verified
+  #      result: 5159 bytes written and read back from flashinfo).
+  #
+  # StorageBeaconDxe now carries that inherit path instead (see its InheritProbe)
+  # and its Depex is TRUE, so it dispatches on its own.  EmmcDxe/SdDxe stay in
+  # the volume but have no pass-through producer to bind to, which is what we
+  # want until the inherit path produces a BlockIo of its own.
+  #
+# INF MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.inf
+  # M4 beacon: now self-contained -- it is the eMMC driver, not a reporter on
+  # top of one.
   INF dandelionPkg/Drivers/StorageBeaconDxe/StorageBeaconDxe.inf
   #
   # M5 loader.  This file is the FV content list; APRIORI.inc only orders the

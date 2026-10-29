@@ -128,10 +128,31 @@
 #define MSDC_FIFOCS_OFS        0x14
 #define MSDC_TXDATA_OFS        0x18
 #define MSDC_RXDATA_OFS        0x1C
+#define MSDC_CFG_MODE          (1u << 0)
 #define MSDC_CFG_PIO           (1u << 3)
 #define MSDC_CFG_CKPDN         (1u << 1)
 #define MSDC_CFG_RST           (1u << 2)
 #define MSDC_CFG_CKSTB         (1u << 7)
+//
+// MSDC_CFG[19:8] is the divider; [21:20] is CKMOD, which is inherited on
+// purpose (bootshim/msdc.c:694-697).  Masking only the divider keeps CKMOD,
+// CCKPD and CKSTB exactly as LK left them.
+//
+#define MSDC_CFG_CKDIV_MASK    (0xFFFu << 8)
+#define MSDC_CFG_CKDIV(d)      (((UINT32)(d) & 0xFFFu) << 8)
+//
+// SDC_CFG[31:24] is the card data timeout (DTOC) and [14:2] the write/busy
+// timeout (WRDTOC).  Both are hardware backstops; our software deadlines are
+// the real limit.  BUSWIDTH ([17:16]) is NOT touched by the inherit path.
+//
+#define SDC_CFG_DTOC_MASK      (0xFFu << 24)
+#define SDC_CFG_WRDTOC_MASK    (0x1FFFu << 2)
+//
+// The divider bootshim uses against this controller: 260, i.e. ~385 kHz off
+// MSDC PLL/2 (bootshim/msdc.c:1019).  At that clock there is no sampling point
+// to get wrong, which is the whole point of slowing the bus down first.
+//
+#define INHERIT_CKDIV          260u
 //
 // What SDC_CFG must hold after a controller reset: the value this platform
 // inherits from LK (IMG_5757 read it back as 0xFF007FFC), i.e. 1-bit bus, a data
@@ -1556,6 +1577,137 @@ ExtCsdAttempt (
 }
 
 /**
+  Read a block the way bootshim/msdc.c does it: inherit, do not re-initialise.
+
+  This is the one thing every round up to IMG_5760 never tried.  Line A already
+  wrote 5159 bytes into the `flashinfo` partition from bare metal on this exact
+  phone (docs/EMMC-LOG.md), so a working MSDC0 read path exists in this
+  repository and its policy is stated in its own header:
+
+      "LK has just loaded *this image* through MSDC0, so the controller is
+       clocked, the pads are muxed, the card is selected with RCA 1 and it is in
+       the transfer state.  We therefore inherit rather than re-initialise: no
+       CMD0, no CMD1, no re-tuning."
+      "CKMOD and SDC_CFG.BUSWIDTH are left exactly as LK set them, because the
+       card's own bus width lives in EXT_CSD[183] and the two must keep matching."
+
+  Everything below us in this file does the opposite of all four of those: it
+  resets the controller, sends CMD0 and walks the card up from IDLE again, and
+  sets the host to 1 bit while the card is still whatever width LK left it.  Four
+  attempts across three bus modes (IMG_5757..IMG_5760, `A8`/`B8`/`C8`/`D8`) all
+  failed identically -- `I=0100` (CMDRDY alone, no XFER_COMPL, no DATTMO),
+  `ps=EF/FF`, `k=14999` (the clock pad toggling half the samples, so the clock is
+  running and the card is simply not driving DAT0..7).  A card in TRAN with
+  READY_FOR_DATA that is asked for 512 bytes always sends them, so the remaining
+  explanation is that the host is not talking to the card it thinks it is.
+
+  Hence this probe, which runs FIRST -- before anything in this driver or in the
+  FV touches MSDC0 -- and does only what bootshim does:
+
+    - MSDC_INTEN = 0, MSDC_INT = all ones (polling only, stale flags dropped)
+    - MSDC_CFG: keep everything, replace only the divider, wait for CKSTB
+    - SDC_CFG:  keep BUSWIDTH, widen DTOC/WRDTOC
+    - CMD13 (RCA 1) to confirm TRAN, then CMD8 (EXT_CSD), then CMD17 (LBA 1)
+
+  Four lines of output: the inherited registers, the status, EXT_CSD's revision /
+  bus width / HS timing / sector count, and the GPT signature.
+**/
+STATIC
+BOOLEAN
+InheritProbe (
+  IN EFI_SYSTEM_TABLE  *SystemTable
+  )
+{
+  UINT32       CfgBefore;
+  UINT32       SdcBefore;
+  UINT32       CfgAfter;
+  UINT32       Sdc;
+  UINT32       Tries;
+  UINT32       Sectors;
+  UINT32       Signature;
+  CARD_RESP    Status;
+  DATA_RESULT  Ext;
+  DATA_RESULT  Gpt;
+
+  CfgBefore = Msdc0Read32 (MSDC_CFG_OFS);
+  SdcBefore = Msdc0Read32 (SDC_CFG_OFS);
+
+  Msdc0Write32 (MSDC_INTEN_OFS, 0);
+  Msdc0Write32 (MSDC_INT_OFS, 0xFFFFFFFFu);
+
+  Msdc0Write32 (MSDC_CFG_OFS,
+                (CfgBefore & ~MSDC_CFG_CKDIV_MASK) |
+                MSDC_CFG_MODE | MSDC_CFG_PIO | MSDC_CFG_CKDIV (INHERIT_CKDIV));
+
+  //
+  // CKSTB (bit 7) is the "clock is stable" bit, and bootshim treats its absence
+  // as a hard stop: with the clock gated nothing else may be touched.
+  //
+  for (Tries = 0; Tries < 20; Tries++) {
+    if ((Msdc0Read32 (MSDC_CFG_OFS) & MSDC_CFG_CKSTB) != 0) {
+      break;
+    }
+
+    gBS->Stall (1000);
+  }
+
+  CfgAfter = Msdc0Read32 (MSDC_CFG_OFS);
+
+  Sdc  = Msdc0Read32 (SDC_CFG_OFS);
+  Sdc &= ~(SDC_CFG_DTOC_MASK | SDC_CFG_WRDTOC_MASK);
+  Sdc |= (0xFFu << 24) | (0x1FFFu << 2);
+  Msdc0Write32 (SDC_CFG_OFS, Sdc);
+
+  SayHex (SystemTable, L"INH C=", CfgBefore);
+  SayHex (SystemTable, L" S=", SdcBefore);
+  Say (SystemTable, L" k=");
+  SayDec (SystemTable, ((CfgAfter & MSDC_CFG_CKSTB) != 0) ? 1u : 0u);
+  SayHex (SystemTable, L" C'=", CfgAfter);
+  Say (SystemTable, L"\r\n");
+
+  //
+  // The card should still be selected with RCA 1 and idle in TRAN, because LK
+  // left it that way to load this very image.  If it is not, the rest of this
+  // probe is meaningless and the line says so.
+  //
+  Status = SendCommand (13, 1u << 16, SDC_CMD_RSP_R1, 0);
+  SayHex (SystemTable, L"INH C13 I=", Status.IntStatus);
+  SayHex (SystemTable, L" R=", Status.Resp[0]);
+  Say (SystemTable, L" st=");
+  SayDec (SystemTable, (Status.Resp[0] >> 9) & 0xFu);
+  Say (SystemTable, L"\r\n");
+
+  Ext     = ReadDataBlock (8, 0, mDataBlock, 512);
+  Sectors = (UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT] |
+            ((UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT + 1] << 8) |
+            ((UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT + 2] << 16) |
+            ((UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT + 3] << 24);
+
+  SayHex (SystemTable, L"INH C8 I=", Ext.IntStatus);
+  SayHexN (SystemTable, L" rev=", mDataBlock[EXT_CSD_REV], 2);
+  SayHexN (SystemTable, L" bw=", mDataBlock[EXT_CSD_BUS_WIDTH], 2);
+  SayHexN (SystemTable, L" hs=", mDataBlock[EXT_CSD_HS_TIMING], 2);
+  SayHex (SystemTable, L" sec=", Sectors);
+  Say (SystemTable, L"\r\n");
+
+  //
+  // LBA 1 is the GPT header, and 45464920 is "EFI " in big-endian reading order
+  // -- the same signature bootshim checks before it will write anything.
+  //
+  Gpt       = ReadDataBlock (17, 1, mDataBlock, 512);
+  Signature = ((UINT32)mDataBlock[0] << 24) |
+              ((UINT32)mDataBlock[1] << 16) |
+              ((UINT32)mDataBlock[2] << 8) |
+              (UINT32)mDataBlock[3];
+
+  SayHex (SystemTable, L"INH B1 I=", Gpt.IntStatus);
+  SayHex (SystemTable, L" S=", Signature);
+  Say (SystemTable, L"\r\n");
+
+  return (BOOLEAN)(Gpt.Ok && (Signature == 0x45464920u));
+}
+
+/**
   Prove that SDC_RESP0 tracks commands, instead of assuming that it does.
 
   Every reading in docs/POWER-BEFORE-AFTER.md that says "R1 = 0x00000900, so the
@@ -1571,12 +1723,22 @@ ExtCsdAttempt (
     b0 = RESP0 after CMD10 (R2: the CID, whose low word is 3BB919C9 on this card)
     c  = RESP0 after CMD13 again
 
-    b0 != a  -> the register really followed CMD10, so it is live
-    c  == a  -> and the next CMD13 goes back to the same status
+  IMG_5760 answered it: `PV pre=00000900 a=00000900 b0=00000000 c=00400900`.
+  RESP0 followed CMD10 (b0 is not a), so the register is live and every R1 in
+  this log can be believed.  Two details explain the rest:
 
-  One line of output, because the text area budget is the scarce resource here
-  (see the header of ProbeCardAndMux).  `pre` is printed as context only: it is
-  whatever the register held before this probe touched anything.
+    - CMD10 is only legal in STBY (JEDEC JESD84-B51: SEND_CID is not a TRAN
+      command), so the card answered it with a 48-bit error response while the
+      host was waiting for 136 bits: RESP0 ends up zero, not the CID.
+    - ILLEGAL_COMMAND is latched in the card's status, so the *next* CMD13
+      reports bit 22 -- `c` = 0x00400900 instead of 0x00000900.  That is a
+      second, independent proof that RESP0 is being written per command.
+
+  So the verdict is `b0 != a`, and `c != a` with bit 22 set is the confirmation
+  rather than a contradiction.  One line of output, because the text area budget
+  is the scarce resource here (see the header of ProbeCardAndMux).  `pre` is
+  printed as context only: it is whatever the register held before this probe
+  touched anything.
 **/
 STATIC
 VOID
@@ -1596,7 +1758,7 @@ ProbeRespProvenance (
   Cid    = SendCommand (10, Rca << 16, SDC_CMD_RSP_R2, 0);
   Second = SendCommand (13, Rca << 16, SDC_CMD_RSP_R1, 0);
 
-  Live = (BOOLEAN)((Cid.Resp[0] != First.Resp[0]) && (Second.Resp[0] == First.Resp[0]));
+  Live = (BOOLEAN)(Cid.Resp[0] != First.Resp[0]);
 
   Say (SystemTable, L"PV ");
   SayHex (SystemTable, L"pre=", Pre);
@@ -1811,34 +1973,21 @@ ProbeCardAndMux (
   // The first one that works stops the ladder, and then CMD17 reads LBA 1 --
   // the GPT header -- with the mode that just worked.
   //
+  //
+  // One attempt, not the four-round ladder B8/C8/D8 used to be.  IMG_5760 is
+  // that ladder's answer: A8, B8, C8 and D8 all came back byte-identical --
+  // `I=0100 sz=00000000 ps=EF/FF gp=DF8/DFF f=00 k=14999 c6=.. t=4 r=1` -- so
+  // the bus mode is not the variable, and each rung cost a line of a fifteen-line
+  // budget to say so.  The variable it did NOT cover is the one InheritProbe now
+  // tests: whether re-initialising the card at all is the mistake.  A8 stays as
+  // the control, because it is the mode that matches what LK left behind.
+  //
+  // `k=14999` is also the end of the CKPDN theory this ladder was built on:
+  // that field counts CLK-pad-low samples over the whole wait, so half the
+  // samples saw the clock pad low, i.e. the clock was running the entire time
+  // the card declined to send.  D8 cleared MSDC_CFG[1] and changed nothing.
+  //
   Worked = ExtCsdAttempt (SystemTable, L"A8 ", Rca, 8, FALSE, 0, 0);
-
-  if (!Worked) {
-    (VOID) SendCommand (12, 0, SDC_CMD_RSP_R1B, SDC_CMD_STOP_CMD);
-    Worked = ExtCsdAttempt (SystemTable, L"B8 ", Rca, 8, TRUE, EXT_CSD_HS_TIMING, 0);
-  }
-
-  if (!Worked) {
-    (VOID) SendCommand (12, 0, SDC_CMD_RSP_R1B, SDC_CMD_STOP_CMD);
-    Worked = ExtCsdAttempt (SystemTable, L"C8 ", Rca, 1, TRUE, EXT_CSD_BUS_WIDTH, 0);
-  }
-
-  //
-  // D8 is the same 1-bit combination with one difference: CKPDN cleared.
-  //
-  // MSDC_CFG[1] is the clock pad's power-down bit, and the inherited register
-  // (H0 C=) has it set.  A card only shifts data out while the clock runs, and
-  // the controller only counts its data timeout in sclk edges: if the clock pad
-  // stays down once the response is over, the card sends nothing, the FIFO stays
-  // empty and no interrupt of any kind ever fires -- which is exactly the shape
-  // of IMG_5752..5757, including the missing DATTMO.  The k= field above counts
-  // CLK-pad-low samples precisely to test that.
-  //
-  if (!Worked) {
-    (VOID) SendCommand (12, 0, SDC_CMD_RSP_R1B, SDC_CMD_STOP_CMD);
-    Msdc0Write32 (MSDC_CFG_OFS, Msdc0Read32 (MSDC_CFG_OFS) & ~MSDC_CFG_CKPDN);
-    Worked = ExtCsdAttempt (SystemTable, L"D8 ", Rca, 1, FALSE, 0, 0);
-  }
 
   //
   // A failed data phase leaves the card mid-transfer with DAT0 held low; LK
@@ -2016,31 +2165,50 @@ StorageBeaconDxeEntryPoint (
   UINTN       Index;
   EFI_HANDLE  *Handles;
   UINT32      PowerVerdict;
+  BOOLEAN     Inherited;
 
   PowerVerdict = 0x00FF00FF;
 
   //
-  // We are dispatched, therefore the pass-through protocol exists.
+  // FIRST, before anything else in this driver or in the FV touches MSDC0:
+  // inherit the controller and the card exactly as LK handed them over and try
+  // one read.  This is the one experiment that had not been run, and it is the
+  // configuration line A proved works on this phone (bootshim/msdc.c, and
+  // docs/EMMC-LOG.md for the verified result).  See InheritProbe().
   //
-  // This call comes first and does the band, cell 6 and the header itself: it
-  // reads MSDC_PS before it draws a single pixel, because P_before has to
-  // describe the state MsdcDxe left behind, not the state after we started
-  // touching the panel.  See ProbePower().
-  //
-  ProbePower (SystemTable, &PowerVerdict);
+  Inherited = InheritProbe (SystemTable);
 
   //
-  // Then the older register snapshot.  Read-only apart from a bounded CMD12,
-  // and text-only now: the graphics band belongs to the probes above.
+  // Then the older register snapshot, which now describes what LK left rather
+  // than what MsdcDxe left: MsdcDxe is no longer in the firmware volume, because
+  // its bring-up (controller reset, CMD0, card re-init, host bus width) is
+  // exactly what InheritProbe exists to avoid.  Read-only apart from a bounded
+  // CMD12, and text-only: the graphics band belongs to the probes below.
   //
   ProbeMsdcLeftovers (SystemTable);
+
+  //
+  // The band, cell 6 and the header: reads MSDC_PS before it draws a single
+  // pixel.  It runs after InheritProbe on purpose -- InheritProbe has already
+  // re-divided the clock by then, and that is the state worth reporting.
+  //
+  ProbePower (SystemTable, &PowerVerdict);
 
   //
   // Last diagnostic: ping the card (CMD1) and, if it stays silent, try the
   // other pin-mux mode.  This runs before the connect sweep on purpose -- if a
   // mode change wakes the card up, EmmcDxe gets a working bus in this same boot.
   //
-  ProbeCardAndMux (SystemTable);
+  // Skipped entirely when the inherit path above read the GPT: this probe
+  // starts with CMD0 and a controller reset, and throwing away the one working
+  // configuration this board has ever had, in the same boot that found it,
+  // would be a strange thing to do.
+  //
+  if (Inherited) {
+    Say (SystemTable, L"INHERIT OK\r\n");
+  } else {
+    ProbeCardAndMux (SystemTable);
+  }
 
   Passthru      = NULL;
   PassthruCount = 0;

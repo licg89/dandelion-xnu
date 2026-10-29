@@ -325,5 +325,70 @@ FV" —— 那句话在**它自己的场景**下成立（GraphicsConsoleDxe 同�
 **教训**：**"我没观测到"不等于"它不存在"**。这条和 C9/C10/C11 是同一类：
 用坏掉的仪器做测量，比不测量更糟。
 
+## C15. 「把卡重新初始化到 TRAN，数据阶段就会开始」——**错**；顺带 `PV ... STALE` 也是误读
+
+**现象 A（误读）**：为了证明 `SDC_RESP0` 不是残留值，写了 `ProbeRespProvenance()`：
+`CMD13 → CMD10 → CMD13`，判据是 `b0 != a && c == a`。IMG_5760 打出
+
+```
+PV pre=00000900 a=00000900 b0=00000000 c=00400900 STALE
+```
+
+于是按判据报 `STALE`，看起来整张结论表的 R1 都不可信了。
+
+**真因 A**：寄存器**是活的**，判据选错了命令。
+
+- `CMD10`（SEND_CID）按 JESD84-B51 只在 **stby** 态合法，TRAN 态下它是非法命令；
+- 卡对非法命令回的是 **48 位**错误响应，而主机按 R2 等 136 位，于是 `RESP0` 收成 0（不是 CID）；
+- `ILLEGAL_COMMAND`（bit22）会**锁存在卡的状态里**，由**下一条**命令的 R1 报出来 ——
+  所以 `c = 0x00400900` 而不是 `0x00000900`。
+
+`b0 != a` 本身已经证明寄存器跟着命令走了；`c` 多出来的 bit22 是**第二条独立证据**。
+判据已改为只看 `b0 != a`（`StorageBeaconDxe.c` 的 `ProbeRespProvenance()`）。
+
+**现象 B（真问题）**：`A8` / `B8` / `C8` / `D8` 四轮（8 位继承 / 8 位默认速度 / 1 位 /
+1 位且清 `MSDC_CFG.CCKPD`）结果**逐字相同**：
+
+```
+A8 I=0100 R=00000900 sz=00000000 ps=EF/FF gp=DF8/DFF f=00 k=14999 c6=........ t=4 r=1
+```
+
+`t=4` 是 TRAN、`r=1` 是 READY_FOR_DATA、`R1` 无任何错误位 —— 卡很开心，就是不发数据；
+`ps=EF/FF` 与 `gp=DF8/DFF` 两个窗口都说明 DAT0..7 从来没被驱动过；
+`k=14999` 说明整个等待期间 **CLK 焊盘有一半采样是低的**，即**时钟一直在跑**。
+所以「时钟门控（CKPDN）」这个假设到此为止：D8 专门清了它，什么也没变。
+
+**真因 B**：这四轮全都在**把卡重新初始化**，而这块板子上唯一被真机证明能读写 eMMC 的实现
+（line A 的 `bootshim/msdc.c`，见 [EMMC-LOG.md](EMMC-LOG.md)：往 `flashinfo` 写入 5159 字节
+并逐字节读回校验通过）**明令禁止这么做**。它自己的文件头写着：
+
+> LK has just loaded *this image* through MSDC0, so the controller is clocked, the pads
+> are muxed, the card is selected with RCA 1 and it is in the transfer state. We therefore
+> **inherit rather than re-initialise: no CMD0, no CMD1, no re-tuning.**
+> CKMOD and `SDC_CFG.BUSWIDTH` are left exactly as LK set them, because the card's own bus
+> width lives in `EXT_CSD[183]` and the two must keep matching.
+
+对照我们一直在做的四件事：
+
+| bootshim（真机通过） | 我们（IMG_5752..5760，全部失败） |
+|---|---|
+| 不碰 `MSDC_CFG.RST` | `ResetHost()` 先复位控制器 |
+| 不发 CMD0/CMD1/CMD2/CMD3/CMD7 | 从 IDLE 一路重新初始化到 TRAN |
+| `SDC_CFG.BUSWIDTH` 保持 LK 的值，并**校验**它等于 `EXT_CSD[183]` | `SetHostBusWidth(1)` / `(8)`，与卡的实际位宽无关 |
+| 只改时钟分频（`CKDIV=260`，约 385 kHz），并等 `CKSTB` | 保留 833 kHz，且不等 `CKSTB` |
+
+**教训**：**同一个仓库里已经有跑通的实现时，先把它的策略抄过来，再谈新假设。**
+这条比前面几条都贵：四轮刷机、四张照片，答案一直躺在 `bootshim/msdc.c` 第 5–14 行。
+
+**已修**（2026-10-29 20:3x）：
+1. `MsdcDxe` 从 `Include/DXE.inc` 和 `Include/APRIORI.inc` 里**整条移除** ——
+   它的 bring-up 正是上面那四件事，只要它跑过，MSDC0 的状态就已经不是 LK 留下的了；
+2. `StorageBeaconDxe` 的 Depex 从 `gEfiSdMmcPassThruProtocolGuid` 改成 `TRUE`
+   （不再依赖被移除的驱动）；
+3. 新增 `InheritProbe()`，在入口第一句执行，逐字照抄 bootshim 的 `host_bringup()` +
+   `msdc_cmd()` + `data_read()`：`INTEN=0`、`INT` 全清、只换 `CKDIV`、等 `CKSTB`、
+   只放宽 `DTOC`/`WRDTOC`、不动 `BUSWIDTH`，然后 `CMD13 → CMD8 → CMD17`；
+4. `A8/B8/C8/D8` 那条四轮阶梯缩成单条 `A8`（它才是"和 LK 留下的一致"那一档）。
+
 
 
