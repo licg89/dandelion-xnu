@@ -111,6 +111,8 @@ static void w_word(struct writer *w, const char *key, uint32_t val)
  * not the 260 bootshim uses: the kernel inherits the controller as firmware
  * left it.
  */
+#define ADT_EMMC_LOG_BASE     0x11230000ULL   /* MSDC0, from DANDELION.h */
+#define ADT_EMMC_LOG_SIZE     0x00010000ULL
 #define ADT_EMMC_LOG_LBA      (122109919u + 30000u)
 #define ADT_EMMC_LOG_SECTORS  512u
 #define ADT_EMMC_LOG_CLKDIV   26u
@@ -246,11 +248,23 @@ size_t dandelion_make_adt(void *buffer, size_t capacity,
 	w_prop(&w, "reg", uart_reg, sizeof(uart_reg));
 
 	/*
-	 * /arm-io/emmc-log -- the console channel on a board with no UART.  Four
-	 * properties: name plus the three the kernel reads.
+	 * /arm-io/emmc-log -- the console channel on a board with no UART.
+	 *
+	 * Five properties.  reg is not optional: pe_serial.c registers the channel
+	 * only when
+	 *
+	 *     emmc_base_vaddr = ml_io_map (soc_base + *reg_prop, *(reg_prop + 1));
+	 *     if (emmc_base_vaddr != 0 && emmc_log_lba != 0 && emmc_log_sectors >= 2)
+	 *             register_serial_functions (&emmc_serial_functions);
+	 *
+	 * so without reg the mapping is built from whatever follows it and the
+	 * channel silently never registers.  Like every other arm-io child, reg is
+	 * relative to the soc base that "ranges" names.
 	 */
-	w_node(&w, 4, 0);
+	w_node(&w, 5, 0);
 	w_text(&w, "name", "emmc-log");
+	uint64_t emmc_log_reg[2] = { ADT_EMMC_LOG_BASE - ADT_GIC_BASE, ADT_EMMC_LOG_SIZE };
+	w_prop(&w, "reg", emmc_log_reg, sizeof(emmc_log_reg));
 	uint32_t emmc_log_lba = ADT_EMMC_LOG_LBA;
 	uint32_t emmc_log_sectors = ADT_EMMC_LOG_SECTORS;
 	uint32_t emmc_log_div = ADT_EMMC_LOG_CLKDIV;
