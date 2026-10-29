@@ -56,6 +56,7 @@
 // side changes.  Read-only here, see ProbeMsdcRegisters().
 //
 #define MSDC0_MMIO_BASE    0x11230000ULL
+#define MSDC1_MMIO_BASE    0x11240000ULL
 #define MSDC_CFG_OFS       0x00
 #define MSDC_INT_OFS       0x0C
 #define MSDC_INTEN_OFS     0x10
@@ -285,41 +286,62 @@ ProbeMsdcRegisters (
   UINT32           Cfg;
   UINT32           IntStatus;
   UINT32           IntEnable;
-  UINT32           SdSts;
   UINT32           Resp0;
   CHAR16           Text[10];
 
   StageCell (20, 0x0000FFFF);
 
+  //
+  // Read BOTH controllers.  A host that is not in use keeps its reset values:
+  // MSDC_CFG without MODE|CCKPD|PIO, and MSDC_INTEN at the reset mask.  The
+  // previous single-host snapshot read CFG=0x02000000 (no BIT3), which is
+  // exactly the signature of "this is not the host driving the eMMC".
+  //
   Regs      = (volatile UINT32 *)(UINTN)MSDC0_MMIO_BASE;
   Cfg       = Regs[MSDC_CFG_OFS / 4];
   IntStatus = Regs[MSDC_INT_OFS / 4];
   IntEnable = Regs[MSDC_INTEN_OFS / 4];
-  SdSts     = Regs[SDC_STS_OFS / 4];
   Resp0     = Regs[SDC_RESP0_OFS / 4];
 
-  Say (SystemTable, L"CFG=");
+  Say (SystemTable, L"H0 C=");
   HexString (Cfg, Text);
   Say (SystemTable, Text);
-  Say (SystemTable, L" INT=");
-  HexString (IntStatus, Text);
-  Say (SystemTable, Text);
-  Say (SystemTable, L"\r\nINTEN=");
+  Say (SystemTable, L" E=");
   HexString (IntEnable, Text);
   Say (SystemTable, Text);
-  Say (SystemTable, L" STS=");
-  HexString (SdSts, Text);
+  Say (SystemTable, L" I=");
+  HexString (IntStatus, Text);
   Say (SystemTable, Text);
-  Say (SystemTable, L" R0=");
+  Say (SystemTable, L" R=");
   HexString (Resp0, Text);
   Say (SystemTable, Text);
   Say (SystemTable, L"\r\n");
 
   PaintBits (1132, Cfg,       0x00FFFFFF);
-  PaintBits (1143, IntStatus, 0x00FFFF00);
-  PaintBits (1154, IntEnable, 0x00FF8000);
-  PaintBits (1165, SdSts,     0x0000FFFF);
-  PaintBits (1176, Resp0,     0x00FF00FF);
+  PaintBits (1143, IntEnable, 0x00FFFF00);
+
+  Regs      = (volatile UINT32 *)(UINTN)MSDC1_MMIO_BASE;
+  Cfg       = Regs[MSDC_CFG_OFS / 4];
+  IntStatus = Regs[MSDC_INT_OFS / 4];
+  IntEnable = Regs[MSDC_INTEN_OFS / 4];
+  Resp0     = Regs[SDC_RESP0_OFS / 4];
+
+  Say (SystemTable, L"H1 C=");
+  HexString (Cfg, Text);
+  Say (SystemTable, Text);
+  Say (SystemTable, L" E=");
+  HexString (IntEnable, Text);
+  Say (SystemTable, Text);
+  Say (SystemTable, L" I=");
+  HexString (IntStatus, Text);
+  Say (SystemTable, Text);
+  Say (SystemTable, L" R=");
+  HexString (Resp0, Text);
+  Say (SystemTable, Text);
+  Say (SystemTable, L"\r\n");
+
+  PaintBits (1158, Cfg,       0x00FFFFFF);
+  PaintBits (1169, IntEnable, 0x00FFFF00);
 
   StageCell (21, 0x0000FF00);
 }
