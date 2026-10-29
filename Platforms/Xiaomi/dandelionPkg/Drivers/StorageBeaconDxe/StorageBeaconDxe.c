@@ -111,9 +111,19 @@
 
 //
 // Data phase.  SDC_CMD carries the transfer description, not a separate length
-// register: [10:9] data type (1 = single block read), [13] direction (1 =
-// write), [28:16] block length.  Same encoding as bootshim/msdc.c CMDW() and as
-// MediaTek's mtk-sd.c, which is why the constants below look like a shift soup.
+// register: [12:11] data type (1 = single block read), [13] direction (1 =
+// write), [27:16] block length, [14] stop (CMD12 only).
+//
+// The data-type field is the one that cost a round: it lives at bit 11, not at
+// bit 9.  docs/research/mtk-msdc-pio.md section 1.3 has the vendor's own
+// comment -- `vol_swt << 30 | auto_cmd << 28 | blklen << 16 | go_irq << 15 |
+// stop << 14 | rw << 13 | dtype << 11 | rsptyp << 7 | brk << 6 | opcode` --
+// and its pre-computed CMD8 word is 0x02000888 = opcode 8, rsptyp 1, dtype 1
+// at bit 11, blklen 512.  Writing 1 at bit 9 sets rsptyp to 5 instead and
+// leaves dtype at 0, so the controller never enabled its data path and the card
+// -- which always sends 512 bytes for CMD8, because it cannot see the host's
+// dtype field -- was left holding DAT0 low.  IMG_5752: `C8 I=00000100` (CMDRDY
+// and nothing else, no XFER_COMPL, no DATTMO) and `B1 S=00000000`.
 //
 #define MSDC_FIFOCS_OFS        0x14
 #define MSDC_TXDATA_OFS        0x18
@@ -125,7 +135,7 @@
 #define MSDC_INT_DATTMO        (1u << 14)
 #define MSDC_INT_DATCRCERR     (1u << 15)
 #define MSDC_INT_DAT_ALL       (MSDC_INT_XFER_COMPL | MSDC_INT_DATTMO | MSDC_INT_DATCRCERR)
-#define SDC_CMD_DTYPE_SHIFT    9
+#define SDC_CMD_DTYPE_SHIFT    11
 #define SDC_CMD_DTYPE_READ     1u
 #define SDC_CMD_BLKLEN_SHIFT   16
 //
@@ -1045,14 +1055,18 @@ typedef struct {
   Same register dance as SendCommandSampled(), but the return is the reply
   rather than the waveform: this is what the initialization sequence below
   needs, and a 1 ms poll is coarse enough that the command is over long before
-  the first look.
+  the first look.  Extra carries command-word bits outside the opcode/response
+  fields; the only one used here is SDC_CMD_STOP_CMD, which is what makes CMD12
+  a stop rather than an ordinary R1b (docs/research/mtk-msdc-pio.md section 1.3
+  row 14).
 **/
 STATIC
 CARD_RESP
 SendCommand (
   IN UINT32  Index,
   IN UINT32  Arg,
-  IN UINT32  RspTyp
+  IN UINT32  RspTyp,
+  IN UINT32  Extra
   )
 {
   volatile UINT32  *Regs;
@@ -1078,7 +1092,9 @@ SendCommand (
 
   Regs[MSDC_INT_OFS / 4] = 0xFFFFFFFF;
   Regs[SDC_ARG_OFS / 4]  = Arg;
-  Regs[SDC_CMD_OFS / 4]  = ((Index & 0x3Fu) | ((RspTyp & 0x7u) << SDC_CMD_RSP_SHIFT));
+  Regs[SDC_CMD_OFS / 4]  = ((Index & 0x3Fu) |
+                            ((RspTyp & 0x7u) << SDC_CMD_RSP_SHIFT) |
+                            (Extra & SDC_CMD_STOP_CMD));
 
   for (Tries = 0; Tries < 200; Tries++) {
     Result.IntStatus = Regs[MSDC_INT_OFS / 4];
@@ -1274,8 +1290,19 @@ ReadDataBlock (
       C2  3=.. 2=.. 1=.. 0=..           the 128-bit CID (R2)
       C3  ..    C7  ..                  R6 (RCA 1 accepted), R1b (selected)
       C13 I=..  R=..  st=..             CURRENT_STATE, 4 = TRAN
+      C6  I=../.. n=.. st=..            CMD6 back to 1-bit / default speed
       C8  I=..  sz=.. rv=.. bw=.. hs=.. EXT_CSD: capacity, revision, bus, timing
       B1  I=..  S=..                    LBA 1's first four bytes, 45464920 = "EFI "
+
+  IMG_5752 is the round that separated "commands work" from "data does not":
+  C13 st=4, a full CID, and then `C8 I=00000100` -- CMDRDY and nothing else, no
+  XFER_COMPL and no DATTMO -- with B1 reading zeroes.  The card had been left in
+  8-bit HS200 by LK (EXT_CSD 183/185 are card configuration and survive CMD0)
+  while the host runs 1-bit default speed, and the command word that was
+  supposed to start the transfer had its data-type field at bit 9 instead of
+  bit 11.  Both are fixed above and in SDC_CMD_DTYPE_SHIFT; the C6 line is the
+  switch back down, and a failed C8 is followed by a CMD12 so the card does not
+  stay stuck holding DAT0 low.
 
   `st=4` plus `C8 I=...100` plus `B1 S=45464920` is the whole storage stack the
   UEFI side needs: commands, long responses, a 512-byte data read and a sector
@@ -1297,6 +1324,9 @@ ProbeCardAndMux (
   CARD_RESP        Sel;
   CARD_RESP        Status;
   CARD_RESP        BlkLen;
+  CARD_RESP        Switch1;
+  CARD_RESP        Switch2;
+  CARD_RESP        Stop;
   DATA_RESULT      Data;
   DATA_RESULT      Gpt;
   UINTN            Tries;
@@ -1332,7 +1362,7 @@ ProbeCardAndMux (
   //
   Tries = 0;
   do {
-    Ready = SendCommand (1, CMD1_OCR, SDC_CMD_RSP_R3);
+    Ready = SendCommand (1, CMD1_OCR, SDC_CMD_RSP_R3, 0);
     Tries++;
     gBS->Stall (1000);
   } while (Ready.Answered && ((Ready.Resp[0] & 0x80000000u) == 0) && (Tries < 300));
@@ -1350,7 +1380,7 @@ ProbeCardAndMux (
   // CID: 128-bit R2, printed as four words.  This also proves a long response
   // can be received, which is the one thing CMD1 never exercises.
   //
-  Cid = SendCommand (2, 0, SDC_CMD_RSP_R2);
+  Cid = SendCommand (2, 0, SDC_CMD_RSP_R2, 0);
   Say (SystemTable, L"C2 ");
   SayHex (SystemTable, L"3=", Cid.Resp[3]);
   SayHex (SystemTable, L" 2=", Cid.Resp[2]);
@@ -1363,8 +1393,8 @@ ProbeCardAndMux (
   // inherited one keeps the log comparable with RESP0's earlier 0xB00.
   //
   Rca  = 1;
-  R6   = SendCommand (3, Rca << 16, SDC_CMD_RSP_R1);
-  Sel  = SendCommand (7, Rca << 16, SDC_CMD_RSP_R1B);
+  R6   = SendCommand (3, Rca << 16, SDC_CMD_RSP_R1, 0);
+  Sel  = SendCommand (7, Rca << 16, SDC_CMD_RSP_R1B, 0);
 
   Say (SystemTable, L"C3 ");
   SayHex (SystemTable, L"I=", R6.IntStatus);
@@ -1374,7 +1404,7 @@ ProbeCardAndMux (
   SayHex (SystemTable, L" R=", Sel.Resp[0]);
   Say (SystemTable, L"\r\n");
 
-  Status = SendCommand (13, Rca << 16, SDC_CMD_RSP_R1);
+  Status = SendCommand (13, Rca << 16, SDC_CMD_RSP_R1, 0);
   Say (SystemTable, L"C13 ");
   SayHex (SystemTable, L"I=", Status.IntStatus);
   SayHex (SystemTable, L" R=", Status.Resp[0]);
@@ -1388,8 +1418,24 @@ ProbeCardAndMux (
   }
 
   //
-  // Past TRAN, the card is addressable and two data questions decide whether
-  // BlockIo is reachable at all:
+  // Past TRAN, the card is addressable -- but addressable is not the same as
+  // ready to move data, and IMG_5752 showed exactly that gap: every command
+  // answered and the data phase never started (`C8 I=00000100`, no XFER_COMPL
+  // and no DATTMO).  Two causes, both fixed here.
+  //
+  // 1. The bus mode has to agree with the card.  LK brings this eMMC up in
+  //    8-bit HS200 and writes EXT_CSD 183/185 on the way; those two bytes are
+  //    card configuration and survive CMD0, so the card is still 8-bit when the
+  //    host -- 1-bit, default speed, SDC_CFG = 0xFF007FFC -- asks for a block.
+  //    Commands work because CMD is a single wire and its timing is the same in
+  //    every mode; data does not, which is why this only ever failed on the
+  //    data phase.  CMD6 write-byte is how to come back down: 0x03 in the top
+  //    byte, then the EXT_CSD index and value, no data phase, R1b.
+  //
+  // 2. SDC_CMD's data-type field lives at bit 11, not bit 9 -- see the note on
+  //    SDC_CMD_DTYPE_SHIFT above.
+  //
+  // Then the two data questions that decide whether BlockIo is reachable:
   //
   //   CMD16  SET_BLOCKLEN 512  -- what LK leaves behind, made explicit.
   //   CMD8   SEND_EXT_CSD      -- 512-byte DATA READ: capacity (SEC_COUNT),
@@ -1400,7 +1446,30 @@ ProbeCardAndMux (
   // Both reads print the interrupt word, because "XFER_COMPL" versus "DATTMO"
   // separates "the card sent nothing" from "the FIFO was never drained".
   //
-  BlkLen = SendCommand (16, 512, SDC_CMD_RSP_R1);
+  Switch1 = SendCommand (6, (3u << 24) | (EXT_CSD_BUS_WIDTH << 16) | (0u << 8), SDC_CMD_RSP_R1B, 0);
+  Switch2 = SendCommand (6, (3u << 24) | (EXT_CSD_HS_TIMING << 16) | (0u << 8), SDC_CMD_RSP_R1B, 0);
+
+  //
+  // CMD6 is R1b: the card drives DAT0 busy while it reconfigures, so poll the
+  // status until it says TRAN + READY_FOR_DATA before touching the data path.
+  //
+  Tries = 0;
+  do {
+    Status = SendCommand (13, Rca << 16, SDC_CMD_RSP_R1, 0);
+    Tries++;
+    gBS->Stall (1000);
+  } while ((((Status.Resp[0] >> 9) & 0xFu) != 4) && (Tries < 100));
+
+  Say (SystemTable, L"C6 ");
+  SayHex (SystemTable, L"I=", Switch1.IntStatus);
+  SayHex (SystemTable, L"/", Switch2.IntStatus);
+  Say (SystemTable, L" n=");
+  SayDec (SystemTable, Tries);
+  Say (SystemTable, L" st=");
+  SayDec (SystemTable, (Status.Resp[0] >> 9) & 0xFu);
+  Say (SystemTable, L"\r\n");
+
+  BlkLen = SendCommand (16, 512, SDC_CMD_RSP_R1, 0);
 
   Data    = ReadDataBlock (8, 0, mDataBlock, 512);
   Sectors = (UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT] |
@@ -1416,6 +1485,20 @@ ProbeCardAndMux (
   SayHexN (SystemTable, L" hs=", mDataBlock[EXT_CSD_HS_TIMING], 2);
   SayHexN (SystemTable, L" c16=", BlkLen.IntStatus, 4);
   Say (SystemTable, L"\r\n");
+
+  //
+  // A failed data phase leaves the card mid-transfer with DAT0 held low; LK
+  // sends CMD12 after every failed transfer and MediaTek's driver never did,
+  // which is why the round after a failure looked like a dead card
+  // (docs/ANALYSIS-EMMC-DATA-PATH.md section 1.2).  Put it back before asking
+  // again.
+  //
+  if (!Data.Ok) {
+    Stop = SendCommand (12, 0, SDC_CMD_RSP_R1B, SDC_CMD_STOP_CMD);
+    Say (SystemTable, L"stop ");
+    SayHex (SystemTable, L"I=", Stop.IntStatus);
+    Say (SystemTable, L"\r\n");
+  }
 
   Gpt       = ReadDataBlock (17, 1, mDataBlock, 512);
   Signature = ((UINT32)mDataBlock[0] << 24) |
