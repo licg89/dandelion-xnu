@@ -37,7 +37,7 @@ if ($Restore) {
     throw "stock boot image not found at $Image"
   }
 } elseif ([string]::IsNullOrEmpty($Image)) {
-  $Image = Join-Path $repo "artifacts\boot-uefi-datwin.img"
+  $Image = Join-Path $repo "artifacts\boot-uefi-r1.img"
 }
 
 if (-not (Test-Path $Image)) {

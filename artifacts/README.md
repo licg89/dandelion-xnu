@@ -8,7 +8,7 @@ checkout 完整复现。构建与打包的完整环境见
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
-| `boot-uefi-datwin.img` | 16,099,328 B | **当前上机版**：`CMD0` → `CMD1`(到 OCR bit31) → `CMD2/3/7/13` 走到 TRAN，然后 `CMD16/CMD8/CMD17` **真读 512 字节**（EXT_CSD + LBA 1）；整段日志压到 10 行 |
+| `boot-uefi-r1.img` | 16,099,328 B | **当前上机版**：`CMD0` → `CMD1`(到 OCR bit31) → `CMD2/3/7/13` 走到 TRAN，然后 `CMD16/CMD8/CMD17` **真读 512 字节**（EXT_CSD + LBA 1）；整段日志压到 10 行 |
 | `panel-preview.png` | 720×1600 | `tools/render_panel_preview.py` 渲染的仪表区，**不用刷机就能看布局** |
 
 > 更早的几版（`boot-uefi-ping.img`、`boot-uefi-power.img`、`boot-uefi-m5-probe.img` …）
@@ -18,40 +18,29 @@ checkout 完整复现。构建与打包的完整环境见
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-4ea725c67f18162411d813d0e883443a5b23b671696e9bdd97b00b099f7da289  SILICIUM_UEFI.fd
-2e1536b33e45d6e9481a8fc7c33f970e1ae4214f3998826294ba8112ad49fb5a  boot-uefi-datwin.img
+b8770cc1e9db1f196d48ea83ade69f62a099366f48a2244cda753d95a0204256  SILICIUM_UEFI.fd
+9136f4cc4a1a601b532dbfbfaa3e4b3037f4225785726c02cabc151a442ea7b1  boot-uefi-r1.img
 ```
 
-## 这一版是什么（2026-10-29 深夜，第八版）
+## 这一版是什么（2026-10-29 深夜，第九版）
 
-上一版（`boot-uefi-3modes.img`）一次跑了三种总线模式，IMG_5754：
+上一版（`boot-uefi-datwin.img`）**把探针自己写崩了**：读 `0x10002010`
+（MSDC0 pad 块，不在这个平台的内存映射里）触发三级页表 translation fault，
+DxeCore 把寄存器转储打在屏幕上（IMG_5755，`X8 = 0x000000010002010`）。
 
-```
-C13 I=00000100 R=00000900 st=4
-A8  I=00000100 sz=00000000 ps=EF/FF f=00 c6=0000
-B8  I=00000100 sz=00000000 ps=EF/FF f=00 c6=0100
-C8  I=00000100 sz=00000000 ps=EF/FF f=00 c6=0100
-B1  -  no data phase
-```
+这一版：
 
-`ps=EF/FF` = `MSDC_PS` 里 DAT[7:0] 的 AND/OR：**DAT0..7 一直是高，只有 DAT4 抖过**。
-发 512 字节的卡不会只驱动一根线，而命令/CID/选中全正常 ⇒ 数据线“没人发”。
-这一版就是把“到底是谁”钉下来：
+1. **不再读 pad 块**；输入使能改由 GPIO 窗口回答（`din=` 当前电平、`gp=` 整个
+   等待窗口的 AND/OR）；
+2. **打 CMD8/CMD17 的 R1**（`R=`）：卡“回答了但不发数据”和“回答里带错误位”
+   在之前是分不清的；
+3. 保留 `dir=` / `do=`（pinctrl 已映射），能抓到 GPIO 抢总线。
 
-1. `IO dir=000 do=000 ies=........`：引脚 122..133 的方向位/输出值，以及
-   MSDC0 pad 块的输入使能（0x10002000+0x10）；
-2. `IO ioc=.. f60=.. adv=..`：`MSDC_IOCON` / 0x60 / `SDC_ADV_CFG0`；
-3. 每次数据尝试多一组 **`gp=AND/OR`**：同一时刻从 **GPIO 的 DIN** 再读一遍
-   这 12 个脚（bit0 = 引脚 122，CLK 和 DAT 都在里面）。
+> 以后真要读 pad 块：先 `gDS->AddMemorySpace (EfiMemoryMappedIO, 0x10002000,
+> 0x1000, EFI_MEMORY_UC)` 再加映射，**不要直接 load**。
 
-判读分叉：
-
-| `ps`（控制器） | `gp`（GPIO） | 结论 |
-|---|---|---|
-| 安静 | 安静 | 卡没驱动数据线 |
-| 安静 | 有变化 | **控制器/s pad 输入通路**看不到，卡其实在发 |
-| 有变化 | 有变化 | 数据到了控制器，问题在 FIFO / 收尾 |
-| `dir` 数据脚=1 | — | GPIO 在驱动总线，和卡抢 |
+已知结论（IMG_5754，三种模式都跑过）：`ps=EF/FF` —— 控制器看到的 DAT[7:0]
+全程为高，只有 DAT4 抖过；命令、CID、选中全正常。
 
 ### 怎么看屏幕
 
@@ -63,13 +52,21 @@ C1 n=.. I=.. R=........
 C2 3=.. 2=.. 1=.. 0=..
 C3 I=.. R=.. C7 I=.. R=..
 C13 I=.. R=.. st=..
-IO dir=000 do=000 ies=........
+IO dir=000 do=000 din=FFF
 IO ioc=........ f60=........ adv=........
-A8 I=.. sz=.. ps=../.. gp=.../.. f=.. c6=....
+A8 I=.. R=.. sz=.. ps=../../.. gp=.../... f=.. c6=....
 B8 ...（A8 失败才出现）
 C8 ...（B8 失败才出现）
 B1 I=.. S=..
 ```
+
+| 看到 | 结论 |
+|---|---|
+| 任一行 `I=...1100` + `sz` 非零 + `B1 S=45464920` | **数据通路打通** |
+| `R=` 里带错误位 | 卡拒绝发数据，按位查卡状态 |
+| `ps` 安静 + `gp` 有变化 | 控制器看不到卡 ⇒ pad / 输入通路 |
+| `ps`/`gp` 都安静 | 卡没驱动数据线 |
+| 屏幕变成寄存器转储 | 探针踩了未映射地址 |
 
 逐条判读见 `docs/POWER-BEFORE-AFTER.md` §3。
 
@@ -127,7 +124,7 @@ kernel 段 = gzip(SILICIUM_UEFI.fd) 607,744 B（FD 2,097,152 B）
 
 ```powershell
 adb reboot bootloader
-fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-datwin.img
+fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-r1.img
 fastboot reboot
 ```
 
@@ -152,5 +149,5 @@ wsl -d Ubuntu -e bash /mnt/d/aios/dandelion-xnu/tools/build-local.sh
 
 # 2. 打包 + 校验（读 toml 里的 base，自动断言 kernel_addr）
 cd /mnt/d/aios/dandelion-xnu
-python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-datwin.img
+python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-r1.img
 ```

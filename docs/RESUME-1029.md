@@ -160,7 +160,7 @@ LK 引导 → BootShim(gzip FD @0x40080000) → UEFI(Mu / mouseos/uefi-a04br3)
 | `Resources/MuPatches/0002-MsdcDxe-dandelion-panel-markers.patch` | 上游 eMMC 驱动的补丁（**改它要同步 hunk 行数，别手改**） |
 | `docs/ANALYSIS-EMMC-DATA-PATH.md` | PIO/DMA 通路调研（现在优先级下降） |
 | `docs/ANALYSIS-INTEN-GATED-POLL.md` | 上面被否掉的那个假设，留作记录 |
-| `artifacts/boot-uefi-datwin.img` | 本轮镜像（CMD1 探针 + 两种引脚复用）；上一版 `boot-uefi-ping.img` 在 git 历史里 |
+| `artifacts/boot-uefi-r1.img` | 本轮镜像（CMD1 探针 + 两种引脚复用）；上一版 `boot-uefi-ping.img` 在 git 历史里 |
 
 ## 8. 工程约定（别破坏）
 
