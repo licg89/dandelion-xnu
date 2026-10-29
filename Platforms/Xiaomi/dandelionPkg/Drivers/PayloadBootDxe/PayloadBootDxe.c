@@ -1093,6 +1093,95 @@ OnExitBootServices (
 }
 
 STATIC
+BOOLEAN
+FindFlashInfo (
+  OUT EFI_BLOCK_IO_PROTOCOL  **OutIo,
+  OUT EFI_LBA                *OutStart,
+  OUT EFI_LBA                *OutLast
+  );
+
+//
+// The eMMC hand-off record XNU's console looks for.
+//
+// patches/xnu/dandelion-early-trace.patch reads a fixed record out of physical
+// memory rather than from the device tree, and refuses the channel unless the
+// magic and the "ok" flag are right:
+//
+//     handoff = (struct dandelion_emmc_handoff *)DANDELION_EMMC_HANDOFF_PA;
+//     if (handoff->magic != DANDELION_EMMC_HANDOFF_MAGIC || handoff->ok != 1 ||
+//         handoff->sectors < 2) { printf ("bad handoff, channel disabled"); ... }
+//
+// The layout is from pexpert/pexpert/arm64/DANDELION.h.  Nothing wrote it before,
+// which is why the kernel's log region stayed all zeros while the firmware log
+// reached "hand-off to the kernel" without complaint.
+//
+#define EMMC_HANDOFF_PA       0x5FD00000ULL
+#define EMMC_HANDOFF_MAGIC    0x444D4844U   /* "DHMD" */
+#define EMMC_LOG_LBA_OFFSET   30000u        /* sectors into flashinfo */
+#define EMMC_LOG_SECTORS      512u
+#define EMMC_LOG_CLKDIV       26u           /* what DandelionEmmcDxe calibrated */
+#define EMMC_MSDC_BASE        0x11230000ULL
+#define EMMC_MSDC_VERSION_OFS 0x114u
+#define EMMC_MSDC_VERSION_WANT 0x20170426u
+
+typedef struct {
+  UINT32  Magic;
+  UINT32  Ok;
+  UINT32  Lba;
+  UINT32  Sectors;
+  UINT32  ClockDiv;
+  UINT32  Reserved;
+} EMMC_HANDOFF;
+
+/**
+  Publish the hand-off record, and report the two register checks the kernel makes.
+
+  Both of the kernel's remaining refusals are silent unless they print through the
+  channel they just disabled, so the firmware says them out loud instead: the MSDC
+  version register has to read 0x20170426, and MSDC_CFG.CKSTB has to be set.
+**/
+STATIC
+VOID
+PublishEmmcHandoff (
+  VOID
+  )
+{
+  EFI_BLOCK_IO_PROTOCOL  *BlockIo;
+  EFI_LBA                Start;
+  EFI_LBA                Last;
+  EMMC_HANDOFF           *Handoff;
+  UINT32                 Version;
+  UINT32                 Cfg;
+
+  if (!FindFlashInfo (&BlockIo, &Start, &Last)) {
+    return;
+  }
+
+  Version = *(volatile UINT32 *)(UINTN)(EMMC_MSDC_BASE + EMMC_MSDC_VERSION_OFS);
+  Cfg     = *(volatile UINT32 *)(UINTN)(EMMC_MSDC_BASE + 0x00);
+
+  Handoff           = (EMMC_HANDOFF *)(UINTN)EMMC_HANDOFF_PA;
+  Handoff->Magic     = EMMC_HANDOFF_MAGIC;
+  Handoff->Ok        = 1;
+  Handoff->Lba       = (UINT32)(Start + EMMC_LOG_LBA_OFFSET);
+  Handoff->Sectors   = EMMC_LOG_SECTORS;
+  Handoff->ClockDiv  = EMMC_LOG_CLKDIV;
+  Handoff->Reserved  = 0;
+
+  DEBUG ((
+    DEBUG_ERROR,
+    "PayloadBoot: emmc handoff lba %lu sectors %u div %u; msdc ver 0x%08x (want 0x%08x) cfg 0x%08x ckstb %u\n",
+    (UINT64)(Start + EMMC_LOG_LBA_OFFSET),
+    EMMC_LOG_SECTORS,
+    EMMC_LOG_CLKDIV,
+    Version,
+    EMMC_MSDC_VERSION_WANT,
+    Cfg,
+    (Cfg >> 7) & 1u
+    ));
+}
+
+STATIC
 VOID
 FreezeConsole (
   VOID
@@ -1345,6 +1434,8 @@ PayloadBootEntryPoint (
   // not run -- which is why the whole thing is guarded and painted instead of
   // asserted.
   //
+  PublishEmmcHandoff ();
+
   if (!EFI_ERROR (FlushLogToFlash ())) {
     Say (L"PayloadBoot: firmware log written to flash\r\n");
   }
