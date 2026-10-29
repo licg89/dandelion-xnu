@@ -145,6 +145,17 @@ MsdcDmaRead (
 
   Done  = FALSE;
   Spins = 0;
+
+  //
+  // Wait on a *clock*, not on a loop count.
+  //
+  // The first version spun four million times and gave up after roughly a tenth
+  // of a second -- shorter than the controller's own data timeout -- so it
+  // reported "no interrupt at all" before the hardware had a chance to say
+  // DATTMO.  A measurement that ends before the thing being measured can happen
+  // is worse than no measurement: it looks like evidence.  Two seconds of
+  // one-millisecond sleeps is longer than any of these timeouts.
+  //
   while (!Done) {
     MsdcRead (Private, MSDC_INT, &IntStatus);
 
@@ -184,7 +195,8 @@ MsdcDmaRead (
       MsdcWrite (Private, MSDC_INT, IntStatus);
     }
 
-    if (++Spins > 4000000) {
+    MicroSecondDelay (1000);
+    if (++Spins > 2000) {
       DEBUG ((DEBUG_ERROR, "ddn dma stall int=%08x", IntStatus));
       MsdcPanelValue (0, IntStatus);
       Failed = TRUE;

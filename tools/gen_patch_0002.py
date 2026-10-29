@@ -839,6 +839,48 @@ _R1_CHECK = """    if ((SdMmcStatusBlk->Resp0 & 0xFFFFA080U) != 0) {
 """
 text = text.replace(_R1_ANCHOR, _R1_CHECK + _R1_ANCHOR)
 
+
+_PROBE = open(os.path.join(_SNIPPETS, "msdc_data_probe.c"), "r", encoding="utf-8").read()
+_ANCHOR_PROBE = "EFI_STATUS\nMsdcPioRead (\n  MSDC_PRIVATE_DATA* Private,"
+if text.count(_ANCHOR_PROBE) != 1:
+    sys.exit("probe anchor appears %d times" % text.count(_ANCHOR_PROBE))
+text = text.replace(_ANCHOR_PROBE, _PROBE + "\n" + _ANCHOR_PROBE)
+
+# After a failed data read, tell the card to stop: otherwise it stays in the
+# middle of a data block and ignores every later command (IMG_5724: the CMD7 after
+# the failed read came back EFI_TIMEOUT).
+_ANCHOR_CELL22 = """      if (Private->SdInfo.CardType != UnknownCard) {
+        MsdcTrace (22, EFI_ERROR (Status) ? 0x00FF0000 : 0x0000FF00);
+      }"""
+if text.count(_ANCHOR_CELL22) != 1:
+    sys.exit("cell 22 anchor appears %d times" % text.count(_ANCHOR_CELL22))
+text = text.replace(_ANCHOR_CELL22, _ANCHOR_CELL22 + """
+      if (EFI_ERROR (Status)) {
+        DdnStopTransmission (Private);
+      }""")
+
+# Run the two-path probe once identification is done, before handing over to
+# EmmcDxe (which will only ever try one path).
+_ANCHOR_ID = """  Status = CardSetBusMode (Private, 1);
+  MsdcTrace (13, EFI_ERROR (Status) ? 0x00FF0000 : 0x0000FF00);"""
+if text.count(_ANCHOR_ID) != 1:
+    sys.exit("identification anchor appears %d times" % text.count(_ANCHOR_ID))
+text = text.replace(_ANCHOR_ID, _ANCHOR_ID + """
+
+  //
+  // dandelion: one data transfer per path, while we still control the card.
+  //
+  DdnDataProbe (Private);""")
+
+# PIO stall guard: count milliseconds, not iterations.
+_OLD_STALL = """    if (++Spins > 2000000) {
+      DEBUG ((DEBUG_ERROR, "MsdcDxe: PIO read stalled with %u bytes left", RemainSize));"""
+_NEW_STALL = """    MicroSecondDelay (1000);
+    if (++Spins > 2000) {
+      DEBUG ((DEBUG_ERROR, "MsdcDxe: PIO read stalled with %u bytes left", RemainSize));"""
+if _OLD_STALL in text:
+    text = text.replace(_OLD_STALL, _NEW_STALL)
+
 open(path, "w", encoding="utf-8", errors="surrogateescape", newline="").write(text)
 
 # Emit the patch: 0001-applied state -> final state.

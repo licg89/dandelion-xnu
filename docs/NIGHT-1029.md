@@ -17,27 +17,38 @@
 
 ---
 
-## 早上第一件事：刷 `boot-uefi-m5-dma.img`
+## 现在刷哪个：`boot-uefi-m5-probe.img`
 
 ```powershell
 # 一条命令搞定：检查 fastboot、刷 boot、重启，然后把"该拍哪里、怎么读"打在屏幕上
 cd D:\aios\dandelion-xnu
-powershell -File tools\flash.ps1
+powershell -File tools\flash.ps1 -Image D:\aios\artifacts\boot-uefi-m5-probe.img
 
 # 它做的事情等价于：
 #   进 fastboot：长按电源 10 s 关机 → 电源 + 音量下
-#   fastboot flash boot artifacts\boot-uefi-m5-dma.img
+#   fastboot flash boot artifacts\boot-uefi-m5-probe.img
 #   fastboot reboot
 #
 # 只想看镜像信息、不刷：powershell -File tools\flash.ps1 -Check
 ```
 
+### 这一版相对上一版新增（2026-10-29 08:2x，依据 IMG_5724 的实测）
+
+1. **双通路数据探针**：识别完成后由驱动自己发两次 `CMD8`（512 字节）——
+   一次 PIO、一次 DMA，每次后面都跟一条 `CMD12` 收尾，两次的 `MSDC_INT` 都打进日志和读数条。
+   这样**一次开机就能同时拿到两条通路的答案**，不再依赖 EmmcDxe 会不会重试。
+2. **失败后发 `CMD12`**：IMG_5724 里数据读失败之后紧跟的 `CMD7` 超时（`status=0x12` = EFI_TIMEOUT），
+   原因就是卡还卡在没传完的数据块里、没人让它停。现在失败即停。
+3. **按时间等，不按圈数等**：上一版 DMA 循环 400 万次 ≈ 0.1 s 就退出，
+   比控制器自己的数据超时还短，于是"一个中断都没有"是**无效测量**而不是证据。
+   现在 DMA/PIO 都按 1 ms × 2000 次（2 s）等。
+
 镜像信息（这一版是唯一一次构建的产物，别和旧的混用）：
 
 | 文件 | 大小 | sha256 |
 |---|---|---|
-| `SILICIUM_UEFI.fd` | 2,097,152 | `8fa1919b…4cb35` |
-| `boot-uefi-m5-dma.img` | 16,099,328 | `2028dbb6…a8bce` |
+| `SILICIUM_UEFI.fd` | 2,097,152 | `261cad0f…faebd` |
+| `boot-uefi-m5-probe.img` | 16,099,328 | `eb818a78…39373` |
 
 恢复原厂：`powershell -File tools\flash.ps1 -Restore`
 （= `fastboot flash boot D:\aios\artifacts\boot_backup.img`）。
