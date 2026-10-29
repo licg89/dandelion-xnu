@@ -91,6 +91,13 @@
 #define SDC_STS_OFS        0x3C
 #define SDC_RESP0_OFS      0x40
 #define SDC_BLK_NUM_OFS    0x50
+//
+// Pad configuration (mtk-sd.c: MSDC_PAD_CTL0 = 0xE0, MSDC_PAD_CTL1 = 0xE4).
+// Read-only here: if these came back zero the pads would not be driving at all,
+// which would explain a command that never reaches the card.
+//
+#define MSDC_PAD_CTL0_OFS  0xE0
+#define MSDC_PAD_CTL1_OFS  0xE4
 
 #define SDC_STS_BUSY       (1u << 0)
 #define SDC_STS_CMDBUSY    (1u << 1)
@@ -748,38 +755,15 @@ PinctrlRead32 (
 }
 
 /**
-  Set the whole GPIO122..133 group to one alternate function, one pin at a time.
-
-  Deliberately does not use the MediaTek GPIO protocol: this has to work even if
-  that protocol was never installed, and the two registers it writes are the
-  same ones the vendor's msdc_set_pin_mode() pokes.
-**/
-STATIC
-VOID
-SetEmmcPinMode (
-  IN UINT32  Mode
-  )
-{
-  UINTN   Pin;
-  UINTN   Offset;
-  UINTN   Shift;
-  UINT32  Value;
-
-  for (Pin = EMMC_PIN_FIRST; Pin <= EMMC_PIN_LAST; Pin++) {
-    Offset = EmmcModeRegister (Pin);
-    Shift  = (Pin % 8) * 4;
-    Value  = PinctrlRead32 (Offset);
-    Value  = (Value & ~(0xFu << Shift)) | ((Mode & 0xFu) << Shift);
-    *(volatile UINT32 *)(UINTN)(PINCTRL_MMIO_BASE + Offset) = Value;
-  }
-}
-
-/**
   Read the pad input level of GPIO122..133, packed as bit0 = pin 122.
 
-  This is a straight read of the pads, one bit each, and it is the only cheap
-  way to see a line that is being held low by something outside the controller
-  -- an asserted reset, for instance.
+  The data registers are NOT laid out like the mode registers: GpioDxe.c uses
+  `PIN_OFFSET(pin) = (pin/32)*0x10` and `bit = pin%32` for direction, output and
+  input, and `(pin/8)*0x10` with four bits per pin only for the mode registers.
+  Reading DIN with the mode formula (as the first version of this probe did)
+  lands on the wrong register and always returns 0 -- which is exactly what the
+  panel showed (IMG_5743: `DIN 122..133=00000000` while PS said the same lines
+  were high).
 **/
 STATIC
 UINT32
@@ -790,13 +774,64 @@ ReadEmmcPinDin (VOID)
 
   Din = 0;
   for (Pin = EMMC_PIN_FIRST; Pin <= EMMC_PIN_LAST; Pin++) {
-    if (((PinctrlRead32 (PINCTRL_DIN_OFS + (Pin / 8) * PINCTRL_MODE_STRIDE) >> (Pin % 8)) & 1) != 0) {
+    if (((PinctrlRead32 (PINCTRL_DIN_OFS + (Pin / 32) * PINCTRL_MODE_STRIDE) >> (Pin % 32)) & 1) != 0) {
       Din |= (1u << (Pin - EMMC_PIN_FIRST));
     }
   }
 
   return Din;
 }
+
+/**
+  Write the eMMC pin group's mode the way the vendor does it: one plain 32-bit
+  store per register, whole field at once, instead of per-pin read-modify-write.
+
+  Why this matters: GpioDxe.c's GpioSetMode() writes to `Offset + 0x4` and
+  `Offset + 0x8`, i.e. it treats the mode register as a set/reset alias pair and
+  clears with a 3-bit mask (0x7) even though a field is four bits.  On this SoC
+  that left pins 122/123 reading back as mode 0xF while 124..127 read 2 -- see
+  IMG_5743's `m0=2222FF00`.  The vendor's msdc_set_pin_mode() simply stores
+  0x22222200 (or 0x11111100) into 0x3F0 and 0x222222 (0x111111) into 0x400.
+**/
+STATIC
+VOID
+WriteEmmcPinMode (
+  IN UINT32  Mode
+  )
+{
+  UINT32  Pattern;
+  UINT32  M0;
+  UINT32  M1;
+
+  //
+  // 0x3F0 covers GPIO120..127: bits 7..0 are 120/121 and must be preserved.
+  // 0x400 covers GPIO128..135: bits 31..24 are 134/135 and must be preserved.
+  //
+  Pattern = (Mode & 0xFu) * 0x111111u;
+
+  M0 = PinctrlRead32 (EmmcModeRegister (EMMC_PIN_FIRST));
+  M0 = (M0 & 0x000000FFu) | (Pattern << 8);
+  *(volatile UINT32 *)(UINTN)(PINCTRL_MMIO_BASE + EmmcModeRegister (EMMC_PIN_FIRST)) = M0;
+
+  M1 = PinctrlRead32 (EmmcModeRegister (128));
+  M1 = (M1 & 0xFF000000u) | Pattern;
+  *(volatile UINT32 *)(UINTN)(PINCTRL_MMIO_BASE + EmmcModeRegister (128)) = M1;
+}
+
+//
+// One CMD1 ping's evidence.  Kept in a struct because each field answers a
+// different question and they have to stay together in the log.
+//
+typedef struct {
+  BOOLEAN    Answered;   // CMDRDY seen: the card replied
+  UINT32     IntStatus;  // MSDC_INT after the command
+  UINT32     Resp0;      // R3/OCR
+  UINT32     PsAnd;      // MSDC_PS bits held high during the command
+  UINT32     PsOr;       // MSDC_PS bits ever high during the command
+  UINT32     CmdLow;     // samples where CMD (bit 24) read 0
+  UINT32     DinAnd;     // eMMC pins held high during the command
+  UINT32     DinOr;      // eMMC pins ever high during the command
+} CARD_PING_RESULT;
 
 /**
   Send one CMD1 (SEND_OP_COND) by hand and sample the bus while it is on the wire.
@@ -806,37 +841,43 @@ ReadEmmcPinDin (VOID)
   response (R3), and works in every card state, so it is the cheapest possible
   ping.
 
-  The sampling loop has no Stall on purpose.  The command phase is 48 clock
-  cycles -- about 120 us at 400 kHz -- and a 1 ms poll would step straight over
-  it.  AND/OR of MSDC_PS over a few thousand loads answers the useful question
-  directly: if the CMD line (bit 24) never leaves 1, the controller is not
-  driving it at all, which is a pad/mux/clock answer and not a card answer.
+  The sampling loop has no Stall on purpose: the command phase is 48 clock
+  cycles, about 120 us at 400 kHz, and a 1 ms poll steps straight over it.  The
+  loop counts how often CMD read low, which is the answer to "did this
+  controller drive the command line at all" -- a number the card's silence
+  cannot give.  It also ANDs/ORs the GPIO input word, so a clock line that is
+  actually toggling shows up as a bit that is 0 in the AND and 1 in the OR.
 
   Interrupts are cleared before the command because MSDC_INT is W1C: a stale
   CMDTMO from MsdcDxe would otherwise be read as this command's result.
 **/
 STATIC
-BOOLEAN
+CARD_PING_RESULT
 CardPing (
-  IN  EFI_SYSTEM_TABLE  *SystemTable,
-  IN  CHAR16            *Tag,
-  OUT UINT32            *IntStatus,
-  OUT UINT32            *Resp0,
-  OUT UINT32            *PsAnd,
-  OUT UINT32            *PsOr
+  IN EFI_SYSTEM_TABLE  *SystemTable,
+  IN CHAR16            *Tag
   )
 {
   volatile UINT32  *Regs;
-  UINT32           Int;
-  UINT32           Ps;
-  UINTN            Tries;
+  CARD_PING_RESULT  Result;
+  UINT32            Ps;
+  UINT32            Din;
+  UINTN             Tries;
+
+  Result.Answered  = FALSE;
+  Result.IntStatus = 0;
+  Result.Resp0     = 0;
+  Result.PsAnd     = 0xFFFFFFFF;
+  Result.PsOr      = 0;
+  Result.CmdLow    = 0;
+  Result.DinAnd    = 0xFFFFFFFF;
+  Result.DinOr     = 0;
 
   Regs = (volatile UINT32 *)(UINTN)MSDC0_MMIO_BASE;
 
   //
-  // Wait for the controller to be idle.  Issuing a command while SDC_STS says
-  // busy is silently dropped by the hardware, which would look like "the card
-  // did not answer".
+  // Wait for the controller to be idle.  A command issued while SDC_STS says
+  // busy is dropped by the hardware, which would look like "no answer".
   //
   for (Tries = 0; Tries < 2000; Tries++) {
     if ((Regs[SDC_STS_OFS / 4] & (SDC_STS_BUSY | SDC_STS_CMDBUSY)) == 0) {
@@ -850,42 +891,59 @@ CardPing (
   Regs[SDC_ARG_OFS / 4]  = CMD1_OCR;
   Regs[SDC_CMD_OFS / 4]  = (1u | (SDC_CMD_RSP_R3 << SDC_CMD_RSP_SHIFT));
 
-  *PsAnd = 0xFFFFFFFF;
-  *PsOr  = 0;
   for (Tries = 0; Tries < 20000; Tries++) {
-    Ps      = Regs[MSDC_PS_OFS / 4];
-    *PsAnd &= Ps;
-    *PsOr  |= Ps;
+    Ps = Regs[MSDC_PS_OFS / 4];
+    if ((Ps & MSDC_PS_CMD_BIT) == 0) {
+      Result.CmdLow++;
+    }
+
+    Result.PsAnd &= Ps;
+    Result.PsOr  |= Ps;
+
+    Din           = ReadEmmcPinDin ();
+    Result.DinAnd &= Din;
+    Result.DinOr  |= Din;
   }
 
   for (Tries = 0; Tries < 2000; Tries++) {
-    Int = Regs[MSDC_INT_OFS / 4];
-    if ((Int & (MSDC_INT_CMDRDY | MSDC_INT_CMDTMO)) != 0) {
+    Result.IntStatus = Regs[MSDC_INT_OFS / 4];
+    if ((Result.IntStatus & (MSDC_INT_CMDRDY | MSDC_INT_CMDTMO)) != 0) {
       break;
     }
 
     gBS->Stall (1000);
   }
 
-  *IntStatus = Regs[MSDC_INT_OFS / 4];
-  *Resp0     = Regs[SDC_RESP0_OFS / 4];
-  Regs[MSDC_INT_OFS / 4] = *IntStatus;
+  Result.IntStatus = Regs[MSDC_INT_OFS / 4];
+  Result.Resp0     = Regs[SDC_RESP0_OFS / 4];
+  Regs[MSDC_INT_OFS / 4] = Result.IntStatus;
 
-  SayHex (SystemTable, Tag, *IntStatus);
-  SayHex (SystemTable, L" R=", *Resp0);
+  Result.Answered = ((Result.IntStatus & MSDC_INT_CMDRDY) != 0);
+
+  SayHex (SystemTable, Tag, Result.IntStatus);
+  SayHex (SystemTable, L" R=", Result.Resp0);
+  Say (SystemTable, L" cl=");
+  SayDec (SystemTable, Result.CmdLow);
+  SayHex (SystemTable, L" dA=", Result.DinAnd);
+  SayHex (SystemTable, L" dO=", Result.DinOr);
   Say (SystemTable, L"\r\n");
 
-  return ((*IntStatus & MSDC_INT_CMDRDY) != 0);
+  return Result;
 }
 
 /**
-  Ask the card whether it is listening, and try both pin-mux modes.
+  Ask the card whether it is listening, and try the pin-mux modes explicitly.
 
-  The mux mode comes from a strap bit that was inherited from the vendor kernel
-  and has never been checked on silicon; the two candidate modes differ by one
-  bit per pin, so a wrong choice costs exactly one flash cycle.  Whatever the
-  answer, the AND/OR strips stay on screen: they say whether the controller's
-  CMD output ever moved, which is information the card's silence cannot give.
+  What IMG_5743 established: the strap-selected mode left pins 122/123 in a
+  state the driver never intended (`m0=2222FF00`), the GPIO input read was
+  landing on the wrong register, and the CMD line never moved during the
+  command.  So this version (a) writes the mux the vendor's way and prints what
+  it reads back, and (b) counts CMD-low samples instead of relying on a photo of
+  a 9-pixel square.
+
+  Order: current state -> mode 2 -> mode 1.  Whichever answers is kept, because
+  the connect sweep that follows starts EmmcDxe and the boot may as well finish
+  what it started.
 **/
 STATIC
 VOID
@@ -893,14 +951,11 @@ ProbeCardAndMux (
   IN EFI_SYSTEM_TABLE  *SystemTable
   )
 {
-  UINT32   Strap;
-  UINT32   Mode;
-  UINT32   Other;
-  UINT32   Int;
-  UINT32   Resp;
-  UINT32   PsAnd;
-  UINT32   PsOr;
-  BOOLEAN  Answered;
+  UINT32            Strap;
+  UINT32            Mode;
+  UINT32            Trial;
+  CARD_PING_RESULT  Ping;
+  BOOLEAN           Answered;
 
   Strap = *(volatile UINT32 *)(UINTN)PINCTRL_STRAP_ADDR;
   Mode  = ((Strap & (1u << PINCTRL_STRAP_BIT)) != 0) ? 1 : 2;
@@ -915,40 +970,53 @@ ProbeCardAndMux (
   SayHex (SystemTable, L"DIN 122..133=", ReadEmmcPinDin ());
   Say (SystemTable, L"\r\n");
 
-  Answered = CardPing (SystemTable, L"PING a I=", &Int, &Resp, &PsAnd, &PsOr);
-  PaintBitStrip (BEACON_STRIP_CMD_AND, 32, PsAnd, 0x00FFFFFF);
-  PaintBitStrip (BEACON_STRIP_CMD_OR,  32, PsOr,  0x0000FFFF);
-
-  if (Answered) {
-    Say (SystemTable, L"MUX mode ok\r\n");
-    return;
-  }
-
-  //
-  // No answer in the strap-selected mode.  Try the other one.
-  //
-  Other = (Mode == 1) ? 2 : 1;
-  SetEmmcPinMode (Other);
-
-  Answered = CardPing (SystemTable, L"PING b I=", &Int, &Resp, &PsAnd, &PsOr);
-  PaintBitStrip (BEACON_STRIP_CMD_AND, 32, PsAnd, 0x00FFFFFF);
-  PaintBitStrip (BEACON_STRIP_CMD_OR,  32, PsOr,  0x0000FFFF);
-
-  Say (SystemTable, L"MUX now=");
-  SayDec (SystemTable, Other);
+  SayHex (SystemTable, L"PAD0=", Msdc0Read32 (MSDC_PAD_CTL0_OFS));
+  SayHex (SystemTable, L" PAD1=", Msdc0Read32 (MSDC_PAD_CTL1_OFS));
   Say (SystemTable, L"\r\n");
 
+  //
+  // Ping in whatever state MsdcDxe left behind.  This is the baseline.
+  //
+  Ping = CardPing (SystemTable, L"PING a I=");
+  PaintBitStrip (BEACON_STRIP_CMD_AND, 32, Ping.PsAnd, 0x00FFFFFF);
+  PaintBitStrip (BEACON_STRIP_CMD_OR,  32, Ping.PsOr,  0x0000FFFF);
+  Answered = Ping.Answered;
+
+  //
+  // Then try the two modes explicitly, printing the readback each time so the
+  // photo says whether the write took effect at all.
+  //
+  for (Trial = 0; (Trial < 2) && !Answered; Trial++) {
+    UINT32  TryMode;
+
+    TryMode = (Trial == 0) ? 2 : 1;
+    WriteEmmcPinMode (TryMode);
+
+    Say (SystemTable, L"SET mode=");
+    SayDec (SystemTable, TryMode);
+    SayHex (SystemTable, L" m0=", PinctrlRead32 (EmmcModeRegister (EMMC_PIN_FIRST)));
+    SayHex (SystemTable, L" m1=", PinctrlRead32 (EmmcModeRegister (128)));
+    Say (SystemTable, L"\r\n");
+
+    Ping = CardPing (SystemTable, (TryMode == 2) ? L"PING b I=" : L"PING c I=");
+    PaintBitStrip (BEACON_STRIP_CMD_AND, 32, Ping.PsAnd, 0x00FFFFFF);
+    PaintBitStrip (BEACON_STRIP_CMD_OR,  32, Ping.PsOr,  0x0000FFFF);
+    Answered = Ping.Answered;
+  }
+
   if (Answered) {
-    //
-    // Leave the working mode in place: the connect sweep that follows starts
-    // EmmcDxe, and this boot may as well finish what it started.
-    //
     Say (SystemTable, L"MUX ANSWERED - mode kept\r\n");
     return;
   }
 
-  SetEmmcPinMode (Mode);
-  Say (SystemTable, L"MUX restored\r\n");
+  //
+  // Nothing answered.  Put the strap-selected mode back and say so, so the rest
+  // of the boot (and the next session) starts from the documented state.
+  //
+  WriteEmmcPinMode (Mode);
+  Say (SystemTable, L"MUX restored to ");
+  SayDec (SystemTable, Mode);
+  Say (SystemTable, L"\r\n");
 }
 
 /**
