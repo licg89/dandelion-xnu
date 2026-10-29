@@ -8,7 +8,7 @@ checkout 完整复现。构建与打包的完整环境见
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
-| `boot-uefi-r1.img` | 16,099,328 B | **当前上机版**：`CMD0` → `CMD1`(到 OCR bit31) → `CMD2/3/7/13` 走到 TRAN，然后 `CMD16/CMD8/CMD17` **真读 512 字节**（EXT_CSD + LBA 1）；整段日志压到 10 行 |
+| `boot-uefi-clock.img` | 16,099,328 B | **当前上机版**：`CMD0` → `CMD1`(到 OCR bit31) → `CMD2/3/7/13` 走到 TRAN，然后 `CMD16/CMD8/CMD17` **真读 512 字节**（EXT_CSD + LBA 1）；整段日志压到 10 行 |
 | `panel-preview.png` | 720×1600 | `tools/render_panel_preview.py` 渲染的仪表区，**不用刷机就能看布局** |
 
 > 更早的几版（`boot-uefi-ping.img`、`boot-uefi-power.img`、`boot-uefi-m5-probe.img` …）
@@ -18,55 +18,68 @@ checkout 完整复现。构建与打包的完整环境见
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-b8770cc1e9db1f196d48ea83ade69f62a099366f48a2244cda753d95a0204256  SILICIUM_UEFI.fd
-9136f4cc4a1a601b532dbfbfaa3e4b3037f4225785726c02cabc151a442ea7b1  boot-uefi-r1.img
+10ae0959856a19838f1e616e605301f8d40ba5aa8415d0d459ee114b2a12ef11  SILICIUM_UEFI.fd
+31b89dc27d2bf5824c8eab458c192ef4341a36d4ad5f418a04bd34b57323ee1b  boot-uefi-clock.img
 ```
 
-## 这一版是什么（2026-10-29 深夜，第九版）
+## 这一版是什么（2026-10-29 深夜，第十版）
 
-上一版（`boot-uefi-datwin.img`）**把探针自己写崩了**：读 `0x10002010`
-（MSDC0 pad 块，不在这个平台的内存映射里）触发三级页表 translation fault，
-DxeCore 把寄存器转储打在屏幕上（IMG_5755，`X8 = 0x000000010002010`）。
+上一版（`boot-uefi-r1.img`）的读数（IMG_5757）非常干净：
+
+```
+H0 C=0200F09B S=FF007FFC P=81FF0002 N=00000001
+IO dir=000 do=000 din=00000DFF
+IO ioc=00000000 f60=00000000 adv=0000E63F
+A8 I=00000100 R=00000900 sz=00000000 ps=EF/FF gp=DF8/DFF f=00 c6=0000
+B8 I=00000100 R=00000900 sz=00000000 ps=EF/FF gp=DF8/DFF f=00 c6=0100
+C8 I=00000100 R=00000900 sz=00000000 ps=EF/FF gp=DF8/DFF f=00 c6=0100
+B1 -  no data phase
+```
+
+- `R=00000900`：卡在 TRAN、READY_FOR_DATA、**没有错误位** —— 不是拒绝，是不说话；
+- `gp=DF8/DFF`：整个等待窗口只有 CMD/CLK 动过，**没有一根 DAT**；
+- `dir=000`：GPIO 没抢总线；
+- `H0 C` 的 **bit1 = CKPDN**（时钟 pad 掉电）= **1**。
+
+一张状态良好、总线干净、却一位不发的卡，配上“时钟 pad 掉电”，只剩一个解释：
+**数据相位没有时钟**。卡没时钟移不出位；控制器没 sclk 也不数超时——所以连
+`DATTMO` 都从没出现过。
 
 这一版：
 
-1. **不再读 pad 块**；输入使能改由 GPIO 窗口回答（`din=` 当前电平、`gp=` 整个
-   等待窗口的 AND/OR）；
-2. **打 CMD8/CMD17 的 R1**（`R=`）：卡“回答了但不发数据”和“回答里带错误位”
-   在之前是分不清的；
-3. 保留 `dir=` / `do=`（pinctrl 已映射），能抓到 GPIO 抢总线。
-
-> 以后真要读 pad 块：先 `gDS->AddMemorySpace (EfiMemoryMappedIO, 0x10002000,
-> 0x1000, EFI_MEMORY_UC)` 再加映射，**不要直接 load**。
-
-已知结论（IMG_5754，三种模式都跑过）：`ps=EF/FF` —— 控制器看到的 DAT[7:0]
-全程为高，只有 DAT4 抖过；命令、CID、选中全正常。
+1. **开跑前软复位控制器**（`MSDC_CFG.RST`，自清零，再补回 `PIO` 和继承的
+   `SDC_CFG=0xFF007FFC`）——LK 几分钟前刚用同一个控制器读过同一个卡，中间只
+   经过 MsdcDxe 的一次失败传输；
+2. **第 4 个尝试 `D8`**：1-bit + **`CKPDN` 清零**（时钟 pad 保持供电）；
+3. 每个尝试新增 **`k=`**：等待窗口里 CLK 脚读到 0 的样本数（≈一半 = 时钟一直在跑，
+   很小 = 响应结束就停了）。
 
 ### 怎么看屏幕
 
 ```
 PWR PS=81FF0002 DAT=FF CMD=1 CD=1 VEMC=1 vsel=3 3000mV w=1 f=0 BUS OK
+RST C=0200F09B
 H0 C=.. S=.. P=.. N=..
+IO dir=000 do=000 din=00000DFF
 C0 I=.. cl=.. f=.. l=.. kc=..
 C1 n=.. I=.. R=........
 C2 3=.. 2=.. 1=.. 0=..
 C3 I=.. R=.. C7 I=.. R=..
 C13 I=.. R=.. st=..
-IO dir=000 do=000 din=FFF
-IO ioc=........ f60=........ adv=........
-A8 I=.. R=.. sz=.. ps=../../.. gp=.../... f=.. c6=....
+A8 I=0100 R=........ sz=........ ps=../../.. gp=.../... f=.. k=..... c6=........
 B8 ...（A8 失败才出现）
 C8 ...（B8 失败才出现）
+D8 ...（C8 失败才出现，CKPDN 已清零）
 B1 I=.. S=..
 ```
 
 | 看到 | 结论 |
 |---|---|
-| 任一行 `I=...1100` + `sz` 非零 + `B1 S=45464920` | **数据通路打通** |
-| `R=` 里带错误位 | 卡拒绝发数据，按位查卡状态 |
-| `ps` 安静 + `gp` 有变化 | 控制器看不到卡 ⇒ pad / 输入通路 |
-| `ps`/`gp` 都安静 | 卡没驱动数据线 |
-| 屏幕变成寄存器转储 | 探针踩了未映射地址 |
+| 任一行 `I=1100` + `sz` 非零 + `B1 S=45464920` | **数据通路打通** |
+| 只有 `D8` 成功 | 就是 CKPDN / 时钟 pad |
+| 都失败但 `k=` 很小 | 数据相位没时钟 |
+| 都失败而 `k≈15000` | 时钟在跑，卡不发 → 查卡侧 |
+| `R=` 带错误位 | 卡拒绝 |
 
 逐条判读见 `docs/POWER-BEFORE-AFTER.md` §3。
 
@@ -113,7 +126,7 @@ boot image 的 header：
 magic=ANDROID!  hver=2  page=2048
 kaddr=0x40080000  ksize=13907597     <- 只改了这一项
 raddr=0x51B00000  rsize=2060079  tags=0x47880000
-kernel 段 = gzip(SILICIUM_UEFI.fd) 607,744 B（FD 2,097,152 B）
+kernel 段 = gzip(SILICIUM_UEFI.fd) 608,256 B（FD 2,097,152 B）
 ```
 
 `kaddr` 必须等于 `[uefi_fd].base`（`Resources/Configs/dandelion.toml` = `0x40080000`）。
@@ -124,7 +137,7 @@ kernel 段 = gzip(SILICIUM_UEFI.fd) 607,744 B（FD 2,097,152 B）
 
 ```powershell
 adb reboot bootloader
-fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-r1.img
+fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-clock.img
 fastboot reboot
 ```
 
@@ -149,5 +162,5 @@ wsl -d Ubuntu -e bash /mnt/d/aios/dandelion-xnu/tools/build-local.sh
 
 # 2. 打包 + 校验（读 toml 里的 base，自动断言 kernel_addr）
 cd /mnt/d/aios/dandelion-xnu
-python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-r1.img
+python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-clock.img
 ```
