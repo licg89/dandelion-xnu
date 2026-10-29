@@ -313,11 +313,43 @@ eMMC 的 `vmmc`/`vemmc` 上电时序对不上。
 
 ## 6. 构建 / 刷机流程（可直接复制）
 
-构建在 **GitHub Actions**，本地不需要 EDK2：
+### 6.1 换电脑后从零跑起来（2026-10-29 更新）
+
+本地构建**不需要**在 Windows 上装 EDK2，只需要 WSL 里有一份 EDK2 树：
+
+```powershell
+# 1) WSL（默认发行版是 docker-desktop，必须显式指定 Ubuntu）
+wsl -d Ubuntu -e bash -lc "uname -a"
+
+# 2) EDK2 树：git clone 上游 fork 到 WSL 的 ext4（不要放 /mnt/d，9p 会卡死）
+wsl -d Ubuntu -e bash -lc "cd ~ && git clone --recurse-submodules https://github.com/mouseos/uefi-a04br3.git"
+#    目录名用 uefi-a04br3，tools/build-local.sh 默认就找 ~/uefi-a04br3
+
+# 3) 一条命令构建（overlay 我们的包 → 重置并应用补丁 → 编 → 拷 FD 到 D:\aios\artifacts）
+wsl -d Ubuntu -e bash -lc "bash /mnt/d/aios/dandelion-xnu/tools/build-local.sh"
+
+# 4) 打包 + 刷机（脚本会打印镜像 hash 和"该拍哪里"）
+python tools\package_uefi_bootimg.py --stock D:\aios\artifacts\boot_backup.img `
+    --fd D:\aios\artifacts\SILICIUM_UEFI.fd --out D:\aios\artifacts\boot-uefi-test.img
+powershell -File tools\flash.ps1 -Image D:\aios\artifacts\boot-uefi-test.img
+```
+
+构建前建议先跑三个自检（都不需要真机，几秒钟）：
+
+```powershell
+python tools\check_modules.py      # 三个模块清单是否一致
+python tools\check_docs.py         # 文档引用是否都存在
+wsl -d Ubuntu -e bash -lc "python3 /mnt/d/aios/dandelion-xnu/tools/check_patches.py"  # 补丁 + 要点标记
+```
+
+**也可以走 CI**：push 之后 ~6 分钟出 artifact `dandelion-fd`（见下），但本地构建更快、且
+`build-local.sh` 与 CI 步骤一一对应，两者产物应当一致。
+
+### 6.2 CI
 
 ```
 push 改动（Silicon/MediaTek/MT6765Pkg/**、Platforms/Xiaomi/dandelionPkg/**、
-Resources/** 或 workflow 文件）→ ~7 分钟 → artifact dandelion-fd
+Resources/** 或 workflow 文件）→ ~6 分钟 → artifact dandelion-fd
 ```
 
 下载 artifact（需要 GitHub token）：
@@ -330,27 +362,28 @@ $r = Invoke-RestMethod "https://api.github.com/repos/licg89/dandelion-xnu/action
 # success 后：artifacts[0].archive_download_url → Expand-Archive → 找到 SILICIUM_UEFI.fd
 ```
 
-打包（**必须带 `--kernel-addr 0x40080000`**）：
+### 6.3 打包与刷机
+
+打包（**必须带 `--kernel-addr 0x40080000`**；`tools/package_uefi_bootimg.py` 会自动读 toml 并断言）：
 
 ```powershell
-python bootshim\patch_boot.py out\boot_backup.img <fd> Resources\DTBs\dandelion.dtb out\boot_x.img --kernel-addr 0x40080000
+python tools\package_uefi_bootimg.py --stock D:\aios\artifacts\boot_backup.img `
+    --fd D:\aios\artifacts\SILICIUM_UEFI.fd --out D:\aios\artifacts\boot_x.img
 # 输出固定 16099328 字节
 ```
 
 刷机（`fastboot boot` 在本机不可用，必须 `flash boot`）：
 
 ```powershell
-adb reboot bootloader
-fastboot flash boot out\boot_x.img
-fastboot reboot
+powershell -File tools\flash.ps1 -Image D:\aios\artifacts\boot_x.img
+# 或手动：adb reboot bootloader → fastboot flash boot … → fastboot reboot
 ```
 
 **测试完必须恢复 Android**：
 
 ```powershell
-fastboot flash boot out\boot_backup.img
-fastboot reboot
-# 等 sys.boot_completed=1
+powershell -File tools\flash.ps1 -Restore
+# 或手动：fastboot flash boot D:\aios\artifacts\boot_backup.img
 ```
 
 手动进 fastboot（死机时）：长按电源 10 秒关机 → 音量下 + 电源。
@@ -400,21 +433,27 @@ fastboot reboot
 
 - **基座**：`mouseos/uefi-a04br3`（Mu / Mu-Silicium），CI 克隆后叠加本仓库的
   `Platforms/Xiaomi/dandelionPkg`、`Silicon/MediaTek/MT6765Pkg`
-- **不是** unixnu.com 那套。UniXNU 是本线的**下游**：等 M4 通了才轮到 `UniXNU.efi`
-  作为 `\EFI\BOOT\BOOTAA64.EFI` 被 BDS 加载
+- **不是** unixnu.com 那套。UniXNU 是本线的**下游**：`PayloadBootDxe` 已经能加载
+  `\UniXNU.efi`（或 `\EFI\BOOT\BOOTAA64.EFI`），设备树也已经按 `gFdtTableGuid` 发布，
+  所以 UniXNU 那一侧只需要产出 payload，不需要改我们的固件
 - 设备序列号 `QS55XCPRCA9LDA5T`；工具在
   `C:\Users\li\AppData\Local\Android\Sdk\platform-tools\`
 
 ---
 
-## 10. 接手后的第一个动作
+## 10. 接手后的第一个动作（2026-10-29 08:3x 更新）
 
 ```powershell
 git pull
-# 1) 把 dandelion.dsc 里的 GraphicsConsoleDxe 也注释掉
-# 2) push → 等 CI → 下载 artifact → 打包 → flash
-# 3) 看 BDS 文字是否变清晰（不再横纹）
+# 1) 先看两份文档：docs\NIGHT-1029.md（最近一夜）、docs\ANALYSIS-EMMC-DATA-PATH.md（eMMC 判读）
+# 2) 三个自检（几秒钟，不需要真机）
+python tools\check_modules.py
+python tools\check_docs.py
+# 3) 刷当前镜像，拍一张屏幕下半部
+powershell -File tools\flash.ps1 -Image D:\aios\artifacts\boot-uefi-m5-probe.img
+# 4) 按 ANALYSIS-EMMC-DATA-PATH.md §4.1 的判读表读 `ddn probe pio …` / `ddn probe dma …`
 ```
 
-如果清晰：M3.5 完成，直接进 M4（eMMC / FAT / UniXNU.efi）。
-如果仍横纹：按 5.2 强制让 `ConOut` 只指向我们的实例。
+现在的卡点只有一个：**eMMC 的 512 字节数据传输**（卡状态已确认正常，`R1=0x900`）。
+`boot-uefi-m5-probe.img` 会在一次开机里同时报告 PIO 和 DMA 两条通路的 `MSDC_INT`，
+所以下一次刷机应该就能把"数据到底有没有上总线"钉死。
