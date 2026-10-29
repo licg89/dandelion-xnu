@@ -642,6 +642,40 @@ SpanIsFree (
 }
 
 /**
+  Does [Lba, Lba+1) already hold a previous log block of ours?
+
+  A span that is not free is not automatically somebody else's data: it may be
+  the block this driver wrote on the last boot, which is exactly the thing we
+  want to replace.  bootshim wrote a DLXLOG01 block into flashinfo+1 MiB on
+  2026-10-27, so on this device the span is *always* occupied by one of our own
+  logs and the free-space check alone would refuse forever.
+**/
+STATIC
+BOOLEAN
+SpanIsOurs (
+  IN  EFI_BLOCK_IO_PROTOCOL  *BlockIo,
+  IN  EFI_LBA                Lba
+  )
+{
+  UINT8  Header[LOG_SECTOR];
+
+  if (EFI_ERROR (BlockIo->ReadBlocks (BlockIo, BlockIo->Media->MediaId, Lba, LOG_SECTOR, Header))) {
+    return FALSE;
+  }
+
+  if (CompareMem (Header, LOG_MAGIC, 8) == 0) {
+    return TRUE;
+  }
+
+  //
+  // Line A's block, same place, same layout, different magic (bootshim's
+  // DLXLOG01).  That block has been sitting at flashinfo+1 MiB since
+  // 2026-10-27, so without this the span would look occupied forever.
+  //
+  return (BOOLEAN)(CompareMem (Header, "DLXLOG01", 8) == 0);
+}
+
+/**
   Find the flashinfo partition and write the log into free space inside it.
 **/
 STATIC
@@ -787,8 +821,12 @@ FlushLogToFlash (
     Target = (EFI_LBA)(FlashInfoStart + LOG_PARTITION_OFFSET);
 
     if (!SpanIsFree (BlockIo, Target, LOG_WRITE_SECTORS)) {
-      DEBUG ((DEBUG_ERROR, "PayloadBoot: log span at LBA %lu is not free, refusing\n", (UINT64)Target));
-      continue;
+      if (SpanIsOurs (BlockIo, Target)) {
+        DEBUG ((DEBUG_ERROR, "PayloadBoot: replacing the previous log at LBA %lu\n", (UINT64)Target));
+      } else {
+        DEBUG ((DEBUG_ERROR, "PayloadBoot: log span at LBA %lu is not free, refusing\n", (UINT64)Target));
+        continue;
+      }
     }
 
     //

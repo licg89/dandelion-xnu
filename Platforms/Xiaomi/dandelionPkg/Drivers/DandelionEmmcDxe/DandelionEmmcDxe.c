@@ -762,12 +762,12 @@ DandelionEmmcDxeEntryPoint (
   mMedia.MediaPresent     = TRUE;
   mMedia.LogicalPartition = FALSE;
   //
-  // READ-ONLY for now, on purpose.  This is a working phone: the FAT driver
-  // binds read-only volumes happily, and the write path (CMD24/CMD25, which is
-  // already implemented below) gets switched on only after the read path has
-  // been proven on real boots.
+  // Writable as of 2026-10-29 21:1x, after the read path survived IMG_5765:
+  // FAT mounts (or honestly reports that this disk has no FAT volume) and the
+  // only writer is PayloadBootDxe's log path, which refuses any span that is
+  // neither free nor already one of its own blocks, and re-reads what it wrote.
   //
-  mMedia.ReadOnly         = TRUE;
+  mMedia.ReadOnly         = FALSE;
   mMedia.WriteCaching     = FALSE;
   mMedia.BlockSize        = BLOCK_SIZE;
   mMedia.IoAlign          = 4;

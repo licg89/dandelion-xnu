@@ -8,7 +8,7 @@ checkout 完整复现。构建与打包的完整环境见
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
-| `boot-uefi-blockio.img` | 16,099,328 B | **当前上机版**：新增 `DandelionEmmcDxe`，按 `bootshim/msdc.c` 的「继承、绝不重新初始化」策略读 eMMC 并发布 `BlockIo`（只读）；`StorageBeaconDxe` 保留 4 行 `INH` 作为证据 |
+| `boot-uefi-rw.img` | 16,099,328 B | **当前上机版**：eMMC 读写全开。`BlockIo` 已能读 GPT（`BLOCK OK n=44`）；日志开始写进 `flashinfo`，`adb pull` + `tools/extract_log_block.py` 就能读，不用再拍照 |
 | `panel-preview.png` | 720×1600 | `tools/render_panel_preview.py` 渲染的仪表区，**不用刷机就能看布局** |
 
 > 更早的几版（`boot-uefi-inh.img`、`boot-uefi-pv.img`、`boot-uefi-state.img`、
@@ -18,8 +18,47 @@ checkout 完整复现。构建与打包的完整环境见
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-442e7232511c216fa5311dc81c3d8a7932d72719806fb6b52f9a45070701b521  SILICIUM_UEFI.fd
-22499561e900b795ddda5b8e8e03ed684590dee3bcdd84b93c12438926136403  boot-uefi-blockio.img
+d49c738c08cf519057f924bbbe17e70cce52f4c857ddf345fd93c39315a5e7dc  SILICIUM_UEFI.fd
+c66cd96552821c8bd5e897045788610e8ffdcdd4e49349eb2d4e272308c9ec8f  boot-uefi-rw.img
+```
+
+## 这一版是什么（2026-10-29 21:2x，第十四版）——eMMC 读写全开，日志落盘
+
+上一版（`boot-uefi-blockio.img`）的读数（IMG_5765 / IMG_5766）：
+
+```
+COUT 0 50x19EMMC OK div=26 sec=0747C000
+INH C=02201A99 S=FF027FFC k=1 C'=02210499
+INH C13 I=00000100 R=00000900 st=4
+INH C8  I=00001100 rev=08 bw=06 hs=01 sec=0747C000
+INH B1  I=00001100 S=45464920
+INHERIT OK
+BLOCK OK n=44
+FAT NONE
+```
+
+- `EMMC OK div=26` —— 时钟自校准**第一档就通过**（CKDIV=26 ≈ 7.7 MHz，四档里最快）；
+- `BLOCK OK n=44` —— **GPT 解析成功**：整盘 media + DiskIo 子句柄 + 各分区，一共 44 个句柄；
+- `FAT NONE` —— **是真话**：这台机器的 Android 分区全是 ext4/f2fs，没有 FAT 卷可挂。
+  M4 因此按「eMMC → BlockIo → 分区表」判完成；FAT 只在这块盘上确实存在 FAT 卷时才有意义。
+
+这一版：
+
+- `Media->ReadOnly = FALSE`，写路径打开。唯一的写入者是 `PayloadBootDxe` 的日志路径，
+  它只写"空的或它自己上一次写的"区间，写完逐字节读回校验；
+- `SpanIsOurs()`：`flashinfo + 1 MiB` 那块被 line A 在 2026-10-27 写的 `DLXLOG01` 日志占着，
+  `DDNLOG01` 与 `DLXLOG01` 两种 magic 都认，于是日志通道可以反复使用；
+- `BLOCK OK n=..` 带句柄计数，把"分区没解析出来"和"这块盘确实没有 FAT"分开。
+
+**读日志的循环**（不再需要拍照）：
+
+```powershell
+fastboot flash boot D:\aios\artifacts\boot_backup.img
+fastboot reboot
+adb wait-for-device
+adb shell su -c "dd if=/dev/block/by-name/flashinfo of=/sdcard/fi.img"
+adb pull /sdcard/fi.img out\fi.img
+python tools\extract_log_block.py out\fi.img --out out\last-boot.log
 ```
 
 ## 这一版是什么（2026-10-29 21:0x，第十三版）——M4 数据通路打通

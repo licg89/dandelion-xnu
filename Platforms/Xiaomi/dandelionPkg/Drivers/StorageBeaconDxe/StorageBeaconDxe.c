@@ -2251,11 +2251,21 @@ StorageBeaconDxeEntryPoint (
   ConnectEverything ();
 
   BlockDevices = CountProtocol (&gEfiBlockIoProtocolGuid);
+  //
+  // The count is the whole diagnostic now.  One BlockIo handle means our own
+  // whole-disk media and nothing on top of it, i.e. PartitionDxe never bound;
+  // more than one means the GPT was parsed and the partitions exist.  Without
+  // the number, "BLOCK OK / FAT NONE" cannot be told apart from "BLOCK OK and
+  // this disk genuinely has no FAT volume on it" -- which is where this phone
+  // is: every Android partition here is ext4.
+  //
   if (BlockDevices > 0) {
     PaintBand (0x008000FF);
     StageCell (4, 0x008000FF);
     PaintBanner (1100, 0x008000FF);
-    Say (SystemTable, L"BLOCK OK\r\n");
+    Say (SystemTable, L"BLOCK OK n=");
+    SayDec (SystemTable, BlockDevices);
+    Say (SystemTable, L"\r\n");
   } else {
     StageCell (7, 0x00FF0000);
     PaintBanner (1100, 0x00FF0000);

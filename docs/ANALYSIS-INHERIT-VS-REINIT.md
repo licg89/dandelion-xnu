@@ -223,3 +223,49 @@ INHERIT OK
    **日志写进 `flashinfo`，直接 `adb pull`，不用再拍照**；
 3. 然后 M6 的外部依赖照旧（缺 `UniXNU.efi` 等产物）。
 
+---
+
+## 9. IMG_5765：BlockIo 上线，`FAT NONE` 多半是真话
+
+```
+COUT 0 50x19EMMC OK div=26 sec=0747C000
+INH C=02201A99 S=FF027FFC k=1 C'=02210499
+INH C13 I=00000100 R=00000900 st=4
+INH C8  I=00001100 rev=08 bw=06 hs=01 sec=0747C000
+INH B1  I=00001100 S=45464920
+INHERIT OK
+BLOCK OK
+FAT NONE
+```
+
+| 读数 | 含义 |
+|---|---|
+| `EMMC OK div=26` | 时钟自校准**第一档就通过** —— CKDIV=26，约 7.7 MHz，是四档里最快的 |
+| `INH C=02201A99` | `MSDC_CFG` 的 CKDIV=`0x1A`=26 ✓，CKMOD/CCKPD/CKSTB 原样保留 |
+| `INH C8 ... rev=08 bw=06 hs=01 sec=0747C000` | EXT_CSD 再读一次仍然正确 |
+| `BLOCK OK` | `EFI_BLOCK_IO_PROTOCOL` 装上并被上游驱动认领 |
+| `FAT NONE` | 没有挂上文件系统 |
+
+**`FAT NONE` 大概不是 bug**：这台机器的 Android 分区全是 ext4/f2fs，EDK2 的 `FatPkg`
+没有可以绑定的卷。要区分"分区没解析出来"和"这块盘上确实没有 FAT"，
+需要知道 **BlockIo 句柄数量**：只有 1 个 = 只有我们自己那块整盘 media（`PartitionDxe` 没绑上）；
+多于 1 个 = GPT 解析成功、分区都在。所以 `BLOCK OK` 这一行现在带计数：`BLOCK OK n=..`。
+
+顺带一个有用的交叉验证：`PayloadBootDxe` 报告
+
+```
+PayloadBoot: log span at LBA 122111967 is not free, refusing
+```
+
+LBA 122111967 = `flashinfo`(122109919) + 2048，正是 line A 在 2026-10-27 写下 DLXLOG01
+日志块的位置。**我们的读路径读到了那段真实数据**，而且 `PayloadBootDxe` 的免费检查按设计拒绝了。
+这一版加 `SpanIsOurs()`：首扇区 magic 是 `DDNLOG01` 就允许覆盖（那是上一次启动自己的日志），
+这样日志通道才能反复使用。
+
+### 9.1 这一版另外打开的东西
+
+- `Media->ReadOnly = FALSE`：唯一的写入者是 `PayloadBootDxe` 的日志路径，
+  它只写"空的或自己的"区间，并且写完逐字节读回校验；
+- 目标：**日志写进 `flashinfo`，`adb pull` 就能读，不用再拍照**。
+
+
