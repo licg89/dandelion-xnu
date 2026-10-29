@@ -8,41 +8,47 @@ checkout 完整复现。构建与打包的完整环境见
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
-| `boot-uefi-m5-probe.img` | 16,099,328 B | **当前上机版**：M4 双通路数据探针 + CMD12 收尾 + 按时间等待 + DMA/PIO 两条路径 + M5 装载器 + 设备树 + 完整日志 |
+| `boot-uefi-power.img` | 16,099,328 B | **当前上机版**：eMMC 供电探针（P_before / MT6357 VEMC,VMC,VIO18 / P_after）+ 原先的 M4/M5 全部内容 |
 | `panel-preview.png` | 720×1600 | `tools/render_panel_preview.py` 渲染的仪表区，**不用刷机就能看布局** |
 
-> 更早的几版（`boot-uefi-m5-dma.img`、`boot-uefi-pagelog-pio2.img`、`boot-uefi-stagecells.img` …）
+> 更早的几版（`boot-uefi-m5-probe.img`、`boot-uefi-m5-dma.img`、`boot-uefi-pagelog-pio2.img` …）
 > 不再跟着仓库一起变大：它们仍在 git 历史里，需要时 `git log -- artifacts/` 取。
 > 仓库里只保留当前版本。
 
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-261cad0f7f3e092a80a1206af53e93d8e38555efa637e3d229ab0ea254bfaebd  SILICIUM_UEFI.fd
-eb818a78f034447c9eea0b4dae611f85e771c8a76281c9ee0b62f9c6d3739373  boot-uefi-m5-probe.img
+286fe2a285c6b34d32689f9b5cafaccc59ebb86dacc8171e78408aca2bf2886c  SILICIUM_UEFI.fd
+5464574105bcb04aef1d8a3fda710423b63b24b5a37e517ea562e8b76d49273d  boot-uefi-power.img
 ```
 
-## 这一版是什么（2026-10-29 02:2x）
+## 这一版是什么（2026-10-29 晚）
 
-**先修"能不能读到日志"，再修数据通路。** 两件事分开做：
+**一句话：不再猜"卡有没有电"，改成读出来。** 这一版相对上一版只加了一件事，
+但它是 M4 目前唯一没被证伪的分支（见 `docs/POWER-BEFORE-AFTER.md`）：
 
-1. **控制台不再滚动**（`DandelionConsoleDxe.c`）。旧 `ScrollUp()` 用 `CopyMem` 把
-   framebuffer 自己当源，而这块屏的 framebuffer **读回不可靠** → 每滚一次就多一层
-   错位重影，照片上半屏永远是一团乱码（`docs/CORRECTIONS.md` C11）。现在写满 68 行
-   就回到第 0 行覆盖最旧的一行，行首第一次写入前整行擦除。
-   **面板上出现的每一个字都是当前内容，不会再有重影。**
-2. **PIO 数据读重写**（`Resources/MuPatches/0002`）。旧 `MsdcPioRead()` 要 FIFO 攒够
-   128 字节才排一次（硬件阈值 64）→ 512 字节的 ext-CSD 读一个字节都读不出来；
-   另外每条命令前没有清 latched `MSDC_INT`，上一条命令留下的 `DATCRCERR` 会被下一次
-   数据读当成"立刻出错"。参照 `Platforms/Benesse/a04br3Pkg/Drivers/SdCardBlockIoDxe`
-   （本树里唯一在真机 MT6765 上跑通过数据传输的实现）重写。
-3. 失败时面板上会打出证据（两行，不会再被 90 列折行）：
-   `ddn pio-read FAIL int=… left=…` / `ddn  cfg=… fifo=… sts=… dcrc=…`；
-   成功时只打前两次 `ddn pio-read ok len=… fifo=…`。
+1. `StorageBeaconDxe` 在**读任何东西之前**先读一次 `MSDC_PS`（`P_before`）；
+2. 然后用 PMIC wrapper（直接 MMIO，有 10 ms 上限）读 **MT6357** 的
+   `LDO_VEMC_CON0`（0x1988）/ `LDO_VMC_CON0`（0x1AB0）/ `LDO_VIO18_CON0`（0x1958）；
+3. 等 50 ms 再读一次 `MSDC_PS`（`P_after`）；
+4. 三个值各画一条位图条（y 1172 / 1186 / 1200），旁边一个判读块，y 40 状态带同色。
 
-### 怎么看屏幕（底部格子）
+**只读，不写 PMIC**：开关一条轨需要 MT6357 的 regulator 表在驱动里，不该由诊断代码猜地址。
+判断"有没有电"看的是 `VEMC` 的使能位（bit0），不是 `P_after` 与 `P_before` 的差
+（这一版没有任何代码会去打开轨，所以两者相等是预期的）。
 
-底部有 **三排 8 个 80×80 的格子**（y 1400 / 1448 / 1496，间距 88，左边距 8）。
+顺带修掉一个**会毁掉证据**的 bug：上一版 `StorageBeaconDxe` 把 20/21 号格子当
+"探针开始/结束"用，而那两个格子是 `MsdcDxe` 的 CMD10 / CMD8（SEND_EXT_CSD），
+22 是数据读结果、23 是命令报错。本驱动在它们之后跑，画上去等于擦掉 M4 的证据。
+**这一版 16..23 全部留给 `MsdcDxe`，不再覆盖。**
+
+### 怎么看屏幕（底部格子 + 供电位图条）
+
+**先看供电位图条**（y 1172 / 1186 / 1200，青 / 黄 / 洋红）：那是这一版新加的东西，
+`P_before` / `P_after` / `VEMC` 各一条，右边的实心方块是判读结论（绿=轨开、橙=轨关、
+洋红=PMIC 没应答）。逐条判读见 `docs/POWER-BEFORE-AFTER.md`。
+
+**再看底部格子**：三排 8 个 80×80（y 1400 / 1448 / 1496，间距 88，左边距 8）。
 **格子存在 = 那个阶段到达过**，所以一张照片就是完整状态向量：
 
 | 格子 | 颜色 | 含义 |
@@ -66,10 +72,14 @@ eb818a78f034447c9eea0b4dae611f85e771c8a76281c9ee0b62f9c6d3739373  boot-uefi-m5-p
 | 16 | 黄 | 有人调 `BuildDevicePath`（= EmmcDxe 来看我们了） |
 | 17 | 青 | 识别之后又来了一条 pass-thru 命令 |
 | 18/19/20/21 | 黄/青/橙/白 | 驱动模型侧发的 CMD9 / CMD7 / CMD10 / CMD8 |
-| 22 | **绿/红** | **512 字节 PIO 数据读（M4 的关键格子）** |
+| 22 | **绿/红** | **512 字节数据读（M4 的关键格子）** |
 | 23 | 红 | 识别之后有命令报错 |
 
-另外：y 1100/1140 是 `StorageBeaconDxe` 的横幅，y 1190 是块设备/文件系统计数点；
+> **16..23 归 `MsdcDxe`/`EmmcDxe`。** 它们比 `StorageBeaconDxe` 先跑，所以任何"后来者"
+> 往这些格子上画都会**擦掉 M4 的证据**——上一版就踩过（20/21 被当成探针开始/结束）。
+
+另外：y 1100/1140 是 `StorageBeaconDxe` 的横幅，y 1172/1186/1200 是供电位图条，
+y 1216 是块设备数（蓝，x 8）与文件系统数（绿，x 380）的点阵；
 y 1560 是 `PlatformProgressDxe` 的白条。
 
 > 文字区只有 y 0..1087（68 行 × 90 列）。**不要**把任何证据画在 y ≥ 1088 之外又指望
@@ -81,7 +91,7 @@ boot image 的 header：
 magic=ANDROID!  hver=2  page=2048
 kaddr=0x40080000  ksize=13907597     <- 只改了这一项
 raddr=0x51B00000  rsize=2060079  tags=0x47880000
-kernel 段 = gzip(SILICIUM_UEFI.fd) 570,880 B
+kernel 段 = gzip(SILICIUM_UEFI.fd) 606,208 B（FD 2,097,152 B）
 ```
 
 `kaddr` 必须等于 `[uefi_fd].base`（`Resources/Configs/dandelion.toml` = `0x40080000`）。
@@ -92,7 +102,7 @@ kernel 段 = gzip(SILICIUM_UEFI.fd) 570,880 B
 
 ```powershell
 adb reboot bootloader
-fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-pagelog-pio2.img
+fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-power.img
 fastboot reboot
 ```
 
@@ -117,5 +127,5 @@ wsl -d Ubuntu -e bash /mnt/d/aios/dandelion-xnu/tools/build-local.sh
 
 # 2. 打包 + 校验（读 toml 里的 base，自动断言 kernel_addr）
 cd /mnt/d/aios/dandelion-xnu
-python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-pagelog-pio2.img
+python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-power.img
 ```

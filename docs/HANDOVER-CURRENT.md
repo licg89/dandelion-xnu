@@ -446,19 +446,20 @@ powershell -File tools\flash.ps1 -Restore
 
 ---
 
-## 10. 接手后的第一个动作（2026-10-29 08:3x 更新）
+## 10. 接手后的第一个动作（2026-10-29 晚 更新）
 
 ```powershell
 git pull
-# 1) 先看两份文档：docs\NIGHT-1029.md（最近一夜）、docs\ANALYSIS-EMMC-DATA-PATH.md（eMMC 判读）
+# 1) 先看两份文档：docs\RESUME-1029.md（现状 + 本轮做了什么）、
+#    docs\POWER-BEFORE-AFTER.md（供电探针的坐标与判读表）
 # 2) 三个自检（几秒钟，不需要真机）
 python tools\check_modules.py
 python tools\check_docs.py
 # 3) 刷当前镜像，拍一张屏幕下半部
-powershell -File tools\flash.ps1 -Image D:\aios\artifacts\boot-uefi-m5-probe.img
-# 4) 按 ANALYSIS-EMMC-DATA-PATH.md §4.1 的判读表读 `ddn probe pio …` / `ddn probe dma …`
+powershell -File tools\flash.ps1 -Image D:\aios\artifacts\boot-uefi-power.img
+# 4) 按 POWER-BEFORE-AFTER.md §4 读：三条位图条 + 右端判读块 + y 40 状态带
 ```
 
-现在的卡点只有一个：**eMMC 的 512 字节数据传输**（卡状态已确认正常，`R1=0x900`）。
-`boot-uefi-m5-probe.img` 会在一次开机里同时报告 PIO 和 DMA 两条通路的 `MSDC_INT`，
-所以下一次刷机应该就能把"数据到底有没有上总线"钉死。
+现在的卡点只有一个：**卡对任何命令零应答，供电是唯一没被证伪的解释**。
+`boot-uefi-power.img` 一次开机就能回答"MT6357 的 VEMC 到底有没有被打开"，
+在这之前不要再回数据通路（`docs/RESUME-1029.md` 第 6 节列的弯路都已实测反证）。

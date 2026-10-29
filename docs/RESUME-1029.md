@@ -103,7 +103,8 @@ LK 引导 → BootShim(gzip FD @0x40080000) → UEFI(Mu / mouseos/uefi-a04br3)
 ## 5. 下一步实验（只做这一件）
 
 > **2026-10-29 晚：这一节已经实现了。** 代码在 `StorageBeaconDxe.c` 的 `ProbePower()`；
-> 屏幕坐标、地址出处、判读表都在 [`POWER-BEFORE-AFTER.md`](POWER-BEFORE-AFTER.md)。
+> 本轮镜像 `artifacts/boot-uefi-power.img`；屏幕坐标、地址出处、判读表都在
+> [`POWER-BEFORE-AFTER.md`](POWER-BEFORE-AFTER.md)。
 > 实现时的两个决定：PMIC **直接 MMIO**（不走 `MTK_PMIC_PROTOCOL`，因为它的名字解析到
 > MT6358 的地址，而且它等 FSM 是无界的），以及三组数都进位图条（y 1172 / 1186 / 1200）
 > 加文字。下面是原始设计记录，保持原样。
@@ -144,7 +145,7 @@ LK 引导 → BootShim(gzip FD @0x40080000) → UEFI(Mu / mouseos/uefi-a04br3)
 | `Resources/MuPatches/0002-MsdcDxe-dandelion-panel-markers.patch` | 上游 eMMC 驱动的补丁（**改它要同步 hunk 行数，别手改**） |
 | `docs/ANALYSIS-EMMC-DATA-PATH.md` | PIO/DMA 通路调研（现在优先级下降） |
 | `docs/ANALYSIS-INTEN-GATED-POLL.md` | 上面被否掉的那个假设，留作记录 |
-| `artifacts/boot-uefi-m5-probe.img` | 已验证可跑的镜像 |
+| `artifacts/boot-uefi-power.img` | 本轮镜像（供电探针）；上一版 `boot-uefi-m5-probe.img` 在 git 历史里 |
 
 ## 8. 工程约定（别破坏）
 
