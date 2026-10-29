@@ -590,3 +590,55 @@ if ((dl_emmc_rd(DL_MSDC_CFG) & DL_CFG_CKSTB) == 0) printf("eMMC log: no MSDC clo
 
 这样一次就能拿到两样东西：**内核日志区的 `DLXLOG01`**，以及
 **`msdc ver` 是否等于 `0x20170426`**（如果不等，那就是下一格的根因）。
+---
+
+## 13. 未解：四次刷机的日志字节数完全相同（2026-10-30 02:2x）
+
+### 13.1 事实
+
+连续四次刷机（`boot-uefi-handoff.img` → `handoff2` → `handoff3`），固件日志都是
+**恰好 2673 字节**，且 `PublishEmmcHandoff()` 的日志行（连后来加的**无条件**那一行）
+一次都没出现。
+
+同时这些都能对上：
+
+| 证据 | 结果 |
+|---|---|
+| `PayloadBootDxe.dll` 里 `emmc handoff lba …` 字符串 | 存在 |
+| `PayloadBootDxe.dll` 里 `flashinfo start`（无条件那行） | 存在（命中 1） |
+| `D:\aios\artifacts\SILICIUM_UEFI.fd` 与仓库里的 FD 哈希 | **一致** |
+| FD / boot img 的时间戳 | 02:24，新产物 |
+| `fastboot flash boot` | 每次都 OKAY |
+
+**代码在产物里，产物是新的，但运行结果和旧固件逐字节相同。**
+
+### 13.2 结论：先证明「跑的是哪个固件」，再继续调试
+
+这是 C16 的同类问题换了个位置：**上一次是打包读错了树，这一次要怀疑的是「刷进去的
+到底是不是它」。** 在证明这一点之前，任何关于 `mFlashInfoStart` 的推断都是空转 ——
+已经因此浪费了两轮刷机。
+
+### 13.3 下一次的第一个动作（不做别的）
+
+给 `PayloadBootDxe` 加一行**每次构建都会变**的自身时间戳：
+
+```c
+DEBUG ((DEBUG_ERROR, "PayloadBoot: build %a %a\n", __DATE__, __TIME__));
+```
+
+放在入口最前面。然后：
+
+1. 重新构建，**记下 `SILICIUM_UEFI.fd` 的 sha256 和时间**；
+2. 刷机，进 fastboot，拉日志；
+3. 看那行的 `__TIME__` 是否等于这次构建的时间 ——
+   - **不等** → 刷机链路有问题（先解决它，别再改任何逻辑）；
+   - **相等** → 固件是新的，那就说明 `PublishEmmcHandoff()` 的调用点有问题
+     （最可能是它落在了某个不会执行到的分支里），把调用点挪到 `PayloadBootEntryPoint`
+     最前面、并把 `mFlashInfoStart` 改成在 `DandelionEmmcDxe` 里赋值。
+
+### 13.4 已经确定、不受这个问题影响的部分
+
+这一节的疑点**不影响**前面已经验证过的结论：链路本身（LK → UEFI → eMMC BlockIo → FAT →
+UniXNU → DarwinBoot → 跳转）在 `docs/logs/boot-log-2026-10-30-handoff.txt` 里有完整证据，
+那次的日志有 2673 字节、含 `hand-off to the kernel`。这里要查的只是**后续这几次改动
+为什么没生效**。
