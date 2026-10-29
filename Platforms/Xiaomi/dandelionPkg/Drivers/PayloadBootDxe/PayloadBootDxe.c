@@ -1426,6 +1426,18 @@ PayloadBootEntryPoint (
   CHAR16      *WhichName;
 
   WhichName = NULL;
+  //
+  // Which firmware is this, exactly?
+  //
+  // Four flashes produced byte-identical 2673-byte logs while the built
+  // PayloadBootDxe.dll demonstrably contained the new strings, the FD hashes
+  // matched and fastboot said OKAY every time.  Before another line of logic is
+  // touched, every boot states its own build stamp, so that 'the image is
+  // current' is a measurement rather than an assumption.  CORRECTIONS C16 was the
+  // same lesson from the packaging side.
+  //
+  DEBUG ((DEBUG_ERROR, "PayloadBoot: build %a %a\n", __DATE__, __TIME__));
+
   PaintBar (PAYLOAD_BAR_SEARCH);
 
   //
