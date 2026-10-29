@@ -1436,6 +1436,13 @@ PayloadBootEntryPoint (
   // current' is a measurement rather than an assumption.  CORRECTIONS C16 was the
   // same lesson from the packaging side.
   //
+  //
+  // Does this firmware run at all?  Two markers, neither of which needs a logging
+  // system: the payload bar at y 1570 turns red, and the build stamp is the first thing
+  // said.  A reset does not clear the panel (CORRECTIONS C9/C11), so a frozen UEFI
+  // screen proves nothing by itself.
+  //
+  PaintBar (0x00FF0000);   /* the payload bar turns red: this firmware ran */
   DEBUG ((DEBUG_ERROR, "PayloadBoot: build %a %a\n", __DATE__, __TIME__));
 
   PaintBar (PAYLOAD_BAR_SEARCH);
