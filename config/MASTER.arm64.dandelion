@@ -91,6 +91,11 @@ options   CONFIG_FREEZE_SUSPENDED_MIN=4		# <xsmall>
 
 options	  CONFIG_MACH_APPROXIMATE_TIME
 
+# dandelion has no UART.  pe_serial.c gains an eMMC-backed serial vtable under
+# this define (patches/xnu/native-emmc-serial.patch), selected by an "emmc-log"
+# node in the ADT, so kprintf reaches flashinfo and can be pulled with adb.
+options   XNU_EMMC_SERIAL=1
+
 options   CONFIG_KERNEL_INTEGRITY		# <kernel_integrity>
 options   CONFIG_UBSAN_MINIMAL		# <ubsan_minimal>
 options   CONFIG_KERNEL_TBI	# <kernel_tbi>
