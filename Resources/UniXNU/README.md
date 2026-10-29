@@ -11,20 +11,24 @@
 | `UniXNU.efi` | 94,720 B | 启动管理器（UEFI 应用）。`package/UniXNUPkg/Application/UniXNU` |
 | `UniXNUDxe.efi` | 14,336 B | DXE 驱动，装 UniXNU 的 loader 协议 |
 | `UniXNURamDiskDxe.efi` | 15,360 B | 把 initrd / payload 卷变成 RAM 磁盘 |
+| `DarwinBoot.efi` | 26,112 B | XNU 加载器：接住 UniXNU 给的启动参数，打成 XNU 命令行，画绿条后跳内核（`UniXNU/DarwinBoot`，`tools/build_darwinboot.sh`） |
 | `HelloPayload.efi` | 19,968 B | 上游自带的最小 payload，用来验证加载路径 |
 | `SampleDriver.efi` | 9,216 B | 上游示例驱动 |
 | `XnuTest.efi` | 14,336 B | 上游自带的 XNU 测试应用 |
 
-来源 commit：`UniXNU/UniXNU` `main`，2026-10-29 克隆；工具链 CLANGPDB / DEBUG / AARCH64，
-EDK2 是 `/root/uefi-a04br3/Mu_Basecore`。
+来源 commit：`UniXNU/UniXNU` 与 `UniXNU/DarwinBoot` 的 `main`，2026-10-29 克隆；
+工具链 CLANGPDB / DEBUG / AARCH64，EDK2 是 `/root/uefi-a04br3/Mu_Basecore`。
+
+`DarwinBoot.inf` 依赖 `UniXNUPkg.dec`（loader 协议 GUID 在那里），所以
+`tools/build_darwinboot.sh` 会把 `UniXNU/package` 一起放进 `PACKAGES_PATH`。
 
 ## 还没编的
 
-- **`kernel.macho`** —— 需要 macOS + Xcode，是 `UniXNU.efi` 最终要启动的内核；
-- **`DarwinBoot`** —— submodule `drivers/DarwinBoot`（`UniXNU/DarwinBoot`），尚未克隆与编译。
+- **`kernel.macho`** —— 需要 macOS + Xcode，是唯一真正的外部依赖；
+- 启动项配置与 payload 卷：见 [`docs/M6-UNIXNU.md`](../../docs/M6-UNIXNU.md) §5。
 
-`UniXNU.efi` 在没有内核的情况下仍然可以运行并显示它自己的界面，这本身就是 M6 的一步：
-先证明「固件能把 UniXNU 装起来并跑起来」，再谈内核。
+`UniXNU.efi` 在没有内核的情况下**已经可以在真机上运行并显示菜单**（`no boot entry found`），
+然后自己返回固件 —— 详见 [`docs/M6-UNIXNU.md`](../../docs/M6-UNIXNU.md)。
 
 ## 怎么装到手机上
 

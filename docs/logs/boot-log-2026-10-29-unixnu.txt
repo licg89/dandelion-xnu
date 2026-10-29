@@ -1,0 +1,25 @@
+DANDELION UEFI
+CONSOLE OK (720 / 8)x68
+Oct 29 2026 13:32:36
+SELFTEST 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZDIRECT CALL 0123456789COUT 0 50x19EMMC OK div=26 sec=0747C000
+INH C=02201A99 S=FF027FFC k=1 C'=02210499
+INH C13 I=00000100 R=00000900 st=4
+INH C8 I=00001100 rev=08 bw=06 hs=01 sec=0747C000
+INH B1 I=00001100 S=45464920
+
+MSDC PASSTHRU
+PWR PS=81FF0002 DAT=FF CMD=1 CD=1 VEMC=1 vsel=3 3000mV w=1 f=0 BUS OK
+INHERIT OK
+BLOCK OK n=44
+FAT NONE
+PayloadBoot: device tree 127044 bytes published
+PayloadBoot: device tree published as an EFI configuration table
+PayloadBoot: firmware log handed over, 571 bytes
+PayloadBoot: firmware log published as an EFI configuration table
+PayloadBoot: replacing the previous log at LBA 122111967
+PayloadBoot: firmware log written to LBA 122111967 (688 bytes)
+PayloadBoot: firmware log written to flash
+PayloadBoot: looking for a payload (FAT, then flashinfo, then FV)
+PayloadBoot: no SimpleFileSystem handle
+PayloadBoot: using the payload from flashinfo
+UniXNU  (UniXNU 0.1.0)                                                                   built-in configuration                                                                   no boot entry found                                                                      drivers 0 loaded / 0 failed    kits 0    acpi 0                                           > 1. Return to firmware  [action]                                                          2. Restart  [action]                                                                     3. Power off  [action]                                                                   4. Tools  [action]                                                                    Up/Down: select    Enter: boot    1-9: boot entry    Esc: stop timer                     Booting Return to firmware in 10 s                                                       Booting Return to firmware in 9 s                                                           1. Return to firmware  [action]                                                        > 2. Restart  [action]                                                                  Booting Return to firmware in 8 s                                                        Booting Return to firmware in 7 s                                                           2. Restart  [action]                                                                   > 3. Power off  [action]                                                                Booting Return to firmware in 6 s                                                        Booting Return to firmware in 5 s                                                           3. Power off  [action]                                                                 > 4. Tools  [action]                                                                    Booting Return to firmware in 4 s                                                        Booting Return to firmware in 3 s                                                           4. Tools  [action]                                                                     > 1. Return to firmware  [action]                                                       Booting Return to firmware in 2 s                                                        Booting Return to firmware in 1 s                                                        PayloadBoot: StartImage -> Success

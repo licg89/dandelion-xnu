@@ -7,7 +7,46 @@
 
 ---
 
-## ★ 最新结论（2026-10-29 21:4x）——日志可读之后，四个 bug 自己浮出来了
+## ★ 最新结论（2026-10-29 22:0x）——**M6 不再是「外部依赖卡住」**
+
+`docs/UNIXNU-BUILD-NOTES.md` 说内核要 macOS，于是 M6 被记成卡在外部产物。**这个判断错了一半**：
+内核确实要 macOS，但 **`UniXNU.efi`、`UniXNUDxe`、`UniXNURamDiskDxe`、`DarwinBoot` 全是普通 EDK2 包，
+在 Linux 上就编出来了**，而且已经上机跑起来。
+
+证据是固件自己写的日志
+[logs/boot-log-2026-10-29-unixnu.txt](logs/boot-log-2026-10-29-unixnu.txt)（3448 字节，checksum ok）：
+
+```
+PayloadBoot: using the payload from flashinfo
+UniXNU  (UniXNU 0.1.0)   built-in configuration   no boot entry found
+        drivers 0 loaded / 0 failed    kits 0    acpi 0
+  > 1. Return to firmware  [action]
+    2. Restart  [action]
+    3. Power off  [action]
+    4. Tools  [action]
+  Up/Down: select  Enter: boot  1-9: boot entry  Esc: stop timer
+  Booting Return to firmware in 10 s ... 1 s
+PayloadBoot: StartImage -> Success
+```
+
+也就是说：**固件 → BlockIo → flashinfo payload → LoadImage/StartImage → UniXNU 启动管理器**
+整条链路通了，而且是 UniXNU 自己正常退出（不是崩）。
+
+产物都在 `Resources/UniXNU/`，重建用 `tools/build_unixnu.sh` 和 `tools/build_darwinboot.sh`。
+完整记录见 [M6-UNIXNU.md](M6-UNIXNU.md)。
+
+| 还差 | 需要什么 |
+|---|---|
+| 启动项（`UniXNU.toml` 的 boot entry） | 现在能写 |
+| payload 卷 | `UniXNURamDiskDxe` 内嵌镜像，或在 `flashinfo` 里建 FAT |
+| `kernel.macho` | **macOS + Xcode**，唯一真正的外部依赖 |
+
+先验链路、后补内核：DarwinBoot 拿到控制权会打 `DARWINBOOT: command line:` 并在顶部画**绿条**，
+看到绿条就说明 `UniXNU → DarwinBoot → 跳转` 整条路是通的。
+
+---
+
+## ★ 更早一版（2026-10-29 21:4x）——日志可读之后，四个 bug 自己浮出来了
 
 有了落盘日志（[logs/boot-log-2026-10-29-flash-payload.txt](logs/boot-log-2026-10-29-flash-payload.txt)，
 26 行，之前面板一张照片只能看到 68 行里的尾巴）立刻抓到四件事：
