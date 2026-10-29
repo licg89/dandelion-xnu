@@ -90,6 +90,9 @@
 #define SDC_ARG_OFS        0x38
 #define SDC_STS_OFS        0x3C
 #define SDC_RESP0_OFS      0x40
+#define SDC_RESP1_OFS      0x44
+#define SDC_RESP2_OFS      0x48
+#define SDC_RESP3_OFS      0x4C
 #define SDC_BLK_NUM_OFS    0x50
 //
 // Pad configuration (mtk-sd.c: MSDC_PAD_CTL0 = 0xE0, MSDC_PAD_CTL1 = 0xE4).
@@ -148,7 +151,9 @@
 // R1/R5/R6/R7 = 1, R2 = 2, R3 = 3, R4 = 4, R1b = 7, shifted left by 7.
 //
 #define SDC_CMD_RSP_R1      1u
+#define SDC_CMD_RSP_R2      2u
 #define SDC_CMD_RSP_R3      3u
+#define SDC_CMD_RSP_R1B     7u
 //
 // CMD1 argument: high-capacity support (bit 30) and the 3.2-3.4 V window,
 // i.e. what an eMMC answers with OCR bit 31 set.  Only used to see whether the
@@ -988,20 +993,113 @@ SayCmdTrace (
   Say (SystemTable, L"\r\n");
 }
 
+//
+// A command's reply: all four response words, because R2 (CID/CSD) is 128 bits
+// and R6 carries the RCA in the top half of RESP0.
+//
+typedef struct {
+  BOOLEAN  Answered;
+  UINT32   IntStatus;
+  UINT32   Resp[4];
+} CARD_RESP;
+
+#define SDC_RESP_OFS(i)  (SDC_RESP0_OFS + 4 * (i))
+
 /**
-  Ask the card whether it is listening, starting with CMD0.
+  Send one command and wait for its result, without sampling the pads.
 
-  What IMG_5744 settled: the mux is not the problem.  `m0=22222200` read back
-  after the vendor-style store, the clock pad (124) was seen both 0 and 1 during
-  the window, so MSDC's clock is running and reaching the pads; pins 122/123
-  reading 0xF in IMG_5743 were the reserved fourth bit of each four-bit mode
-  field, not a mode.
+  Same register dance as SendCommandSampled(), but the return is the reply
+  rather than the waveform: this is what the initialization sequence below
+  needs, and a 1 ms poll is coarse enough that the command is over long before
+  the first look.
+**/
+STATIC
+CARD_RESP
+SendCommand (
+  IN UINT32  Index,
+  IN UINT32  Arg,
+  IN UINT32  RspTyp
+  )
+{
+  volatile UINT32  *Regs;
+  CARD_RESP         Result;
+  UINTN             Tries;
+  UINTN             Word;
 
-  So this version re-asks the only question that is left, and asks it in the
-  order the spec does: CMD0 (GO_IDLE_STATE, no response) to put the card into
-  idle, then CMD1 (SEND_OP_COND).  CMD1 is only legal in idle state; a card left
-  in TRAN by LK or stuck by an aborted transfer ignores it -- which is exactly
-  what a timeout with a clean bus looks like.
+  Result.Answered  = FALSE;
+  Result.IntStatus = 0;
+  for (Word = 0; Word < 4; Word++) {
+    Result.Resp[Word] = 0;
+  }
+
+  Regs = (volatile UINT32 *)(UINTN)MSDC0_MMIO_BASE;
+
+  for (Tries = 0; Tries < 2000; Tries++) {
+    if ((Regs[SDC_STS_OFS / 4] & (SDC_STS_BUSY | SDC_STS_CMDBUSY)) == 0) {
+      break;
+    }
+
+    gBS->Stall (100);
+  }
+
+  Regs[MSDC_INT_OFS / 4] = 0xFFFFFFFF;
+  Regs[SDC_ARG_OFS / 4]  = Arg;
+  Regs[SDC_CMD_OFS / 4]  = ((Index & 0x3Fu) | ((RspTyp & 0x7u) << SDC_CMD_RSP_SHIFT));
+
+  for (Tries = 0; Tries < 200; Tries++) {
+    Result.IntStatus = Regs[MSDC_INT_OFS / 4];
+    if ((Result.IntStatus & (MSDC_INT_CMDRDY | MSDC_INT_CMDTMO)) != 0) {
+      break;
+    }
+
+    gBS->Stall (1000);
+  }
+
+  Result.IntStatus = Regs[MSDC_INT_OFS / 4];
+  for (Word = 0; Word < 4; Word++) {
+    Result.Resp[Word] = Regs[SDC_RESP_OFS (Word) / 4];
+  }
+
+  Regs[MSDC_INT_OFS / 4] = Result.IntStatus;
+  Result.Answered = ((Result.IntStatus & MSDC_INT_CMDRDY) != 0);
+
+  return Result;
+}
+
+/**
+  Print one reply as `I=........ R=........`.
+**/
+STATIC
+VOID
+SayResp (
+  IN EFI_SYSTEM_TABLE  *SystemTable,
+  IN CHAR16            *Tag,
+  IN CARD_RESP         *Resp
+  )
+{
+  SayHex (SystemTable, Tag, Resp->IntStatus);
+  SayHex (SystemTable, L" R=", Resp->Resp[0]);
+  Say (SystemTable, L"\r\n");
+}
+
+/**
+  Walk the card up to TRAN by hand: CMD0, CMD1 until ready, CMD2, CMD3, CMD7
+  and finally CMD13, whose status says which state the card really reached.
+
+  What IMG_5747 established: `CMD0` then `CMD1` gets a reply at all.  The OCR
+  it returns is 0x00FF8080 -- bit 31 clear, i.e. "I heard you, I am still
+  powering up".  The spec's answer to that is to repeat CMD1 until bit 31 is
+  set, and only then ask for the CID.  So this version does exactly that and
+  prints the numbers that say how far it got:
+
+      C1 n=..  I=..  R=........     n = CMD1 attempts until bit31
+      C2 3=.. 2=.. 1=.. 0=..        the 128-bit CID (R2)
+      C3 I=.. R=..                  R6: status + the RCA the card took
+      C7 I=.. R=..                  R1b: the card is selected
+      C13 I=.. R=.. st=..           CURRENT_STATE, 4 = TRAN
+
+  If C13 says st=4 the hardware path is proven end to end and what is left is
+  purely the driver.
 **/
 STATIC
 VOID
@@ -1013,7 +1111,13 @@ ProbeCardAndMux (
   UINT32           Mode;
   CARD_CMD_RESULT  Cmd0;
   CARD_CMD_RESULT  Ping;
-  BOOLEAN          Answered;
+  CARD_RESP        Ready;
+  CARD_RESP        Cid;
+  CARD_RESP        R6;
+  CARD_RESP        Sel;
+  CARD_RESP        Status;
+  UINTN            Tries;
+  UINT32           Rca;
 
   Strap = *(volatile UINT32 *)(UINTN)PINCTRL_STRAP_ADDR;
   Mode  = ((Strap & (1u << PINCTRL_STRAP_BIT)) != 0) ? 1 : 2;
@@ -1034,47 +1138,75 @@ ProbeCardAndMux (
   SayHex (SystemTable, L"DIN 122..133=", ReadEmmcPinDin ());
   Say (SystemTable, L"\r\n");
 
-  SayHex (SystemTable, L"PAD0=", Msdc0Read32 (MSDC_PAD_CTL0_OFS));
-  SayHex (SystemTable, L" PAD1=", Msdc0Read32 (MSDC_PAD_CTL1_OFS));
-  Say (SystemTable, L"\r\n");
-
   //
-  // CMD0 first: no response, no argument, only CMD and CLK needed.  If its
-  // cl=/f=/l= show a frame, the transmitter works and any later silence is the
-  // card's.
+  // CMD0 first: no response, no argument, only CMD and CLK needed.  Its trace
+  // is the transmitter self-check -- CMD0's frame is almost all zeros, so a
+  // healthy one reads as "about 100 samples low, all in one run".
   //
   Cmd0 = SendCommandSampled (0, 0, 0);
   SayHex (SystemTable, L"C0 I=", Cmd0.IntStatus);
   SayCmdTrace (SystemTable, &Cmd0);
 
+  //
+  // One sampled CMD1 for the strips and for the record, then the polling loop
+  // that the spec actually asks for.
+  //
   Ping = SendCommandSampled (1, CMD1_OCR, SDC_CMD_RSP_R3);
   SayHex (SystemTable, L"PING a I=", Ping.IntStatus);
   SayHex (SystemTable, L" R=", Ping.Resp0);
   SayCmdTrace (SystemTable, &Ping);
   PaintBitStrip (BEACON_STRIP_CMD_AND, 32, Ping.PsAnd, 0x00FFFFFF);
   PaintBitStrip (BEACON_STRIP_CMD_OR,  32, Ping.PsOr,  0x0000FFFF);
-  Answered = Ping.Answered;
 
-  if (!Answered) {
-    //
-    // Same command, plain OCR: bit 30 (sector mode) and bit 31 in the argument
-    // are optional, and a part that does not like them has to be ruled out
-    // before the argument is blamed.
-    //
-    Ping = SendCommandSampled (1, 0x00FF8080u, SDC_CMD_RSP_R3);
-    SayHex (SystemTable, L"PING b I=", Ping.IntStatus);
-    SayHex (SystemTable, L" R=", Ping.Resp0);
-    SayCmdTrace (SystemTable, &Ping);
-    PaintBitStrip (BEACON_STRIP_CMD_AND, 32, Ping.PsAnd, 0x00FFFFFF);
-    PaintBitStrip (BEACON_STRIP_CMD_OR,  32, Ping.PsOr,  0x0000FFFF);
-    Answered = Ping.Answered;
+  //
+  // CMD1 until OCR bit 31 (power-up done).  ~1 ms between attempts, 300
+  // attempts = 0.3 s, far more than a card that was already initialized once.
+  //
+  Tries = 0;
+  do {
+    Ready = SendCommand (1, CMD1_OCR, SDC_CMD_RSP_R3);
+    Tries++;
+    gBS->Stall (1000);
+  } while (Ready.Answered && ((Ready.Resp[0] & 0x80000000u) == 0) && (Tries < 300));
+
+  Say (SystemTable, L"C1 n=");
+  SayDec (SystemTable, Tries);
+  SayResp (SystemTable, L" I=", &Ready);
+
+  if (!Ready.Answered || ((Ready.Resp[0] & 0x80000000u) == 0)) {
+    Say (SystemTable, L"CARD NOT READY\r\n");
+    return;
   }
 
-  if (Answered) {
-    Say (SystemTable, L"CARD ANSWERED\r\n");
-  } else {
-    Say (SystemTable, L"NO ANSWER\r\n");
-  }
+  //
+  // CID: 128-bit R2, printed as four words.  This also proves a long response
+  // can be received, which is the one thing CMD1 never exercises.
+  //
+  Cid = SendCommand (2, 0, SDC_CMD_RSP_R2);
+  Say (SystemTable, L"C2 ");
+  SayHex (SystemTable, L"3=", Cid.Resp[3]);
+  SayHex (SystemTable, L" 2=", Cid.Resp[2]);
+  SayHex (SystemTable, L" 1=", Cid.Resp[1]);
+  SayHex (SystemTable, L" 0=", Cid.Resp[0]);
+  Say (SystemTable, L"\r\n");
+
+  //
+  // RCA 1 is what LK uses on this board; any value works, but matching the
+  // inherited one keeps the log comparable with RESP0's earlier 0xB00.
+  //
+  Rca = 1;
+  R6 = SendCommand (3, Rca << 16, SDC_CMD_RSP_R1);
+  SayResp (SystemTable, L"C3 I=", &R6);
+
+  Sel = SendCommand (7, Rca << 16, SDC_CMD_RSP_R1B);
+  SayResp (SystemTable, L"C7 I=", &Sel);
+
+  Status = SendCommand (13, Rca << 16, SDC_CMD_RSP_R1);
+  SayHex (SystemTable, L"C13 I=", Status.IntStatus);
+  SayHex (SystemTable, L" R=", Status.Resp[0]);
+  Say (SystemTable, L" st=");
+  SayDec (SystemTable, (Status.Resp[0] >> 9) & 0xFu);
+  Say (SystemTable, L"\r\n");
 }
 
 /**
