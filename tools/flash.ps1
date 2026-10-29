@@ -18,6 +18,7 @@
 param(
   [string]$Image = "",
   [switch]$Restore,
+  [switch]$Check,
   [string]$Sdk = "C:\Users\li\AppData\Local\Android\Sdk\platform-tools"
 )
 
@@ -36,7 +37,7 @@ if ($Restore) {
     throw "stock boot image not found at $Image"
   }
 } elseif ([string]::IsNullOrEmpty($Image)) {
-  $Image = Join-Path $repo "artifacts\boot-uefi-m5-dma.img"
+  $Image = Join-Path $repo "artifacts\boot-uefi-power.img"
 }
 
 if (-not (Test-Path $Image)) {
@@ -91,42 +92,40 @@ if ($Restore) {
 Flashed. The panel comes up in a few seconds and then stays put (the watchdog is
 disarmed, and the console wraps instead of scrolling), so there is no rush.
 
-What to photograph: one shot of the lower third of the screen. Everything below is
-permanent until the next reset.
+What to photograph: ONE shot of the whole lower half -- it must include the three
+thin strip rows, the verdict patch and the three rows of cells.
 
-  y 1244..1373  readout, two columns of five, big digits
-  y 1570..1596  one full-width bar
-  y 1400/1448/1496  three rows of eight stage cells
+  y 1172  cyan strip    P_before: MSDC_PS, the driver's very first read
+  y 1186  yellow strip  P_after:  the same register after the PMIC reads
+  y 1200  magenta strip VEMC (MT6357 LDO_VEMC_CON0, 0x1988), low 16 bits
+  x 400..560 y 1197     verdict patch
+  y 1216  dots          blue = block devices (x 8), green = volumes (x 380)
+  y 1400/1448/1496      stage cells.  16..23 are MsdcDxe's; this driver does
+                        not paint them any more, so they stay the M4 evidence.
+  text area             PS before=.. after=.. / PWRAP init=.. failed=..
+                        VEMC=.... en=N vosel=N NNNNmV / VMC=.. VIO18=..
+                        POWER RAIL-OFF | NO-PULLUP | OK | NO-WRAP
 
-Reading it, in order of importance:
+Reading it, in this order:
 
-  1. The log, in the text area -- look for these lines:
-       ddn data cmd=8 r1=XXXXXXXX len=512      the card's own answer
-       ddn dma ok ...                           DATA ARRIVED -> M4 done
-       ddn dma FAIL int=...                     DMA could not move data either
-       ddn pio-read FAIL int=... left=...       PIO, after DMA gave up
-       ddn  ps_or=... ps_and=...                did anything ever drive DAT0?
-       ddn data cmd=8 refused, r1 has error...  the card refused the command
+  1. Verdict patch and y 40 band (same colour):
+       red      VEMC enable bit is 0 -> the rail was never switched on.  This is
+                the expected answer; next step is an MT6357 regulator driver.
+       orange   rail is on but P_after low byte is not 0xFF -> IO / pull-ups.
+       green    rails fine and the bus is pulled high -> clock / CMD / pad tune.
+       magenta  the PMIC wrapper never completed a transaction -> fix PWRAP
+                before believing anything else.
 
-  2. INTR= in the readout:
-       00001000  transfer complete
-       00004000  data timeout (what it has always been)
-       00008000  data CRC error
+  2. Free cross-check: the panel is lit, so VIO18 must read enabled (bit 0).
+     If VIO18 is 0 as well, the address or transport is wrong and the VEMC
+     answer means nothing yet.
 
-  3. R1  = the card status.  Low nibble of bits 12:9 is CURRENT_STATE;
-       4 = Tran (normal).  Bit 8 is READY_FOR_DATA.
+  3. Only P_before present, the other two strips missing: the driver died in
+     the PMIC access, which is the only blocking transaction in this driver.
 
-  4. ps_or vs ps_and (text area):
-       equal      nothing ever drove the data lines -- card state, not wiring
-       different  something did, so look at sampling / bus width
+  4. P_before vs P_after: nothing in this build powers the rail, so equal is
+     expected.  If they differ, something is ramping -- report it, do not
+     explain it away.
 
-  5. The y 1570 bar:
-       orange  still looking for a payload       green  payload started
-       red     no payload / payload failed       white blocks at the ends:
-               right = device tree published, left = log written to flash
-
-  6. Stage cells (row A / B / C = stages 0-7 / 8-15 / 16-23).  Cell 22 is the
-     512-byte data read: green = it worked, red = it did not.
-
-Full legend: docs\BOOT-FLOW.md   eMMC analysis: docs\ANALYSIS-EMMC-DATA-PATH.md
+Full legend: docs\POWER-BEFORE-AFTER.md   Context: docs\RESUME-1029.md
 "@ | Write-Host
