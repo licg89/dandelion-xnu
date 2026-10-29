@@ -252,3 +252,55 @@ PayloadBoot: StartImage -> Success
 1. **`kernel.macho`**：需要 macOS + Xcode（`./unixnu build kernel`）；
 2. **Apple IPSW 的 kernelcache**：不需要编译，但要给 `UniXNU-sheng` 那样的
    SoC/device profile 做一份 `mt6765` 的，工作量在「设备描述」而不是「编译」。
+---
+
+## 7. 内核不是「拿不到」，是「没去排过队」
+
+前面几节把「内核需要 macOS」当成了硬阻塞。**大部分是错怪了它**：
+
+仓库里一直有整套内核 CI —— `tools/ci/{apply-patches.sh,apply-board.sh,build-xnu.sh}`、
+`patches/*.patch`、`config/MASTER.arm64.dandelion`、`.github/workflows/build-xnu.yml`
+（`runs-on: macos-14`，跑完把 `mach_kernel` 当 artifact 传上去）。
+**这个 workflow 从来没有被 dispatch 过**，所以「没有内核产物」不是因为拿不到，
+是因为没人点它。
+
+2026-10-29 22:47 第一次点起来（run `40894367790`，`machine=dandelion`、
+`kernel=DEVELOPMENT`），前置步骤全部成功：
+
+```
+Set up job              completed/success
+actions/checkout@v4     completed/success
+Toolchain               completed/success      ← macos-14 / Xcode 版本在这里打出来
+Cache XNU source        completed/success
+Fetch XNU xnu-8796.141.3 completed/success
+Reset XNU source        completed/success
+Apply build patches     completed/success
+Copy board files        completed/success
+Build kernel            in_progress
+Upload mach_kernel      pending
+```
+
+取件脚本：`tools/ci/fetch_kernel.ps1`（轮询 → 下载 artifact → 解出 `mach_kernel` →
+落到 `Resources/UniXNU/mach_kernel`）。凭据直接走 `tools/ci/gh.ps1` 从
+Windows 凭据管理器取，**不需要 `gh auth login`**。
+
+```powershell
+powershell -File tools\ci\fetch_kernel.ps1                 # 等最新一次 build-xnu
+powershell -File tools\ci\fetch_kernel.ps1 -RunId 40894367790
+```
+
+### 7.1 存储布局已经为内核腾好位置
+
+内核是几十 MB，原来 1 MiB 的 FAT 装不下。`flashinfo`（16 MiB，Android 不用）现在是：
+
+```
+0      .. 14 MiB   FAT 卷：\UniXNU.efi、\EFI\UniXNU\*（配置/驱动/DarwinBoot）、以及内核
+15 MiB .. 15 MiB+  固件日志块（128 扇区）
+```
+
+`PayloadBootDxe` 的 `LOG_PARTITION_OFFSET` 从 2048 改成 30720（15 MiB），
+`tools/mk_unixnu_esp.sh` 从 1 MiB 改成 14336 KiB。`\UniXNU.efi` 放在卷根 ——
+那是 `PayloadBootDxe` 的第一个候选名，于是启动管理器走「FAT 优先」这条路，
+不再依赖 `flashinfo + 2 MiB` 的 payload 槽（那块现在在卷里面了）。
+
+`extract_log_block.py` 是按扇区边界扫 magic 的，所以日志换位置不需要同步改任何东西。
