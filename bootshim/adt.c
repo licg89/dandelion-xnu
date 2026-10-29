@@ -119,9 +119,26 @@ size_t dandelion_make_adt(void *buffer, size_t capacity,
 	w_word(&w, "#address-cells", 2);
 	w_word(&w, "#size-cells", 2);
 
-	/* /chosen node: name, boot-manifest-hash, dram-base, dram-size
-	 * (+ random-seed when the shim has one), and one child (memory-map). */
-	w_node(&w, seed_bytes ? 5 : 4, 1);
+	/* /chosen node: name, boot-manifest-hash, dram-base, dram-size,
+	 * darwinboot-memory-size (+ random-seed when the shim has one), and one
+	 * child (memory-map).
+	 *
+	 * darwinboot-memory-size is what DarwinBoot reads for the size of the
+	 * memory window it allocates for the kernel: Boot() passes it straight to
+	 * AllocateWindow(&Kernel, WindowSize, &Address), and a missing property
+	 * leaves WindowSize at 0, which comes back as "boot refused: Out of
+	 * Resources; firmware retained".  Its parser (DarwinBootPkg/Driver/
+	 * WindowSize.h) accepts 256 MiB .. 8 GiB aligned to 2 MiB, and
+	 * Test/window-size.c lists 0x10000000 as the smallest legal value.
+	 *
+	 * 256 MiB is the starting choice on purpose: the parser only bounds the
+	 * request, the allocation still needs one real conventional-memory run,
+	 * so the smallest legal window is the one most likely to succeed on a
+	 * device whose memory map we have not characterised yet.  Raise it when
+	 * the kernel or a ramdisk actually needs more. */
+	static const uint64_t darwinboot_memory_size = 0x10000000ULL;	/* 256 MiB */
+
+	w_node(&w, seed_bytes ? 6 : 5, 1);
 	w_text(&w, "name", "chosen");
 
 	/* Boot manifest hash (development namespace, not Apple secure boot) */
@@ -140,6 +157,7 @@ size_t dandelion_make_adt(void *buffer, size_t capacity,
 
 	w_prop(&w, "dram-base", &phys_base, 8);
 	w_prop(&w, "dram-size", &mem_size, 8);
+	w_prop(&w, "darwinboot-memory-size", &darwinboot_memory_size, 8);
 
 	/* /chosen/memory-map: kernel range */
 	w_node(&w, 2, 0);
