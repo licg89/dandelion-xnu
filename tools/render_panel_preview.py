@@ -44,6 +44,10 @@ FONT_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ= "
 STRIP_PS_BEFORE = 1172
 STRIP_PS_AFTER = 1186
 STRIP_VEMC = 1200
+VERDICT_LEFT = 400
+VERDICT_TOP = 1197
+VERDICT_W = 160
+VERDICT_H = 12
 DOTS_TOP = 1216
 DOTS_VOLUMES_X = 380
 
@@ -142,6 +146,8 @@ def main():
     ap.add_argument("--p-before", default="0x81FF0002")
     ap.add_argument("--p-after", default="0x81FF0002")
     ap.add_argument("--vemc", default="0x0501")
+    ap.add_argument("--verdict", default="orange",
+                    choices=["green", "orange", "magenta"])
     ap.add_argument("--cells", default="6:yellow,7:red")
     args = ap.parse_args()
 
@@ -157,10 +163,14 @@ def main():
     canvas.fill(0, 1100, WIDTH, 30, (255, 0, 0))
     canvas.fill(0, 1140, WIDTH, 30, (255, 0, 0))
 
-    # Power probe (StorageBeaconDxe.c ProbePower): P_before, P_after, VEMC.
+    # Power probe (StorageBeaconDxe.c ProbePower): P_before, P_after, VEMC,
+    # plus the verdict patch to the right of the VEMC row.
     canvas.bit_strip(STRIP_PS_BEFORE, 32, int(args.p_before, 16), (0, 255, 255))
     canvas.bit_strip(STRIP_PS_AFTER, 32, int(args.p_after, 16), (255, 255, 0))
     canvas.bit_strip(STRIP_VEMC, 16, int(args.vemc, 16), (255, 0, 255))
+    canvas.fill(VERDICT_LEFT, VERDICT_TOP, VERDICT_W, VERDICT_H,
+                {"green": (0, 255, 0), "orange": (255, 128, 0),
+                 "magenta": (255, 0, 255)}[args.verdict])
 
     # One dot row, two counts: block devices from x 8, volumes from x 380.
     for i in range(min(4, 12)):

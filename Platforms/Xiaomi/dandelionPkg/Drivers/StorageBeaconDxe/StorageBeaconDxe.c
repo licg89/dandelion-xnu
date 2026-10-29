@@ -42,8 +42,11 @@
       P_after    MSDC_PS again, after V and a 50 ms settle
 
   All three are painted as bit strips plus text (the panel is the only output
-  this board has), and the verdict lands in cells 22/23 and in the y 40 band.
-  The reading table is in docs/POWER-BEFORE-AFTER.md.
+  this board has), and the verdict is repeated as a colour patch next to the
+  VEMC strip and in the y 40 band.  Deliberately no stage cells: 16..23 are
+  painted by MsdcDxe/EmmcDxe, and this driver runs after them, so a cell here
+  would erase the M4 evidence.  The reading table is in
+  docs/POWER-BEFORE-AFTER.md.
 **/
 
 #include <Uefi.h>
@@ -154,6 +157,10 @@
 #define BEACON_STRIP_PS_BEFORE 1172
 #define BEACON_STRIP_PS_AFTER  1186
 #define BEACON_STRIP_VEMC      1200
+#define BEACON_VERDICT_LEFT    400
+#define BEACON_VERDICT_TOP     1197
+#define BEACON_VERDICT_W       160
+#define BEACON_VERDICT_H       12
 #define BEACON_DOTS_TOP        1216
 #define BEACON_DOTS_VOLUMES_X  380
 
@@ -372,6 +379,32 @@ SayDec (
 }
 
 /**
+  Paint a solid rectangle -- used for the power verdict next to the VEMC strip.
+  Kept separate from PaintBand/PaintBanner because those span the whole width.
+**/
+STATIC
+VOID
+PaintPatch (
+  IN UINTN   Left,
+  IN UINTN   Top,
+  IN UINTN   Width,
+  IN UINTN   Height,
+  IN UINT32  Colour
+  )
+{
+  volatile UINT32  *Row;
+  UINTN            X;
+  UINTN            Y;
+
+  for (Y = Top; Y < Top + Height; Y++) {
+    Row = (volatile UINT32 *)(UINTN)(BEACON_FB_BASE + (UINT64)Y * BEACON_FB_STRIDE) + Left;
+    for (X = 0; X < Width; X++) {
+      Row[X] = Colour;
+    }
+  }
+}
+
+/**
   Paint a value as a row of squares, bit 0 on the left, in groups of eight.
 
   Survives BDS clearing the console, and is readable off a photo without any
@@ -528,13 +561,19 @@ ProbePower (
   PsBefore = Msdc0Read32 (MSDC_PS_OFS);
 
   //
-  // "I got this far" markers come after the read, never before it.  Cell 22 is
-  // painted here, so a photo with cell 6 but no cell 22 means the PS load
-  // itself hung the bus (wrong base or unclocked block).
+  // The first strip is also the "I got this far" marker, and it is painted
+  // right after the read rather than before it: a photo that shows this row
+  // but neither of the two below it means the driver died inside the PMIC
+  // access, which is the only blocking transaction in here.
   //
+  // Note what this does *not* do: it paints no stage cell.  Cells 16..23 all
+  // belong to MsdcDxe/EmmcDxe (20 = CMD10, 21 = CMD8/ext-CSD, 22 = data-read
+  // verdict, 23 = command failed), and this driver runs after them -- painting
+  // a cell here would erase the M4 evidence the photo is for.
+  //
+  PaintBitStrip (BEACON_STRIP_PS_BEFORE, 32, PsBefore, 0x0000FFFF);
   PaintBand (0x008000FF);
   StageCell (6, 0x00FFFF00);
-  StageCell (22, 0x0000FFFF);
   Say (SystemTable, L"\r\nMSDC PASSTHRU\r\n");
 
   //
@@ -555,22 +594,6 @@ ProbePower (
 
   if (!PmicRead16 (MT6357_LDO_VIO18_CON0, &Vio18)) {
     Failures++;
-  }
-
-  //
-  // Cell 23 is the rail verdict in one colour, so it survives even if the
-  // strip rows are washed out by the backlight of a cheap photo:
-  //
-  //   green   VEMC read fine and its enable bit is set
-  //   orange  VEMC read fine and is switched OFF  <- the expected finding
-  //   red     the PMIC wrapper did not complete a transaction
-  //
-  if (Failures != 0) {
-    StageCell (23, 0x00FF0000);
-  } else if ((Vemc & MT6357_LDO_ENABLE_BIT) != 0) {
-    StageCell (23, 0x0000FF00);
-  } else {
-    StageCell (23, 0x00FF8000);
   }
 
   //
@@ -617,13 +640,15 @@ ProbePower (
   SayHex (SystemTable, L" VIO18=", Vio18);
   Say (SystemTable, L"\r\n");
 
-  PaintBitStrip (BEACON_STRIP_PS_BEFORE, 32, PsBefore, 0x0000FFFF);
   PaintBitStrip (BEACON_STRIP_PS_AFTER,  32, PsAfter,  0x00FFFF00);
   PaintBitStrip (BEACON_STRIP_VEMC,      16, Vemc,     0x00FF00FF);
 
   //
   // The verdict, in the same order the reading table asks the questions:
-  // wrapper alive, rail enabled, bus pulled high.
+  // wrapper alive, rail enabled, bus pulled high.  It goes in three places --
+  // the text line, a patch beside the VEMC strip, and the y 40 band -- because
+  // this panel's top rows are exactly where photographs go bad, and a strip
+  // row can be washed out by the backlight.
   //
   if (Failures != 0) {
     Verdict = 0x00FF00FF;
@@ -638,6 +663,8 @@ ProbePower (
     Verdict = 0x0000FF00;
     Say (SystemTable, L"POWER OK\r\n");
   }
+
+  PaintPatch (BEACON_VERDICT_LEFT, BEACON_VERDICT_TOP, BEACON_VERDICT_W, BEACON_VERDICT_H, Verdict);
 
   *VerdictColour = Verdict;
 }
@@ -658,16 +685,16 @@ ProbePower (
   not the one being polled, is masked, or the block is clock-gated.
 
   Everything else here is read-only: a read cannot change card state, start a
-  transfer, or clear an interrupt (INT is read, not written back).  Cell 20 is
-  painted first, so a photo ending at cell 20 means the MMIO read itself hung
-  the bus -- which would prove the base address or the clock is wrong.
+  transfer, or clear an interrupt (INT is read, not written back).  The one
+  write is the bounded CMD12 at the end.
 
-  The one write is a bounded CMD12 at the end, kept from the CMD12 round: it is
-  harmless when the card is wedged and a no-op when it is not.
+  No stage cells either.  The previous version painted cells 20 and 21 as
+  "probe started" / "probe finished", but those numbers are MsdcDxe's CMD10 and
+  CMD8 (SEND_EXT_CSD) markers -- and this driver runs *after* MsdcDxe, so the
+  paint erased the very evidence the cells exist for.  Text only.
 
-  Text only, on purpose.  The graphics band below the banners now belongs to
-  ProbePower(); the numbers here are the older, already-answered question and
-  are kept because they cost nothing and the panel log benefits.
+  Graphics belong to ProbePower(), whose strips also carry their own
+  "reached this point" information.
 **/
 STATIC
 VOID
@@ -681,8 +708,6 @@ ProbeMsdcLeftovers (
   UINT32           IntEnable;
   UINT32           Resp0;
   CHAR16           Text[10];
-
-  StageCell (20, 0x0000FFFF);
 
   //
   // Read BOTH controllers.  A host that is not in use keeps its reset values:
@@ -796,8 +821,6 @@ ProbeMsdcLeftovers (
     Say (SystemTable, Text);
     Say (SystemTable, L"\r\n");
   }
-
-  StageCell (21, 0x0000FF00);
 }
 
 /**
