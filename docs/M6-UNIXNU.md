@@ -192,3 +192,30 @@ UniXNU 的 **UI** 不走我们的 ConOut（它有自己的字体、直接画 GOP
   面板上的 `drivers 0 loaded / 0 failed` 就是「一个都没配」的意思。
 
 这一步只改 U 盘（FAT 卷），**不用重编固件**。
+### 6.4 `UniXNUDxe` 要的是「固件卷里的 UniXNU.efi」
+
+第一版把 `[[driver]] path = "UniXNUDxe.efi"` 挂上去之后，日志（第一次能记到 UniXNU 的话了）：
+
+```
+UniXNUDxe: application 9B665204-A133-47A2-9396-9E2B370A4E25 not found in any FV
+config error: driver \EFI\UniXNU\UniXNUDxe.efi: start failed: Not Found
+drivers 0 loaded / 1 failed    kits 0    acpi 0
+```
+
+那个 GUID 就是 **`UniXNU.inf` 的 `FILE_GUID`**，同时是 `UniXNUPkg.dec` 里的
+`PcdUniXNUApplicationFile`。也就是说**上游的部署方式是「UniXNU 全家编进固件卷」**，
+`UniXNUDxe` 自己去 FV 里按 GUID 找并拉起 `UniXNU.efi` —— 我们用 `flashinfo` 槽放 payload
+只是权宜之计。
+
+所以这一版把 `UniXNU.efi` 作为 **FFS 文件**塞进 `dandelion.fdf` 的 `[FV.FvMain]`：
+
+```
+FILE APPLICATION = 9B665204-A133-47A2-9396-9E2B370A4E25 {
+  SECTION PE32 = dandelionPkg/UniXNU/UniXNU.efi
+  SECTION UI = "UniXNU.efi"
+}
+```
+
+它是 **application**，DXE 不会自动调度它，只会被按 GUID 找到再启动 —— 正是我们要的。
+`UniXNUPkg` 本身不 vendoring 进仓库：它由 `tools/build_unixnu.sh` 在树外编译，
+产物复制到 `Platforms/Xiaomi/dandelionPkg/UniXNU/`（和 `FdtBlob/dandelion.dtb` 同一个套路）。

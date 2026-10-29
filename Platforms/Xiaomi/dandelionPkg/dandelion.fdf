@@ -123,6 +123,27 @@ READ_LOCK_STATUS   = TRUE
     SECTION UI = "dandelion.dtb"
   }
 
+  #
+  # UniXNU.efi, as an FFS file under its own FILE_GUID.
+  #
+  # Not a module we build: UniXNUPkg is upstream (UniXNU/UniXNU), built out of
+  # tree by tools/build_unixnu.sh and copied in here.  It goes into the firmware
+  # volume because that is where UniXNUDxe looks for it -- its PCD
+  # PcdUniXNUApplicationFile is this exact GUID, and starting UniXNUDxe without
+  # it produced, on hardware:
+  #
+  #     UniXNUDxe: application 9B665204-A133-47A2-9396-9E2B370A4E25 not found in any FV
+  #     config error: driver \EFI\UniXNU\UniXNUDxe.efi: start failed: Not Found
+  #     drivers 0 loaded / 1 failed
+  #
+  # It is an application, not a driver: DXE never dispatches it, it is only ever
+  # found by GUID and started on purpose.
+  #
+  FILE APPLICATION = 9B665204-A133-47A2-9396-9E2B370A4E25 {
+    SECTION PE32 = dandelionPkg/UniXNU/UniXNU.efi
+    SECTION UI = "UniXNU.efi"
+  }
+
   # M5 payload: a UEFI application that PayloadBootDxe LoadImage/StartImage's
   # from the firmware volume.  This is how the load-and-start path gets verified
   # on a board whose block device does not work yet -- and it stays useful
