@@ -146,8 +146,8 @@ def main():
     ap.add_argument("--p-before", default="0x81FF0002")
     ap.add_argument("--p-after", default="0x81FF0002")
     ap.add_argument("--vemc", default="0x0501")
-    ap.add_argument("--verdict", default="orange",
-                    choices=["green", "orange", "magenta"])
+    ap.add_argument("--verdict", default="red",
+                    choices=["green", "orange", "red", "magenta"])
     ap.add_argument("--cells", default="6:yellow,7:red")
     args = ap.parse_args()
 
@@ -170,7 +170,7 @@ def main():
     canvas.bit_strip(STRIP_VEMC, 16, int(args.vemc, 16), (255, 0, 255))
     canvas.fill(VERDICT_LEFT, VERDICT_TOP, VERDICT_W, VERDICT_H,
                 {"green": (0, 255, 0), "orange": (255, 128, 0),
-                 "magenta": (255, 0, 255)}[args.verdict])
+                 "red": (255, 0, 0), "magenta": (255, 0, 255)}[args.verdict])
 
     # One dot row, two counts: block devices from x 8, volumes from x 380.
     for i in range(min(4, 12)):
