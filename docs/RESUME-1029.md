@@ -90,26 +90,47 @@ R1=0x00000900，无错误位），但**没有任何一根 DAT 被驱动**：
 
 ---
 
-## 3. 下一步（就一个动作）
+## 3. 下一步（两个动作，先证明寄存器可信，再看 t=）
 
-**刷 artifacts/boot-uefi-state.img**（sha256 4703306ceac293ec033faaa961526b8d713609147c05239de169c3221fb6f4bf，
-来自 CI 0467e4a），拍照，只看尝试行行尾的 **t=**：
+### 3.1 先看 `PV` 行：`SDC_RESP0` 到底跟不跟着命令走
 
-`
+**刷 `artifacts/boot-uefi-pv.img`**（sha256 `c1baecb7…`，2026-10-29 20:0x 本地构建），
+`C13` 那行后面会多出一行：
+
+```
+PV pre=00000900 a=00000900 b0=3BB919C9 c=00000900 LIVE
+```
+
+它做的是：读一次 `RESP0` → 发 `CMD13`（R1）→ 发 `CMD10`（R2，取 CID）→ 再发 `CMD13`。
+
+| 观察 | 含义 | 下一步 |
+|---|---|---|
+| `b0=3BB919C9` 且 `b0 != a`、`c == a`，行尾 **`LIVE`** | **RESP0 真的跟着命令走**，`R1=0x00000900` 可信 | 直接看 3.2 的 `t=` |
+| 行尾 **`STALE`**（`b0 == a`） | RESP0 是残留，**整张判读表都要重估** | 先查寄存器窗口/时序（`CFG=0x02000000` 这个疑点就是同类），再谈数据相位 |
+
+> 为什么必须先做这一步：`POWER-BEFORE-AFTER.md` 里每一行"R1=0x900 ⇒ TRAN"都建立在
+> "RESP0 是本条命令的应答"这个未验证的前提上；`ANALYSIS-INTEN-GATED-POLL.md` 也已经
+> 对同一批读数（`CFG=0x02000000`）提出过同样性质的怀疑。
+
+### 3.2 再看 `t=`：卡到底有没有开始传
+
+同一行尝试记录行尾的 **`t=`**（= `CURRENT_STATE`，来自失败后立刻发的 `CMD13`）：
+
+```
 A8 I=0100 R=00000900 sz=00000000 ps=EF/FF gp=DF8/DFF f=00 k=14994 c6=00000000 t=4 r=1
                                                                           ^^^^^^^
-`
+```
 
 | t= | 含义 | 下一步 |
 |---|---|---|
-| **5** (DATA) | 卡**已经在发**数据、正在被时钟推，主机没接住 | 主机接收路径：用 gDS->AddMemorySpace(EfiMemoryMappedIO, 0x10002000, 0x1000, EFI_MEMORY_UC) + gDS->SetMemorySpaceAttributes 映射 pad 块，读/修 IES(0x10)、DRV(0x00)、PUPD(0x30)、R0(0x50)、R1(0x60)（vendor 的 pull-up 组合：PUPD=0x401, R0=0xBFE, R1=0x401） |
+| **5** (DATA) | 卡**已经在发**数据、正在被时钟推，主机没接住 | 主机接收路径：用 `gDS->AddMemorySpace(EfiMemoryMappedIO, 0x10002000, 0x1000, EFI_MEMORY_UC)` + `SetMemorySpaceAttributes` 映射 pad 块，读/修 IES(0x10)、DRV(0x00)、PUPD(0x30)、R0(0x50)、R1(0x60)（vendor 的 pull-up 组合：PUPD=0x401, R0=0xBFE, R1=0x401） |
 | **4** (TRAN) | 卡**根本没开始**传输 | 转卡侧：读完整 R1 位（ADDRESS_OUT_OF_RANGE / ILLEGAL_COMMAND）、试 CMD6 写 PARTITION_ACCESS(179)=0、对照 LK 留下的 EXT_CSD 线索；必要时试 CMD18 多块 / CMD23 |
-| **0** | 连 CMD13 都没发出去 | 说明控制器仍停在数据相位（SDC_STS.SDCBUSY）⇒ 它确实在等数据，按 t=5 方向查 |
+| **0** | 连 CMD13 都没发出去 | 说明控制器仍停在数据相位（`SDC_STS.SDCBUSY`）⇒ 它确实在等数据，按 t=5 方向查 |
 
-刷机（手机必须在 fastboot；MTK LK 不支持 fastboot boot）：
+刷机（手机必须在 fastboot；MTK LK 不支持 `fastboot boot`）：
 
 ```powershell
-powershell -File tools\flash.ps1        # 默认就是 boot-uefi-state.img
+powershell -File tools\flash.ps1        # 默认就是 boot-uefi-pv.img
 # 手机关机：长按电源 ~10 s；然后 电源 + 音量下 进 fastboot
 ```
 
@@ -147,7 +168,7 @@ GitHub API 用 git credential fill 取 token 后带 Bearer；匿名会被限流�
 
 **已经在 git 里、不用重建就能刷的**：
 
-- `artifacts\boot-uefi-state.img`（16 MB，当前上机镜像，sha256 `4703306c…`）
+- `artifacts\boot-uefi-pv.img`（16 MB，当前上机镜像，sha256 `c1baecb7…`）
 
 另外 D:\aios\xnu（Apple xnu-8796.141.3 的本地移植，**线 A，已冻结**）**没有可推送的远端**：
 已在那棵树里提交为分支 dandelion-port（5a023ec），并把整份改动的 patch 放进本仓库

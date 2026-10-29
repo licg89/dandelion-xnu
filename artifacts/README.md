@@ -8,18 +8,18 @@ checkout 完整复现。构建与打包的完整环境见
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
-| `boot-uefi-state.img` | 16,099,328 B | **当前上机版**：`CMD0` → `CMD1`(到 OCR bit31) → `CMD2/3/7/13` 走到 TRAN，然后 `CMD16/CMD8/CMD17` **真读 512 字节**（EXT_CSD + LBA 1）；整段日志压到 10 行 |
+| `boot-uefi-pv.img` | 16,099,328 B | **当前上机版**：在 `boot-uefi-state.img` 基础上多了一行 **`PV`**——用 `CMD13 → CMD10 → CMD13` 证明 `SDC_RESP0` 真的跟着命令走（而不是留着上一条命令的残留） |
 | `panel-preview.png` | 720×1600 | `tools/render_panel_preview.py` 渲染的仪表区，**不用刷机就能看布局** |
 
-> 更早的几版（`boot-uefi-ping.img`、`boot-uefi-power.img`、`boot-uefi-m5-probe.img` …）
+> 更早的几版（`boot-uefi-state.img`、`boot-uefi-blockio.img`、`boot-uefi-power.img` …）
 > 不再跟着仓库一起变大：它们仍在 git 历史里，需要时 `git log -- artifacts/` 取。
 > 仓库里只保留当前版本。
 
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-895099eb6434a8a3d2ad580c2276e6cd2d616d7ffd40df6845d56e83bc20e905  SILICIUM_UEFI.fd
-4703306ceac293ec033faaa961526b8d713609147c05239de169c3221fb6f4bf  boot-uefi-state.img
+27b7393f660818e74250a864a9078cd206421e1e58bd3c62133fa7fc54455d61  SILICIUM_UEFI.fd
+c1baecb7ca36af2b5dcd6dc95f47186f18624a289fa6e78fd6b9428cc56ee1fd  boot-uefi-pv.img
 ```
 
 ## 这一版是什么（2026-10-29 深夜，第十一版）

@@ -1556,6 +1556,57 @@ ExtCsdAttempt (
 }
 
 /**
+  Prove that SDC_RESP0 tracks commands, instead of assuming that it does.
+
+  Every reading in docs/POWER-BEFORE-AFTER.md that says "R1 = 0x00000900, so the
+  card is in TRAN and accepted the command" depends on one unstated assumption:
+  that RESP0 holds the answer to the command just sent.  If it were stale -- left
+  over from MsdcDxe's last CMD13 -- then that R1 would be evidence of nothing, and
+  the whole verdict table would need re-reading.  (docs/ANALYSIS-INTEN-GATED-POLL.md
+  already flags the same suspicion for MSDC_CFG reading 0x02000000.)
+
+  Two commands that cannot produce the same reply are the discriminator:
+
+    a  = RESP0 after CMD13 (R1: card status)
+    b0 = RESP0 after CMD10 (R2: the CID, whose low word is 3BB919C9 on this card)
+    c  = RESP0 after CMD13 again
+
+    b0 != a  -> the register really followed CMD10, so it is live
+    c  == a  -> and the next CMD13 goes back to the same status
+
+  One line of output, because the text area budget is the scarce resource here
+  (see the header of ProbeCardAndMux).  `pre` is printed as context only: it is
+  whatever the register held before this probe touched anything.
+**/
+STATIC
+VOID
+ProbeRespProvenance (
+  IN EFI_SYSTEM_TABLE  *SystemTable,
+  IN UINT32             Rca
+  )
+{
+  CARD_RESP  First;
+  CARD_RESP  Cid;
+  CARD_RESP  Second;
+  UINT32     Pre;
+  BOOLEAN    Live;
+
+  Pre    = Msdc0Read32 (SDC_RESP0_OFS);
+  First  = SendCommand (13, Rca << 16, SDC_CMD_RSP_R1, 0);
+  Cid    = SendCommand (10, Rca << 16, SDC_CMD_RSP_R2, 0);
+  Second = SendCommand (13, Rca << 16, SDC_CMD_RSP_R1, 0);
+
+  Live = (BOOLEAN)((Cid.Resp[0] != First.Resp[0]) && (Second.Resp[0] == First.Resp[0]));
+
+  Say (SystemTable, L"PV ");
+  SayHex (SystemTable, L"pre=", Pre);
+  SayHex (SystemTable, L" a=", First.Resp[0]);
+  SayHex (SystemTable, L" b0=", Cid.Resp[0]);
+  SayHex (SystemTable, L" c=", Second.Resp[0]);
+  Say (SystemTable, Live ? L" LIVE\r\n" : L" STALE\r\n");
+}
+
+/**
   Walk the card up to TRAN by hand and then read from it: CMD0, CMD1 until
   ready, CMD2, CMD3, CMD7, CMD13, and -- past TRAN -- CMD16, CMD8 (EXT_CSD) and
   CMD17 (the GPT header at LBA 1).
@@ -1640,8 +1691,6 @@ ProbeCardAndMux (
   // sequence instead of inheriting MsdcDxe's wreckage.
   //
   ResetHost ();
-  SayHex (SystemTable, L"RST C=", Msdc0Read32 (MSDC_CFG_OFS));
-  Say (SystemTable, L"\r\n");
 
   //
   // CMD0 first: no response, no argument, only CMD and CLK needed.  Its pin
@@ -1649,8 +1698,14 @@ ProbeCardAndMux (
   // so a healthy one reads as "about 100 samples low, all in one run".  The
   // strips keep that measurement in pixels now that the line is shorter.
   //
+  // CFG after the reset rides on this line rather than getting one of its own:
+  // the text area has 68 rows and this driver has about 14 of them, so every new
+  // line has to be paid for (see ProbeRespProvenance for the line that needed
+  // one).
+  //
   Cmd0 = SendCommandSampled (0, 0, 0);
   SayHex (SystemTable, L"C0 I=", Cmd0.IntStatus);
+  SayHex (SystemTable, L" C=", Msdc0Read32 (MSDC_CFG_OFS));
   SayCmdTrace (SystemTable, &Cmd0);
   PaintBitStrip (BEACON_STRIP_CMD_AND, 32, Cmd0.PsAnd, 0x00FFFFFF);
   PaintBitStrip (BEACON_STRIP_CMD_OR,  32, Cmd0.PsOr,  0x0000FFFF);
@@ -1715,6 +1770,13 @@ ProbeCardAndMux (
     Say (SystemTable, L"NOT IN TRAN\r\n");
     return;
   }
+
+  //
+  // Before trusting a single R1 in the rest of this log, prove that RESP0 follows
+  // commands.  This is the one measurement the whole verdict table rests on, and
+  // it costs one line.
+  //
+  ProbeRespProvenance (SystemTable, Rca);
 
   //
   // Past TRAN the card is addressable -- but addressable is not the same as

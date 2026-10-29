@@ -1,6 +1,6 @@
 # Flash the current dandelion UEFI image, and say what to look for afterwards.
 #
-#   powershell -File tools\flash.ps1            # flash artifacts/boot-uefi-m5-dma.img
+#   powershell -File tools\flash.ps1            # flash artifacts/boot-uefi-pv.img
 #   powershell -File tools\flash.ps1 -Image <path>   # flash something else
 #   powershell -File tools\flash.ps1 -Restore        # put the stock boot image back
 #   powershell -File tools\flash.ps1 -Check          # report only, flash nothing
@@ -37,7 +37,7 @@ if ($Restore) {
     throw "stock boot image not found at $Image (out\ is gitignored; copy it from the old machine)"
   }
 } elseif ([string]::IsNullOrEmpty($Image)) {
-  $Image = Join-Path $repo "artifacts\boot-uefi-state.img"
+  $Image = Join-Path $repo "artifacts\boot-uefi-pv.img"
 }
 
 if (-not (Test-Path $Image)) {
@@ -111,6 +111,7 @@ thin strip rows, the verdict patch and the three rows of cells.
                         C2 3=.. 2=.. 1=.. 0=..          (CID, R2)
                         C3 I=.. R=.. C7 I=.. R=..       (RCA, select)
                         C13 I=.. R=.. st=..             (4 = TRAN)
+                        PV pre=.. a=.. b0=.. c=.. LIVE  (does RESP0 follow commands?)
                         IO dir=000 do=000 din=FFF       (pins 122..133, GPIO windows)
                         IO ioc=.. f60=.. adv=..         (controller leftovers)
                         A8 I=.. R=.. sz=.. ps=../.. gp=.../... f=.. k=..... c6=.... t=. r=.
@@ -130,7 +131,17 @@ Reading it, in this order:
   2. `C1 n=..` is how many CMD1 attempts it took for OCR bit 31 (power-up done)
      to come back set.  `CARD NOT READY` instead means the card stayed busy.
 
-  3. A8/B8/C8 are three bus modes -- 8-bit with the card as LK left it, 8-bit
+  3. `PV` decides whether any R1 in this log can be believed.  It reads RESP0,
+     sends CMD13 (R1), CMD10 (R2, the CID), then CMD13 again:
+
+        PV pre=.. a=00000900 b0=3BB919C9 c=00000900 LIVE
+
+     `b0` must be the card's CID low word (3BB919C9) and differ from `a`; `c` must
+     return to `a`.  `STALE` instead means RESP0 is not tracking commands, and
+     then every "R1 = 0x00000900" in this log is a leftover rather than an answer
+     -- stop and fix the register path before reading anything else.
+
+  4. A8/B8/C8 are three bus modes -- 8-bit with the card as LK left it, 8-bit
      default speed, then 1-bit -- and the first that works stops the ladder.
      `I=...1100` is XFER_COMPL (good); `...0100` alone means the command answered
      and no data ever started; `...4100` adds DATTMO, `...8100` DATCRCERR.
