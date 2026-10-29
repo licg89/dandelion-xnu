@@ -456,7 +456,7 @@ git pull
 python tools\check_modules.py
 python tools\check_docs.py
 # 3) 刷当前镜像，拍一张屏幕下半部
-powershell -File tools\flash.ps1 -Image D:\aios\artifacts\boot-uefi-1bit.img
+powershell -File tools\flash.ps1 -Image D:\aios\artifacts\boot-uefi-3modes.img
 # 4) 按 POWER-BEFORE-AFTER.md §4 读：PING 的 cl= （CMD 有没有动）+ SET mode 的读回 + PAD0/PAD1
 ```
 

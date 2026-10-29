@@ -8,7 +8,7 @@ checkout 完整复现。构建与打包的完整环境见
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
-| `boot-uefi-1bit.img` | 16,099,328 B | **当前上机版**：`CMD0` → `CMD1`(到 OCR bit31) → `CMD2/3/7/13` 走到 TRAN，然后 `CMD16/CMD8/CMD17` **真读 512 字节**（EXT_CSD + LBA 1）；整段日志压到 10 行 |
+| `boot-uefi-3modes.img` | 16,099,328 B | **当前上机版**：`CMD0` → `CMD1`(到 OCR bit31) → `CMD2/3/7/13` 走到 TRAN，然后 `CMD16/CMD8/CMD17` **真读 512 字节**（EXT_CSD + LBA 1）；整段日志压到 10 行 |
 | `panel-preview.png` | 720×1600 | `tools/render_panel_preview.py` 渲染的仪表区，**不用刷机就能看布局** |
 
 > 更早的几版（`boot-uefi-ping.img`、`boot-uefi-power.img`、`boot-uefi-m5-probe.img` …）
@@ -18,39 +18,40 @@ checkout 完整复现。构建与打包的完整环境见
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-73f1ad6425a064205937a3a9e262e180819fb69b0a7b602802c8ac0aba96f873  SILICIUM_UEFI.fd
-77a6a1c375627fc859cc0e46980f6a091ff9727ebaab3d7ab1f89d14eda15ebe  boot-uefi-1bit.img
+b747d94fc2d8a6045a0fa5684bcb008515d7972b5ca81ce654a882375d0b843e  SILICIUM_UEFI.fd
+37c5199383ee4f3ab60df764789d6428da32cd742c2b15f363ba1719ad1d455b  boot-uefi-3modes.img
 ```
 
-## 这一版是什么（2026-10-29 深夜，第六版）
+## 这一版是什么（2026-10-29 深夜，第七版）
 
-上一版（`boot-uefi-blockio.img`）第一次真的去读数据，IMG_5752 的读数把问题
-切成了两半：
+上一版（`boot-uefi-1bit.img`）把 dtype 挪到了 bit 11、并用 CMD6 把卡切回 1-bit。
+IMG_5753 的结果是**两条都不成立**：
 
 ```
-C13 I=00000100 R=00000900 st=4          ← 命令全通：卡在 TRAN、被选中
-C8  I=00000100 sz=00000000 rv=00 ...    ← 只有 CMDRDY：没有 XFER_COMPL，也没有 DATTMO
-B1  I=00000100 S=00000000
+C13 I=00000100 R=00000900 st=4
+C6  I=00000100/00000100 n=1 st=4     两个 CMD6 都被接受，卡回到 TRAN
+C8  I=00000100 sz=00000000 ...       数据相位还是没开始
 ```
 
-两个原因，这一版都修：
+所以现在的问题不再是"用哪种模式"，而是**谁没说话**。这一版：
 
-1. **`SDC_CMD` 的数据类型字段在 bit 11，不是 bit 9**（vendor 的注释：
-   `blklen<<16 | go_irq<<15 | stop<<14 | rw<<13 | dtype<<11 | rsptyp<<7 | opcode`，
-   CMD8 的现成命令字是 `0x02000888`）。写成 bit9 的结果是 rsptyp=5、dtype=0，
-   控制器根本没开数据通路；而**卡看不到主机的 dtype 字段**，CMD8 对它就是要发
-   512 字节，于是卡一直拉着 DAT0，后面的命令全部超时。
-2. **总线模式不匹配**：LK 把卡按 8-bit HS200 拉起来（写了 `EXT_CSD[183]/[185]`），
-   这两个字节是卡的配置、CMD0 不清；主机这边是 1-bit default（`SDC_CFG=0xFF007FFC`）。
-   命令走 CMD 单线无所谓，数据走 DAT 就不来。现在 TRAN 之后用 **CMD6 write-byte**
-   把 183/185 写回 0，再轮询 CMD13 到 TRAN+READY。
+1. `ReadDataBlock` 在整个等待窗口里累加 `MSDC_PS` 的 DAT[7:0]，打出 `ps=AND/OR`：
+   - `ps=FF/FF` ⇒ 控制器**从没看见卡驱动数据线**；
+   - `ps=FE/FF` ⇒ 卡在发、**主机没接住**。
+   两种情况下一步完全不同。
+2. 一次刷机跑**三种模式**，第一个成功就停：
 
-另外：`C8` 失败后会补一条真正的 **`CMD12 stop`**（`SDC_CMD` bit14），因为失败的
-数据相位会让卡一直占着 DAT0 —— LK 每次失败都发 CMD12，Mu 驱动从来不發。
+| 行 | 主机 | 卡 | 含义 |
+|---|---|---|---|
+| `A8` | 8-bit | LK 留下的（8-bit HS200） | bootshim 用的那套，已知能读写 |
+| `B8` | 8-bit | CMD6 `HS_TIMING=0` | 8-bit default speed |
+| `C8` | 1-bit | CMD6 `BUS_WIDTH=0` | 上一版失败的那个组合 |
+
+成功时再读 LBA 1 打 `B1`。
 
 ### 怎么看屏幕
 
-**文字区是主证据**（11 行，固定在第 53..63 行）：
+**文字区是主证据**（最多 12 行，第 53..64 行）：
 
 ```
 PWR PS=81FF0002 DAT=FF CMD=1 CD=1 VEMC=1 vsel=3 3000mV w=1 f=0 BUS OK
@@ -61,22 +62,20 @@ C1 n=.. I=.. R=........
 C2 3=.. 2=.. 1=.. 0=..
 C3 I=.. R=.. C7 I=.. R=..
 C13 I=.. R=.. st=..
-C6 I=../../.. n=.. st=..           ← 写回 1-bit / default speed
-C8 I=.. sz=.. rv=.. bw=.. hs=.. c16=....
+A8 I=.. sz=.. ps=../.. f=.. c6=....
+B8 ...（A8 失败才出现）
+C8 ...（B8 失败才出现）
 B1 I=.. S=..
-stop I=..                          ← 只在 C8 失败时出现
 ```
 
 | 看到 | 结论 |
 |---|---|
-| `C13 st=4` + `C6 st=4` + `C8 I=...0100` + `B1 S=45464920` | **整条存储通路打通**（命令/长响应/512 字节数据读/扇区寻址），剩下纯粹是驱动 |
-| `C8 I=...0100 sz=0` 且 `C6 st=4` | 模式改回来了、数据还不来 ⇒ 主机也切 8-bit（`SDC_CFG[17:16]=2`）再试 |
-| `C8 I=...4000`（DATTMO） | 控制器开了通路、卡不发 ⇒ 时序 / `MSDC_IOCON` 采样边沿 |
-| `C8 I=...8000`（DATCRCERR） | 数据在线上、采样窗口不对 ⇒ `MSDC_PAD_TUNE0` / `EMMC50_CFG0` |
-| `C6 st≠4` | CMD6 被拒或卡一直 busy |
-| `B1 S≠45464920` | 能读但内容不对 ⇒ 扇区模式 / LBA 偏移 / 分区表位置 |
-| `NOT IN TRAN` | `C13` 状态不是 4 ⇒ 回看 `C2`/`C3`/`C7` |
-| 某行 `I=00000200` | 那条命令超时，看它上一行 |
+| 任一 `A8`/`B8`/`C8` 的 `I=...1100` + `sz` 非零 + `B1 S=45464920` | **数据通路打通**，那一行的模式就是可用模式 |
+| 三行都 `I=...0100` 且 `ps=FF/FF` | 卡根本没驱动 DAT ⇒ 卡侧（模式/上电/供电） |
+| `ps=FE/FF` 或更低 | 卡在发、主机没接住 ⇒ `SDC_FIFO_CFG` / `MSDC_IOCON` / `SDC_ADV_CFG0` |
+| `f=` 非 0 | 字节到了 FIFO，是 drain/中断的问题 |
+| `I=...8100`（DATCRCERR） | 采样窗口不对 ⇒ `MSDC_PAD_TUNE0` |
+| `B1 -` | 三种模式都没成，按 `ps=` 分叉 |
 
 三条位图条（y 1172 / 1186 / 1200）现在是采样版 `CMD0` 的 `PS` / AND / OR；
 x 400..560 的方块是供电判读结论。逐条判读见 `docs/POWER-BEFORE-AFTER.md` §3。
@@ -124,7 +123,7 @@ boot image 的 header：
 magic=ANDROID!  hver=2  page=2048
 kaddr=0x40080000  ksize=13907597     <- 只改了这一项
 raddr=0x51B00000  rsize=2060079  tags=0x47880000
-kernel 段 = gzip(SILICIUM_UEFI.fd) 607,232 B（FD 2,097,152 B）
+kernel 段 = gzip(SILICIUM_UEFI.fd) 607,744 B（FD 2,097,152 B）
 ```
 
 `kaddr` 必须等于 `[uefi_fd].base`（`Resources/Configs/dandelion.toml` = `0x40080000`）。
@@ -135,7 +134,7 @@ kernel 段 = gzip(SILICIUM_UEFI.fd) 607,232 B（FD 2,097,152 B）
 
 ```powershell
 adb reboot bootloader
-fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-1bit.img
+fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-3modes.img
 fastboot reboot
 ```
 
@@ -160,5 +159,5 @@ wsl -d Ubuntu -e bash /mnt/d/aios/dandelion-xnu/tools/build-local.sh
 
 # 2. 打包 + 校验（读 toml 里的 base，自动断言 kernel_addr）
 cd /mnt/d/aios/dandelion-xnu
-python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-1bit.img
+python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-3modes.img
 ```
