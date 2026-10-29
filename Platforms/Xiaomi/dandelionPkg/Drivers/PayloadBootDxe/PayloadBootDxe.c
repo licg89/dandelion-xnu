@@ -533,6 +533,15 @@ PublishDeviceTree (
 //
 #define LOG_PARTITION_OFFSET   32512
 #define LOG_SECTOR            512
+#define LOG_TEXT_MAX          ((LOG_WRITE_SECTORS - 1) * LOG_SECTOR)
+//
+// One buffer each, reused for every flush including the periodic ones.
+//
+STATIC CHAR8  mLogText[LOG_TEXT_MAX];
+STATIC UINT8  mLogSectors[LOG_WRITE_SECTORS * LOG_SECTOR];
+STATIC EFI_EVENT  mFlushTimer;
+STATIC BOOLEAN    mFlushBusy;
+STATIC VOID       EFIAPI  FlushTickEntry (IN EFI_EVENT Event, IN VOID *Context);
 
 STATIC
 UINT32
@@ -749,10 +758,12 @@ FlushLogToFlash (
     LogSize = (LOG_WRITE_SECTORS - 1) * LOG_SECTOR;
   }
 
-  Status = gBS->AllocatePool (EfiBootServicesData, LogSize, (VOID **)&Text);
-  if (EFI_ERROR (Status)) {
-    return Status;
-  }
+  //
+  // Static buffers rather than pool: this function runs again on a timer while
+  // the payload is running (see FlushTick), and allocating 64 KiB per tick would
+  // leak.  LogSize is already clamped to the size of mLogText below LOG_TEXT_MAX.
+  //
+  Text = mLogText;
 
   Status = Log->Dump (Log, Text, &LogSize);
   if (EFI_ERROR (Status)) {
@@ -861,10 +872,7 @@ FlushLogToFlash (
     // Build the block: one header sector, then the text, zero padded to a whole
     // number of sectors.  The sum is a cheap integrity check for the reader.
     //
-    Status = gBS->AllocatePool (EfiBootServicesData, LOG_WRITE_SECTORS * LOG_SECTOR, (VOID **)&Sectors);
-    if (EFI_ERROR (Status)) {
-      continue;
-    }
+    Sectors = mLogSectors;
 
     ZeroMem (Sectors, LOG_WRITE_SECTORS * LOG_SECTOR);
     CopyMem (Sectors, LOG_MAGIC, 8);
@@ -1007,6 +1015,42 @@ PublishLog (
   thing printed here: it is, by construction, the point at which the firmware
   stops talking and the panel becomes stable evidence.
 **/
+/**
+  Periodic log flush, armed just before the payload starts.
+
+  Why: everything that happens after StartImage is invisible to the flash log,
+  because StartImage does not return until the payload does -- and the interesting
+  payloads do not return.  DarwinBoot is the first of them: it loads the kernel,
+  builds XNU's command line, paints a green bar and branches, and the log on
+  flash stops at "looking for a payload".  That is how a whole boot's worth of
+  diagnosis turns back into a photograph, which is the one thing this channel
+  exists to avoid.
+
+  UEFI event notifications are delivered whenever something calls RestoreTPL,
+  and boot services calls inside the payload do that, so a periodic event keeps
+  getting serviced while the payload runs.  The write itself is 64 KiB of polled
+  PIO -- about 8 ms at the calibrated clock -- so a 2 s period costs well under
+  half a percent of the machine.
+
+  mFlushBusy guards against re-entering from a nested notification.
+**/
+STATIC
+VOID
+EFIAPI
+FlushTickEntry (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  if (mFlushBusy) {
+    return;
+  }
+
+  mFlushBusy = TRUE;
+  (VOID)FlushLogToFlash ();
+  mFlushBusy = FALSE;
+}
+
 STATIC
 VOID
 FreezeConsole (
@@ -1262,6 +1306,29 @@ PayloadBootEntryPoint (
   //
   if (!EFI_ERROR (FlushLogToFlash ())) {
     Say (L"PayloadBoot: firmware log written to flash\r\n");
+  }
+
+  //
+  // From here on the payload owns the machine, and it may never come back.  Keep
+  // flushing the log on a timer so whatever it printed before it left stays on
+  // the medium.
+  //
+  mFlushTimer = NULL;
+  mFlushBusy  = FALSE;
+  if (!EFI_ERROR (gBS->CreateEvent (
+                          EVT_TIMER | EVT_NOTIFY_SIGNAL,
+                          TPL_CALLBACK,
+                          FlushTickEntry,
+                          NULL,
+                          &mFlushTimer
+                          )))
+  {
+    if (EFI_ERROR (gBS->SetTimer (mFlushTimer, TimerPeriodic, 20000000ULL))) {
+      gBS->CloseEvent (mFlushTimer);
+      mFlushTimer = NULL;
+    } else {
+      Say (L"PayloadBoot: log flush on a 2 s timer\r\n");
+    }
   }
 
   Say (L"PayloadBoot: looking for a payload (FAT, then flashinfo, then FV)\r\n");
