@@ -28,11 +28,21 @@ rotate = 0
 [ui]
 title = "UniXNU dandelion"
 
-# UniXNUDxe installs the XNU loader protocol that DarwinBoot asks for.  Without
-# it Boot.c reports "xnu: no loader protocol installed; UniXNU does not provide
-# one", which is exactly what "drivers 0 loaded / 0 failed" on the panel meant.
+# UniXNUDxe finds UniXNU.efi in a firmware volume by its FILE_GUID
+# (PcdUniXNUApplicationFile) and starts it.
 [[driver]]
 path = "UniXNUDxe.efi"
+
+# DarwinBoot must be started BEFORE any type = "xnu" entry is booted, because it
+# is what installs gUniXNULoaderProtocolGuid (DarwinBoot.c: mLoader =
+# { UNIXNU_LOADER_REVISION, Boot }, installed in its entry point).  Without it
+# Boot.c takes the "xnu: no loader protocol installed" path and returns
+# EFI_UNSUPPORTED -- which is exactly what the panel said:
+#
+#     "XNU (dandelion)" returned: Unsupported
+#
+[[driver]]
+path = "DarwinBoot.efi"
 
 [[entry]]
 id = "xnu"
