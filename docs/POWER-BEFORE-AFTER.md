@@ -1,162 +1,146 @@
-# 上电前 / 后探针：eMMC 到底有没有电
+# 供电 / 引脚探针：卡到底是不是"没电"
 
-> 2026-10-29 晚，`docs/RESUME-1029.md` 第 5 节的落地实现。
-> 代码在 `Platforms/Xiaomi/dandelionPkg/Drivers/StorageBeaconDxe/StorageBeaconDxe.c` 的
-> `ProbePower()`；面板布局在 `tools/render_panel_preview.py` 里有同样的坐标，可离线预览。
-> 这一轮只做这一件事：把「卡有没有电」从推理变成读数。
+> 2026-10-29 晚。第一版（`docs/RESUME-1029.md` §5）测的是"上电前/后 DAT 电平"，
+> 上机结果（IMG_5738）**否掉了"没电"这个假设**；本版改成"卡能不能听见我们"。
+> 代码：`Platforms/Xiaomi/dandelionPkg/Drivers/StorageBeaconDxe/StorageBeaconDxe.c`
+> （`ProbePower()` / `ProbeCardAndMux()`）；布局在 `tools/render_panel_preview.py` 里有同样坐标。
 
 ---
 
-## 1. 问题、以及为什么 PS 一个数不够
-
-前面的结论（`docs/RESUME-1029.md` 第 2、3 节）：卡对任何命令**零应答**，`CMD12` 拿到
-`MSDC_INT_CMDTMO`（说明 `MSDC_INT` 本身正常），`MSDC_PS` 低 8 位 = `0x02`，
-`MSDC_INTEN` 从没被配置过。
-
-`PS` 低 8 位不是 `0xFF`，有两种完全不同的解释：
-
-| 解释 | 对应的后续动作 |
-|---|---|
-| **卡/IO 没有电** | 修 PMIC（MT6357 的 VEMC / VMC） |
-| **主机没开数据线上拉，或上拉所在的轨（VIO18/VMC）没电** | 修主机配置 / 另一条轨 |
-
-只看 `PS` 分不出这两条。所以这一轮**同时**读「控制这条轨的寄存器」和「线的电平」，
-并且前后各读一次电平 —— 如果中间什么都没变，那至少证明读数是稳定的；
-如果变了，说明有东西在上电/掉电。
-
-## 2. 屏幕上看哪里
-
-### 2.1 位图条（BDS 擦不掉，拍照主证据）
-
-| y | 颜色 | 内容 | 位宽 |
-|---|---|---|---|
-| 1172 | 青 | `P_before` = 进入驱动后**第一条**读到的 `MSDC_PS`（MSDC0 +0x08） | 32 位，bit0 在左 |
-| 1186 | 黄 | `P_after` = 读完 PMIC 并等 50 ms 之后的 `MSDC_PS` | 32 位 |
-| 1200 | 洋红 | `VEMC` = MT6357 `LDO_VEMC_CON0`（0x1988）低 16 位 | 16 位 |
-
-`PS` 的语义：bit7..0 = DAT7..DAT0，bit8 = CMD。空闲、有电的总线低字节应该是 `0xFF`。
-
-这三行也兼做「走到哪一步」的标记，因为它们各自在关键动作之后才画：
-
-- 只有第一行、没有后两行 → 卡在读 PMIC 的那一刻（这是本驱动里唯一会阻塞的事务）；
-- 三行都在 → 探针跑完了，结论看 §2.2 的判读块。
-
-> **先看清楚一件事：这一版里没有任何代码会去打开这条轨**，所以 `P_before == P_after`
-> 是**预期**的。它们的作用不是"对比出上电效果"，而是 (a) 证明读数稳定、不是随机噪声，
-> (b) 和下面 `V` 的使能位互相对照。真正回答「卡有没有电」的是 `VEMC` 的 bit0 —— 这也是
-> 为什么这一轮把 PMIC 寄存器一起读了：只看 `PS` 分不出"没电"和"没开上拉"。
-
-### 2.2 判读块（右端一个方块，一眼定性）
-
-`VEMC` 那一行右边（x 400..560，y 1197..1209）有一个实心方块，颜色就是结论：
-
-| 颜色 | 含义 |
-|---|---|
-| 绿 | VEMC 读成功且使能位 = 1，`P_after` 低 8 位也是 `0xFF` |
-| 橙 | VEMC 读成功且使能位 = 1，但 `P_after` 低 8 位不是 `0xFF`（轨开着、线不跟着高） |
-| 红 | VEMC 读成功但**使能位 = 0**（轨是关的，预期分支） |
-| 洋红 | PMIC wrapper 事务没完成 —— 先修 PWRAP，别急着下结论 |
-
-同一个颜色还会刷到 y 40..47 的状态带（顶上有直方图坏点，所以两处都放）。
-
-> **这一版不画 16..23 号状态格。** 那 8 个格子里 20/21 是 `MsdcDxe` 的 CMD10 与
-> CMD8（eMMC 的 SEND_EXT_CSD），22 是**数据读结果**，23 是命令报错；而
-> `StorageBeaconDxe` 在这些之后才跑，画上去就等于**擦掉 M4 的证据**。上一版把 20/21
-> 当"探针开始/结束"用过，这次一起撤了。本驱动只画自己的 4/5/6/7。
-
-### 2.3 状态带（y 40..47，最顶上那条）
-
-和判读块同色（顶上有坏点，所以两处都放）：
-
-| 颜色 | 含义 |
-|---|---|
-| 红 | `RAIL-OFF`：VEMC 使能位 = 0 |
-| 橙 | `NO-PULLUP`：轨开着，但 `P_after` 低 8 位仍不是 `0xFF` |
-| 绿 | `OK`：轨开着且总线被拉高（或 FAT 已经挂上，M4 完成时优先） |
-| 洋红 | `NO-WRAP`：PMIC wrapper 没应答，**别急着下结论** |
-
-### 2.4 文字区（会在 BDS 来的时候被覆盖，能拍就拍）
+## 1. 第一轮测到了什么（IMG_5738，2026-10-29 晚）
 
 ```
 MSDC PASSTHRU
 PS before=81FF0002 after=81FF0002
 PWRAP init=00000001 failed=00000000
-VEMC=00000501 en=1 vosel=5 3300mV
-VMC=00000000 VIO18=00000101
-POWER RAIL-OFF
+VEMC=00000001 en=1 vosel=0 0mV        <- vosel 那两位是错的，见 §3
+VMC=00000000 VIO18=00000001
+POWER NO-PULLUP                        <- 这是按错误的位定义得出的，作废
+H0 C=0200F09B E=00000000 I=00000000 R=00000B00
+H1 C=0200789B E=00000000 I=00000000 R=00000000
+H0 S=FF007FFC P=81FF0002 N=00000001
+CMD12 I=00000200 R=00000000
 ```
 
-`en` / `vosel` / `mV` 是从 `VEMC` 里解出来的，省得人眼算位。
+三条独立读数合起来说明**卡是有电的**：
 
-> **一个免费的交叉校验**：`VIO18` 是屏幕/IO 域那条轨，屏幕既然亮着，`VIO18=0000...`
-> 里 bit0 必须是 **1**。如果它读出来也是 0，说明这条路读到的**不是**我们以为的那颗
-> PMIC 的寄存器（地址或 SPI 编码不对），那 `VEMC en=0` 就不能当作结论，先回去修路。
+1. `MT6357 LDO_VEMC_CON0 = 0x0001` → 使能位（bit0）为 1，flash 轨是开的；
+2. `VIO18 = 0x0001` → IO 域开着（屏幕亮着，交叉校验通过）；
+3. `MSDC_PS = 0x81FF0002` → 按 vendor 的位定义，DAT7..0 = `0xFF`、CMD = 1、卡在位
+   （见 §3）—— 总线是干净的、被拉高的空闲总线。
 
-## 3. 这些地址凭什么可信
+而 `CMD12 I=00000200 R=00000000`、`cmd 7 status=0x12`、ext-CSD 读 `DATTMO` 依旧：
+**卡有电、在位、总线正常，却一句都不回。**
+
+## 2. 本版（V3）测什么
+
+既然"供电"已经被排除，剩下的可能是"卡根本没听见我们"：引脚复用选错、时钟没到 pad、
+或者卡的 RSTB 被按住。这三件事都无法靠"读寄存器"区分，所以本版直接**问卡**：
+
+1. 手工发一条 `CMD1`（SEND_OP_COND，只要 CMD + CLK，任何状态都能回）；
+2. **在命令期间用紧循环采样 `MSDC_PS`**（不 Stall：命令相位只有 48 个时钟 ≈ 120 µs），
+   记录 AND / OR。CMD 线（bit24）如果在 AND 里还是 1，说明控制器**从没驱动过 CMD**——
+   那是主机侧（pad/时钟）问题，不是卡的问题；
+3. 如果没有应答，把 GPIO122..133 的复用改成**另一个模式**（1 ↔ 2）再问一次；
+   成功就保留新模式（这样后面的 EmmcDxe 扫描可能直接跑通）；
+4. 同时打印 strap、两个 mode 寄存器、以及 12 个脚的 GPIO 输入电平（DIN）。
+
+### 屏幕上看哪里
+
+| 位置 | 内容 |
+|---|---|
+| y 1172 青条 | `P_before`：进驱动后第一条 `MSDC_PS` |
+| y 1186 白条 | `PS_AND`：CMD1 期间**始终为高**的位 |
+| y 1200 青条 | `PS_OR`：CMD1 期间**曾经为高**的位 |
+| x 400..560 / y 1197 | 判读块（绿=BUS OK、橙=DAT/CMD 不高、红=轨关、洋红=PWRAP 没应答） |
+| 文字区 | 见下面 |
+
+关键看 **bit 24（CMD）在两行里的组合**：
+
+| AND bit24 | OR bit24 | 含义 |
+|---|---|---|
+| 1 | 1 | 控制器**没有驱动** CMD：pad/时钟/复用问题（不是卡） |
+| 0 | 1 | CMD 被拉低过：命令确实上了线，卡没回 ⇒ 时钟或复位 |
+
+文字区（都在最后一次清屏之后，能拍就拍）：
+
+```
+MSDC PASSTHRU
+PS before=81FF0002 after=81FF0002 DAT=FF CMD=1 CD=1
+PWRAP init=00000001 failed=00000000
+VEMC=00000001 en=1 ANA=XXXX vosel=N NNNNmV
+VMC=00000000 VIO18=00000001
+BUS OK
+MUX strap=00000000 mode=2 m0=2222FF00 m1=00222222
+DIN 122..133=0FFF
+PING a I=00000200 R=00000000
+PING b I=00000000 R=04FF8080
+MUX now=1 / MUX ANSWERED - mode kept / MUX restored
+```
+
+`DIN 122..133` 里 bit0 = GPIO122 … bit11 = GPIO133。总线被拉高时应该接近 `0FFF`；
+如果某一个脚是 0（尤其 131/133 这种候选 RSTB），那就是"被按住"的直接证据。
+
+## 3. MSDC_PS 的真实位定义（这条错了会连累所有结论）
+
+`docs/RESUME-1029.md` §3 曾把 `PS` 的低 8 位当成 DAT，于是 `0x02` 被读成"数据线没被拉高 ⇒ 没供电"。
+vendor 头文件（`ComboA/msdc_reg.h`）和上游 `mtk-sd.c` 是一致的，位定义是：
+
+| 位 | 名字 | 方向 |
+|---|---|---|
+| 0 | `CDEN` 卡检测使能 | RW |
+| 1 | `CDSTS` 卡检测状态 | R |
+| 15..12 | `CDDEBOUNCE` | RW |
+| **23..16** | **`DAT[7:0]`** | R |
+| **24** | **`CMD`** | R |
+| 31 | `WP` 写保护 | R |
+
+所以 `0x81FF0002` = DAT `0xFF` + CMD `1` + WP `1` + CDSTS `1`：**健康**。
+
+同一段错误还带来两个连带错误，本版一并修掉：
+
+- **`vosel` 不在 `LDO_VEMC_CON0` 里**。mainline `mt6357-regulator.c` 的宏是
+  `MT6357_LDO(name, vreg, table, enreg, vosel, vosel_mask)`，`ldo-vemc` 的调用是
+  `…, MT6357_LDO_VEMC_CON0, MT6357_VEMC_ANA_CON0, 0x700`：**使能**在 `CON0` bit0，
+  **VOSEL** 在 `VEMC_ANA_CON0`（`0x1C20`）bits 10..8。从 `CON0` 里取只能得到 0。
+- 判读块里"NO-PULLUP"这个名字本身就带着上一轮的误解，改成了 `BUS DAT-LOW / CMD-LOW`。
+
+## 4. 这些地址凭什么可信
 
 | 项 | 值 | 出处 |
 |---|---|---|
 | `PWRAP` 基址 | `0x1000D000` | 厂商 DT `pwrap@1000d000`、LK `PWRAP_BASE` |
-| `WACS2_CMD / RDATA / VLDCLR / INIT_DONE2` | `0xC20 / 0xC24 / 0xC28 / 0x0A0` | LK `reg_PMIC_WRAP.h`（MT6765），与 `PmicWrapperImplLib.c` 选给 `SOC_TYPE == 1` 的完全一致 |
-| 事务编码 | `(write << 31) \| ((addr >> 1) << 16) \| data`，FSM = `(RDATA >> 16) & 7`，idle = 0，数据有效 = 6 | `PmicWrapperDxe.c`（上游仓库）与 `PmicWrapperImplLib.c` 的 `ArbCapabilities = FALSE` |
-| `LDO_VEMC_CON0` | `0x1988` | LK `upmu_hw.h`（MT6357）、mainline `include/linux/mfd/mt6357/registers.h` |
-| `LDO_VMC_CON0` | `0x1AB0` | 同上 |
-| `LDO_VIO18_CON0` | `0x1958` | 同上 |
-| 使能位 | `CON0` bit 0 | mainline `mt6357-regulator.c`：每个 LDO 都是 `enable_mask = BIT(0)`，`enable_reg = *_CON0` |
-| VEMC `VOSEL` | bits 10..8，7 档 | `mt6357-regulator.c`：`vsel_mask = 0x700`，`vemc_voltages[] = {…, 2.9, 3.0, …, 3.3}` V，所以 `5 = 3300 mV` |
+| `WACS2_CMD / RDATA / VLDCLR / INIT_DONE2` | `0xC20 / 0xC24 / 0xC28 / 0x0A0` | LK `reg_PMIC_WRAP.h`（MT6765），与 `PmicWrapperImplLib.c` 的 `SOC_TYPE == 1` 一致 |
+| 事务编码 | `(write << 31) \| ((addr >> 1) << 16) \| data`，FSM = `(RDATA >> 16) & 7`，idle = 0，数据有效 = 6 | `PmicWrapperDxe.c`（上游仓库） |
+| `LDO_VEMC_CON0` / `LDO_VMC_CON0` / `LDO_VIO18_CON0` | `0x1988` / `0x1AB0` / `0x1958` | mainline `include/linux/mfd/mt6357/registers.h`、vendor `power_gs_6357` |
+| `VEMC_ANA_CON0` | `0x1C20`（VOSEL bits 10..8，2/3/5 → 2.9/3.0/3.3 V） | `mt6357-regulator.c` + 同上的 registers.h |
+| `Pinctrl` 基址 / mode 偏移 | `0x10005000` / `0x300`，每 8 脚一个寄存器、每脚 4 位 | `GpioImplLib.c`、vendor `msdc_cust.h`（0x3F0 / 0x400） |
+| `CMD1` 的 `SDC_CMD` 编码 | `RSPTYP` 字段 = 3（R3），左移 7；`R1b` = 7、`R1` = 1 | 上游 `MsdcDxe.c` 的 `switch (ResponseType)` |
 
-顺带说明一件**必须记住**的事：仓库里的 PMIC 驱动是 MT6358 的，它的
-`ldo_vemc.Con0 = 0x1B1C`，在 MT6357 上完全是另一个寄存器。所以**不**走
-`MTK_PMIC_PROTOCOL` 的 `RegulatorIsEnabled("ldo_vemc")`：那条路读的是另一颗芯片的地址，
-答案无论是什么都不说明 dandelion 的轨。
+## 5. 这一版**没有**写什么
 
-## 4. 判读表（照这张看照片）
+- **不写 PMIC**。轨已经是开的，没有理由动它。
+- **只有两处写控制器/GPIO**：一条 `CMD1`（和之前那条 `CMD12` 一样是有界的、可忽略的），
+  以及在两个候选 mode 之间切一次 GPIO122..133；两次都失败时**恢复成 strap 选的那个**。
+- 不碰总线宽度、时钟分频、DMA/PIO。
+
+## 6. 判读表（V3）
 
 | 画面 | 结论 | 下一步 |
 |---|---|---|
-| 只有 `P_before` 一条，下面两条没有 | 卡在读 PMIC 的那一刻（唯一的阻塞事务） | 查 PWRAP / `MSDC_PS` 的读是否真的返回了 |
-| 三条都在、判读块**洋红**（`PWRAP failed≠0`） | PMIC wrapper 没应答 | 先修 PWRAP：基址、`INIT_DONE2`、`PmicWrapperDxe` 是否跑过 |
-| 判读块**红**（`VEMC en=0`） | **轨确实是关的** —— RESUME §4 的假设被证实 | 写 MT6357 的 VEMC 上电（见 §6） |
-| 判读块**绿**、`P_after` 低 8 位 = `0xFF` | 供电 OK，总线被拉高 | 转去查时钟 / CMD 线 / pad tune（RESUME §6 里那几条才轮得到） |
-| 判读块**橙**、`P_after` 低 8 位 ≠ `0xFF` | 轨开着但线仍低 | 看 `VMC` / `VIO18` 的使能位（IO 域），再看主机是否开上拉；下一根探针做这个 |
-| `P_before ≠ P_after` | 读的过程中有东西在上电/掉电 | 重复一次；先确认读数窗口，再谈结论 |
-
-同时看一眼 16..23 格子（那是上一轮 `MsdcDxe` 留下的、和本轮无关的证据）：22 绿/红 =
-数据读成/败，21 白 = 走过了 CMD8（SEND_EXT_CSD）。它们现在**不会再被本轮驱动覆盖**。
-
-## 5. 这一轮**没有**做什么（避免踩上一轮的坑）
-
-- **不写 PMIC**。开关一条轨需要 MT6357 的表在驱动里，不该由一段诊断代码猜地址去写。
-  现在的实现只读，`PmicRead16()` 只有 WACS2 的读命令和 `VLDCLR` 确认。
-- **不碰**总线宽度、`SDC_CFG`、时钟、DMA/PIO。唯一的写仍然是从 CMD12 那一轮留下来的
-  一条有界 `CMD12`。
-- **不用无界等待**。上游 `PmicWrapperDxe` 等 FSM 是 `while` 死等；这里每次事务上限
-  10 ms（200 × 50 µs），失败就返回 `0xFFFFFFFF` 并把 `Failures` 加一 —— 这块板没有
-  UART，不能让「PMIC 卡住」变成「屏幕一片黑、什么都不知道」。
-- 面板上的旧位图条（`CFG`/`INTEN` 等）撤掉了，那几条本来就和横幅重叠、且问题已经答过；
-  文字里仍然照旧打印，供日志取用。
-
-## 6. 如果结论是「轨关着」（预期的分支）
-
-最小改动，按顺序：
-
-1. 给 dandelion 一个 MT6357 的 regulator 表（或在 `MT6358PmicDxe` 里按 `PcdPmicType`
-   选表），最少要有 `ldo_vemc`：`Con0 = 0x1988`、使能 bit0、`VOSEL` bits 10..8、3.3 V 档。
-2. `MsdcImplLib::PowerControl()` 在 MSDC0 打开它，**先写电压再置使能**，写完读回去确认
-   `en = 1` 且 `vosel = 5`。
-3. 打开之后立刻用同一段探针再看一次：`P_after` 低 8 位必须变成 `0xFF`。
-   这一步是「上电成功」的判据，不要用「命令有没有通」来反推。
-4. 只有第 3 步成立，才回去看 `CMD1` / `CMD2` / `CMD3` 和 `MSDC_INT`。
+| `PING a` 有 `CMDRDY`（`I` 的 bit8=1）且 `R` 非零 | 卡本来就是活的，M4 卡在别处 | 看 `R` 的 OCR：bit31=1 表示上电完成；直接查识别流程 |
+| `PING a/b` 都是 `I=00000200`、AND/OR 的 bit24 都是 1 | 控制器没驱动 CMD | 查 clock/pad（`MSDC_PAD_CTL*`、msdc0_top 0x11CD0000 是否映射） |
+| 同上但 AND bit24 = 0、OR bit24 = 1 | 命令上了线，卡不回 | 查时钟是否真的到卡、RSTB（`DIN` 里找恒为 0 的脚） |
+| `PING b` 在另一个 mode 下成功 | **引脚复用模式错了** | 把 `InitGpio()` 改成那个模式 |
+| 判读块**红** | 轨被关了（与上一轮相反） | 回到 PMIC 分支 |
+| 判读块**洋红** | PWRAP 没应答 | 先修 PWRAP |
+| `DIN` 里有一个恒 0 的脚 | 该线被外部按住（候选 RSTB） | 按脚位去查 vendor DT 的 `pins_rst` |
 
 ## 7. 复现
 
 ```powershell
-# 1. 构建（CI），拿到 artifact 后打包
-python bootshim\patch_boot.py ... --kernel-addr 0x40080000
-# 2. 刷
 powershell -File tools\flash.ps1 -Image artifacts\boot-uefi-*.img
-# 3. 拍一张整屏照片（下半部分必须完整）
+# 拍一张整屏（下半部必须完整），先报"我读到的是 X"
 ```
 
-判读时**先说「我读到的是 X」，等确认后再分析** —— 这一轮之前吃过两次亏
-（`docs/RESUME-1029.md` 第 8 节）。
+判读时**先说「我读到的是 X」，等确认后再分析** —— RESUME §8 的约定，这一轮又验证了一次它的价值。

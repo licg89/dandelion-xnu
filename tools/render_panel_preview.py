@@ -42,8 +42,8 @@ FONT_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ= "
 
 # StorageBeaconDxe.c: BEACON_STRIP_* / BEACON_DOTS_*
 STRIP_PS_BEFORE = 1172
-STRIP_PS_AFTER = 1186
-STRIP_VEMC = 1200
+STRIP_CMD_AND = 1186
+STRIP_CMD_OR = 1200
 VERDICT_LEFT = 400
 VERDICT_TOP = 1197
 VERDICT_W = 160
@@ -144,9 +144,9 @@ def main():
     ap.add_argument("--scfg", default="0x05000009")
     ap.add_argument("--blkn", default="1")
     ap.add_argument("--p-before", default="0x81FF0002")
-    ap.add_argument("--p-after", default="0x81FF0002")
-    ap.add_argument("--vemc", default="0x0501")
-    ap.add_argument("--verdict", default="red",
+    ap.add_argument("--cmd-and", default="0x00FF0002")
+    ap.add_argument("--cmd-or", default="0x81FF0002")
+    ap.add_argument("--verdict", default="green",
                     choices=["green", "orange", "red", "magenta"])
     ap.add_argument("--cells", default="6:yellow,7:red")
     args = ap.parse_args()
@@ -163,11 +163,11 @@ def main():
     canvas.fill(0, 1100, WIDTH, 30, (255, 0, 0))
     canvas.fill(0, 1140, WIDTH, 30, (255, 0, 0))
 
-    # Power probe (StorageBeaconDxe.c ProbePower): P_before, P_after, VEMC,
-    # plus the verdict patch to the right of the VEMC row.
+    # Probes (StorageBeaconDxe.c): idle pin state, then the PS bits sampled
+    # during the hand-sent CMD1 (AND = held high, OR = ever high), verdict patch.
     canvas.bit_strip(STRIP_PS_BEFORE, 32, int(args.p_before, 16), (0, 255, 255))
-    canvas.bit_strip(STRIP_PS_AFTER, 32, int(args.p_after, 16), (255, 255, 0))
-    canvas.bit_strip(STRIP_VEMC, 16, int(args.vemc, 16), (255, 0, 255))
+    canvas.bit_strip(STRIP_CMD_AND, 32, int(args.cmd_and, 16), (255, 255, 255))
+    canvas.bit_strip(STRIP_CMD_OR, 32, int(args.cmd_or, 16), (0, 255, 255))
     canvas.fill(VERDICT_LEFT, VERDICT_TOP, VERDICT_W, VERDICT_H,
                 {"green": (0, 255, 0), "orange": (255, 128, 0),
                  "red": (255, 0, 0), "magenta": (255, 0, 255)}[args.verdict])

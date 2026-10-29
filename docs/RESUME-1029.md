@@ -51,8 +51,12 @@ LK 引导 → BootShim(gzip FD @0x40080000) → UEFI(Mu / mouseos/uefi-a04br3)
 
 ## 1. 一句话现状
 
-固件能跑到 BDS、能加载 payload、能显示文字；**M4 的真问题不是数据通路，而是 eMMC 很可能根本没上电**。
-卡从来**没有**回应过任何 UEFI 命令；之前看到的 `R1=0x900`（TRAN）是 LK 交接前留在寄存器里的**过期值**。
+固件能跑到 BDS、能加载 payload、能显示文字；**M4 的真问题不是数据通路、也不是供电**：
+卡有电（`VEMC en=1`）、在位、总线干净（`PS DAT=0xFF CMD=1`），却对任何命令零应答。
+之前看到的 `R1=0x900`（TRAN）是 LK 交接前留在寄存器里的**过期值**。
+
+下一步是问「卡能不能听见我们」：手工 `CMD1` + 命令期间采样 `PS`，再换一个引脚复用模式重问。
+见 [`POWER-BEFORE-AFTER.md`](POWER-BEFORE-AFTER.md)。
 
 ---
 
@@ -65,7 +69,15 @@ LK 引导 → BootShim(gzip FD @0x40080000) → UEFI(Mu / mouseos/uefi-a04br3)
 | 双 host 探针 | `H0 C=0200F09B E=00000000 I=00000000 R=00000B00`<br>`H1 C=0200789B E=00000000 I=00000000 R=00000000` | eMMC 在 **H0**；H1 无卡 |
 | CMD12 探针 | `S=FF007FFC  P=81FF0002  N=00000001`<br>`CMD12 I=00000200  R=00000000` | **决定性** |
 
-## 3. 为什么说「卡没上电」
+## 3. 为什么说「卡没上电」（**已作废，2026-10-29 晚**）
+
+> ❌ **这一节整体作废。** 它的前提是"`MSDC_PS` 低 8 位 = DAT0..7"，而真实位定义是
+> DAT 在 bits 23..16、CMD 在 bit 24（vendor `ComboA/msdc_reg.h`、上游 `mtk-sd.c`）。
+> 实测 `PS = 0x81FF0002` ⇒ DAT = `0xFF`、CMD = 1、卡在位：总线是干净的。
+> 同时 `MT6357 LDO_VEMC_CON0 = 0x0001`（使能位 = 1）⇒ 轨是开的。
+> **卡有电、在位、总线正常，仍然零应答。** 下一轮改问「卡能不能听见我们」，
+> 见 [`POWER-BEFORE-AFTER.md`](POWER-BEFORE-AFTER.md) §2。
+> 下面保留原文，只为记录这个错误是怎么被读出来的。
 
 三个独立事实指向同一结论：
 
@@ -90,7 +102,7 @@ LK 引导 → BootShim(gzip FD @0x40080000) → UEFI(Mu / mouseos/uefi-a04br3)
 
 **因此：`R1=0x00000900`、状态 4/5 这些都不是 UEFI 这条路径产生的，是 LK 的残留。**
 
-## 4. 根因方向
+## 4. 根因方向（**已作废，见 §3 的更正**）
 
 `PowerControl()` 走 PMIC 的 `vmmc` / `vemmc` 轨：
 
@@ -102,9 +114,10 @@ LK 引导 → BootShim(gzip FD @0x40080000) → UEFI(Mu / mouseos/uefi-a04br3)
 
 ## 5. 下一步实验（只做这一件）
 
-> **2026-10-29 晚：这一节已经实现了。** 代码在 `StorageBeaconDxe.c` 的 `ProbePower()`；
-> 本轮镜像 `artifacts/boot-uefi-power.img`；屏幕坐标、地址出处、判读表都在
-> [`POWER-BEFORE-AFTER.md`](POWER-BEFORE-AFTER.md)。
+> **2026-10-29 晚：这一节已经实现（两轮）。** 第一轮的结论是「卡有电、总线正常」，
+> 见 [`POWER-BEFORE-AFTER.md`](POWER-BEFORE-AFTER.md) §1；现在的镜像在第二轮
+> （手工 `CMD1` + 两个引脚复用模式）。代码在 `StorageBeaconDxe.c` 的
+> `ProbePower()` / `ProbeCardAndMux()`；屏幕坐标与判读表都在同一份文档里。
 > 实现时的两个决定：PMIC **直接 MMIO**（不走 `MTK_PMIC_PROTOCOL`，因为它的名字解析到
 > MT6358 的地址，而且它等 FSM 是无界的），以及三组数都进位图条（y 1172 / 1186 / 1200）
 > 加文字。下面是原始设计记录，保持原样。
@@ -121,12 +134,14 @@ LK 引导 → BootShim(gzip FD @0x40080000) → UEFI(Mu / mouseos/uefi-a04br3)
 
 | 观察 | 结论 | 动作 |
 |---|---|---|
-| `P_after` 低 8 位 ≠ `0xFF` | **供电没成** | 修 MT6357 的 LDO 表（当前用 MT6358 驱动） |
+| `P_after` 低 8 位 ≠ `0xFF` | ~~供电没成~~ 位定义读错了，低 8 位不是 DAT | 已作废，见 §3 更正 |
 | `P_after` = `0xFF` 但命令仍无应答 | 供电 OK | 才轮到时钟 / pad tuning / CMD 线 |
 | `V` 读出来是 `0xFFFFFFFF` 或 `0` | PMIC 窗口不对 | 先修 PMIC 的寄存器基址 |
 
 ## 6. 不要再走的弯路（每一条都有实测反证）
 
+- ❌ 「卡没上电 / 供电没成」—— `VEMC en=1`、`PS DAT=0xFF CMD=1`，两路独立读数都否掉了（IMG_5738）
+- ❌ 「DAT 线没被拉高」—— 同上，`PS` 的 DAT 在 bits 23..16，读到的是 `0xFF`
 - ❌ 「卡在 DATA 态」—— 那个 `R=0xB00` 是 LK 残留
 - ❌ 「`INTEN` 门控导致轮询失效」—— `CMD12` 已经证明 `INT` 正常报 `CMDTMO`
 - ❌ 「PIO vs DMA 通路」—— 命令都没人应答，通路无从谈起
@@ -138,9 +153,9 @@ LK 引导 → BootShim(gzip FD @0x40080000) → UEFI(Mu / mouseos/uefi-a04br3)
 
 | 文件 | 用途 |
 |---|---|
-| `Platforms/Xiaomi/dandelionPkg/Drivers/StorageBeaconDxe/StorageBeaconDxe.c` | **本轮已改这里**：`ProbePower()` = P_before / MT6357 VEMC,VMC,VIO18 / P_after；旧的 CFG/INT/CMD12 改成纯文字 |
-| `docs/POWER-BEFORE-AFTER.md` | 上面那段的判读表：屏幕坐标、地址出处、下一步分支 |
-| `tools/render_panel_preview.py` | 不用刷机先看布局（本轮已加三条位图条和一排点阵） |
+| `Platforms/Xiaomi/dandelionPkg/Drivers/StorageBeaconDxe/StorageBeaconDxe.c` | **本轮已改这里**：`ProbePower()`（PS + MT6357 CON0/ANA）+ `ProbeCardAndMux()`（手工 CMD1 + 两种引脚复用模式） |
+| `docs/POWER-BEFORE-AFTER.md` | 判读表：屏幕坐标、地址出处、`PS` 位定义更正、下一步分支 |
+| `tools/render_panel_preview.py` | 不用刷机先看布局（三条位图条 + 判读块 + 一排点阵） |
 | `Platforms/Xiaomi/dandelionPkg/Library/MemoryMapLib/MemoryMapLib.c` | `MSDC-0 0x11230000`、`MSDC-1 0x11240000`、`Display Reserved 0x7EC50000` |
 | `Resources/MuPatches/0002-MsdcDxe-dandelion-panel-markers.patch` | 上游 eMMC 驱动的补丁（**改它要同步 hunk 行数，别手改**） |
 | `docs/ANALYSIS-EMMC-DATA-PATH.md` | PIO/DMA 通路调研（现在优先级下降） |

@@ -30,23 +30,26 @@
   ---------------------------------------------------------------------------
   The power probe (2026-10-29, section 5 of docs/RESUME-1029.md)
 
-  Everything above assumes the card answers.  It does not, and the explanation
-  that survived every other test is that it has no power: LK used to leave the
-  eMMC rails on, but MsdcImplLib's PowerControl() is deliberately gutted (the
-  in-tree PMIC driver is MT6358's, dandelion carries an MT6357), so nothing in
-  this firmware ever switches VEMC on.  This driver now measures that instead
-  of assuming it:
+  Everything above assumes the card answers.  It does not, and the first
+  explanation tried was "it has no power" -- LK used to leave the eMMC rails on,
+  but MsdcImplLib's PowerControl() is deliberately gutted (the in-tree PMIC
+  driver is MT6358's, dandelion carries an MT6357).  This driver measured it
+  instead of assuming it:
 
       P_before   MSDC_PS, read as the very first load this driver performs
-      V          MT6357 LDO_VEMC / VMC / VIO18 CON0 through the PMIC wrapper
-      P_after    MSDC_PS again, after V and a 50 ms settle
+      V          MT6357 LDO_VEMC/VMC/VIO18 CON0 + VEMC_ANA_CON0 via the wrapper
+      P_after    MSDC_PS again, after V and a short settle
 
-  All three are painted as bit strips plus text (the panel is the only output
-  this board has), and the verdict is repeated as a colour patch next to the
-  VEMC strip and in the y 40 band.  Deliberately no stage cells: 16..23 are
-  painted by MsdcDxe/EmmcDxe, and this driver runs after them, so a cell here
-  would erase the M4 evidence.  The reading table is in
-  docs/POWER-BEFORE-AFTER.md.
+  Hardware, 2026-10-29 (IMG_5738): P = 0x81FF0002 both times, VEMC CON0 = 0x0001.
+  With the real MSDC_PS layout (DAT at bits 23..16, CMD at bit 24) that means
+  DAT = 0xFF, CMD = 1, card present, rail enabled -- so "no power" is refuted,
+  and the next question is whether the card can hear the controller at all.
+  That is what ProbeCardAndMux() answers: a hand-sent CMD1 with the pin state
+  sampled in a tight loop, then the same ping in the other pin-mux mode.
+
+  Reading table: docs/POWER-BEFORE-AFTER.md.  Deliberately no stage cells: 16..23
+  are painted by MsdcDxe/EmmcDxe, and this driver runs after them, so a cell
+  here would erase the M4 evidence.
 **/
 
 #include <Uefi.h>
@@ -90,20 +93,61 @@
 #define SDC_BLK_NUM_OFS    0x50
 
 #define SDC_STS_BUSY       (1u << 0)
+#define SDC_STS_CMDBUSY    (1u << 1)
 #define SDC_CMD_STOP_CMD   (1u << 14)
 #define SDC_CMD_RSP_SHIFT  7
 #define MSDC_INT_CMDRDY    (1u << 8)
 #define MSDC_INT_CMDTMO    (1u << 9)
 
 //
-// MSDC_PS is pin state, not controller state: bits 7..0 are DAT7..DAT0 and bit
-// 8 is CMD (LK msdc.h: MSDC_PS_DAT0 = 1 << 0 ... MSDC_PS_CMD = 1 << 8).  An
-// idle bus with a powered card reads all ones in the low byte, because the
-// board and the card pull the data lines up.  A low byte that is not 0xFF is
-// the signature of "no rail", not of "no protocol" -- which is exactly the
-// distinction this probe exists to make.
+// MSDC_PS is pin state, not controller state, and the field layout is NOT
+// "DAT in the low byte" -- that misreading is what produced the "the card has
+// no power" conclusion in docs/RESUME-1029.md section 3.  The vendor header
+// (ComboA/msdc_reg.h, and the same masks in mtk-sd.c upstream) says:
 //
+//   BIT(0)      CDEN          card-detect enable          (RW)
+//   BIT(1)      CDSTS         card-detect status          (R)
+//   BIT(15:12)  CDDEBOUNCE                                (RW)
+//   BIT(23:16)  DAT[7:0]      data lines, one bit each    (R)
+//   BIT(24)     CMD                                       (R)
+//   BIT(31)     WP            write protect               (R)
+//
+// Measured on this board: PS = 0x81FF0002 -> DAT = 0xFF, CMD = 1, WP = 1,
+// CDSTS = 1: a powered card sitting on a clean, pulled-up idle bus.
+//
+#define MSDC_PS_DAT_SHIFT  16
 #define MSDC_PS_DAT_MASK   0xFFu
+#define MSDC_PS_CMD_BIT    (1u << 24)
+#define MSDC_PS_CDSTS_BIT  (1u << 1)
+#define MSDC_PS_WP_BIT     (1u << 31)
+
+//
+// Pinctrl / GPIO (MT6765): base 0x10005000 (GpioImplLib.c gPlatformInfo:
+// ModeOffset 0x300, DataInOffset 0x200, 8 pins per register, 4 bits per pin).
+// Pins 122..133 are the eMMC0 group: mode register 0x3F0 covers 120..127 and
+// 0x400 covers 128..135, which is exactly the vendor's MSDC0_GPIO_MODE0/1.
+//
+#define PINCTRL_MMIO_BASE    0x10005000ULL
+#define PINCTRL_DIN_OFS      0x200
+#define PINCTRL_MODE_OFS     0x300
+#define PINCTRL_MODE_STRIDE  0x10
+#define PINCTRL_STRAP_ADDR   0x100056F0ULL
+#define PINCTRL_STRAP_BIT    13
+#define EMMC_PIN_FIRST       122
+#define EMMC_PIN_LAST        133
+
+//
+// SDC_CMD response type field (MsdcDxe.c switch on ResponseType):
+// R1/R5/R6/R7 = 1, R2 = 2, R3 = 3, R4 = 4, R1b = 7, shifted left by 7.
+//
+#define SDC_CMD_RSP_R1      1u
+#define SDC_CMD_RSP_R3      3u
+//
+// CMD1 argument: high-capacity support (bit 30) and the 3.2-3.4 V window,
+// i.e. what an eMMC answers with OCR bit 31 set.  Only used to see whether the
+// card reacts at all; the exact value does not matter for that.
+//
+#define CMD1_OCR            0x40FF8080u
 
 //
 // PMIC wrapper (PWRAP) at 0x1000D000 on MT6765/MT6762G: vendor DT
@@ -126,8 +170,7 @@
 
 //
 // MT6357 regulator addresses.  dandelion carries an MT6357, NOT the MT6358 the
-// in-tree PMIC driver was written for, and the two maps do not overlap -- which
-// is the whole reason the eMMC rail is the prime suspect:
+// in-tree PMIC driver was written for, and the two maps do not overlap:
 //
 //   rail             MT6357 (used here)  MT6358 (what MT6358PmicDxe pokes)
 //   ldo_vemc.Con0    0x1988              0x1B1C
@@ -137,26 +180,36 @@
 // Sources: LK platform/mt6765/include/platform/upmu_hw.h (MT6357 map), mainline
 // drivers/regulator/mt6357-regulator.c with include/linux/mfd/mt6357/
 // registers.h, and the vendor kernel's power_gs_6357 golden-setting tables.
-// Every MT6357 LDO CON0 has the same two fields this probe needs: bit 0 is the
-// rail enable, and VEMC's VOSEL sits at bits 10..8 (seven 100 mV steps upward
-// from 2.9 V, so 5 = 3.3 V, the value an eMMC design uses).
+//
+// Where each field lives -- this cost a wrong reading once, so it is written
+// down: mainline's MT6357_LDO() takes (enreg, vosel, vosel_mask), and the table
+// entry is
+//
+//   MT6357_LDO("ldo-vemc", VEMC, vemc_voltages,
+//              MT6357_LDO_VEMC_CON0, MT6357_VEMC_ANA_CON0, 0x700)
+//
+// so **CON0 bit 0 = enable** and **VOSEL bits 10..8 live in ANA_CON0 (0x1C20)**,
+// not in CON0.  Reading VOSEL out of CON0 prints "vosel=0 0mV", which is
+// meaningless.  vemc_voltages[] maps VOSEL 2/3/5 to 2.9/3.0/3.3 V.
 //
 #define MT6357_LDO_VIO18_CON0   0x1958
 #define MT6357_LDO_VEMC_CON0    0x1988
 #define MT6357_LDO_VMC_CON0     0x1AB0
+#define MT6357_VEMC_ANA_CON0    0x1C20
+#define MT6357_VMC_ANA_CON0     0x1C3C
 #define MT6357_LDO_ENABLE_BIT   (1u << 0)
 #define MT6357_VEMC_VOSEL_SHIFT 8
 #define MT6357_VEMC_VOSEL_MASK  0x7
 
 //
-// Panel rows for the power probe: directly under the two status banners (1100
-// and 1140, 30 px tall) and above the numeric readout that starts at 1244.
-// Being outside DandelionConsoleDxe's text area (rows 0..67), these rows
-// survive BDS's screen resets, which the console text does not.
+// Panel rows: directly under the two status banners (1100 and 1140, 30 px
+// tall) and above the numeric readout that starts at 1244.  Being outside
+// DandelionConsoleDxe's text area (rows 0..67), these rows survive BDS's screen
+// resets, which the console text does not.
 //
-#define BEACON_STRIP_PS_BEFORE 1172
-#define BEACON_STRIP_PS_AFTER  1186
-#define BEACON_STRIP_VEMC      1200
+#define BEACON_STRIP_PS_BEFORE 1172   // idle pin state, first read
+#define BEACON_STRIP_CMD_AND   1186   // PS bits that stayed high during CMD1
+#define BEACON_STRIP_CMD_OR    1200   // PS bits ever high during CMD1
 #define BEACON_VERDICT_LEFT    400
 #define BEACON_VERDICT_TOP     1197
 #define BEACON_VERDICT_W       160
@@ -519,20 +572,17 @@ PmicRead16 (
 }
 
 /**
-  The power probe: P_before, V, P_after -- in that order, because the order is
-  the experiment (docs/RESUME-1029.md section 5).
+  The power probe: P_before, V, P_after -- in that order (docs/RESUME-1029.md
+  section 5), plus the pin-mux state and the GPIO input levels of the eMMC pins.
 
-  The question is not "does the eMMC answer" (it does not, measured) but "was
-  its rail ever switched on", and PS alone cannot answer that: a low byte that
-  is not 0xFF also happens when the host simply has no pull-ups enabled or when
-  the rail the pull-ups hang from (VMC / VIO18) is off.  So the register that
-  actually controls the rail is read as well, from the MT6357 addresses -- not
-  through MTK_PMIC_PROTOCOL, whose names resolve to MT6358 registers on this
-  board and would answer a question about the wrong address.
+  Measured on hardware 2026-10-29 (IMG_5738) and the reason this file now
+  interprets MSDC_PS differently: P_before = P_after = 0x81FF0002, which with
+  the real field layout means DAT7..0 = 0xFF, CMD = 1, WP = 1, CDSTS = 1, and
+  MT6357 LDO_VEMC_CON0 = 0x0001 (enable set).  So the card is powered, present
+  and sitting on a clean pulled-up bus -- "no power" is refuted, and the verdict
+  below says so instead of looking for a rail that was never off.
 
-  Deliberately read-only.  Switching a rail on needs the MT6357 table inside a
-  real driver; guessing at an address from inside a diagnostic is how the
-  wrong PMIC register gets written on someone's phone.
+  Read-only with respect to power: nothing here writes a PMIC register.
 **/
 STATIC
 VOID
@@ -544,6 +594,7 @@ ProbePower (
   UINT32  PsBefore;
   UINT32  PsAfter;
   UINT32  Vemc;
+  UINT32  VemcAna;
   UINT32  Vmc;
   UINT32  Vio18;
   UINT32  WrapInit;
@@ -563,7 +614,7 @@ ProbePower (
   //
   // The first strip is also the "I got this far" marker, and it is painted
   // right after the read rather than before it: a photo that shows this row
-  // but neither of the two below it means the driver died inside the PMIC
+  // but neither of the rows painted later means the driver died in the PMIC
   // access, which is the only blocking transaction in here.
   //
   // Note what this does *not* do: it paints no stage cell.  Cells 16..23 all
@@ -596,19 +647,28 @@ ProbePower (
     Failures++;
   }
 
+  if (!PmicRead16 (MT6357_VEMC_ANA_CON0, &VemcAna)) {
+    Failures++;
+  }
+
   //
-  // 3. P_after.  The settle exists so a rail that is ramping has had time to
-  // arrive; 50 ms is far longer than any PMIC soft-start here.
+  // 3. P_after, after a short settle (a rail that is ramping would show up as
+  // a difference between the two readings).
   //
-  gBS->Stall (50 * 1000);
+  gBS->Stall (10 * 1000);
   PsAfter = Msdc0Read32 (MSDC_PS_OFS);
 
   //
-  // Text first (it is the readable version and the one that goes into the
-  // flash log), then the bit strips that survive BDS.
+  // Text first: it is the readable version and the one that reaches the flash
+  // log.  The strips are the backstop when the photo is bad.
   //
   SayHex (SystemTable, L"PS before=", PsBefore);
   SayHex (SystemTable, L" after=", PsAfter);
+  SayHex (SystemTable, L" DAT=", (PsAfter >> MSDC_PS_DAT_SHIFT) & MSDC_PS_DAT_MASK);
+  Say (SystemTable, L" CMD=");
+  SayDec (SystemTable, (PsAfter & MSDC_PS_CMD_BIT) ? 1 : 0);
+  Say (SystemTable, L" CD=");
+  SayDec (SystemTable, (PsAfter & MSDC_PS_CDSTS_BIT) ? 1 : 0);
   Say (SystemTable, L"\r\n");
 
   SayHex (SystemTable, L"PWRAP init=", WrapInit & 0x1);
@@ -616,57 +676,279 @@ ProbePower (
   Say (SystemTable, L"\r\n");
 
   SayHex (SystemTable, L"VEMC=", Vemc);
-  if (Vemc == 0xFFFFFFFF) {
-    //
-    // PmicRead16() masks a successful read to 16 bits, so all-ones here can
-    // only mean "the transaction did not complete".  Saying en=1 / vosel=7
-    // about a failed read would be worse than saying nothing.
-    //
-    Say (SystemTable, L" (read failed)\r\n");
-  } else {
-    Vosel      = (Vemc >> MT6357_VEMC_VOSEL_SHIFT) & MT6357_VEMC_VOSEL_MASK;
-    Millivolts = mVemcMillivolts[Vosel];
+  Say (SystemTable, L" en=");
+  SayDec (SystemTable, (Vemc & MT6357_LDO_ENABLE_BIT) ? 1 : 0);
 
-    Say (SystemTable, L" en=");
-    SayDec (SystemTable, (Vemc & MT6357_LDO_ENABLE_BIT) ? 1 : 0);
+  if (VemcAna != 0xFFFFFFFF) {
+    Vosel      = (VemcAna >> MT6357_VEMC_VOSEL_SHIFT) & MT6357_VEMC_VOSEL_MASK;
+    Millivolts = mVemcMillivolts[Vosel];
+    SayHex (SystemTable, L" ANA=", VemcAna);
     Say (SystemTable, L" vosel=");
     SayDec (SystemTable, Vosel);
     Say (SystemTable, L" ");
     SayDec (SystemTable, Millivolts);
-    Say (SystemTable, L"mV\r\n");
+    Say (SystemTable, L"mV");
   }
+
+  Say (SystemTable, L"\r\n");
 
   SayHex (SystemTable, L"VMC=", Vmc);
   SayHex (SystemTable, L" VIO18=", Vio18);
   Say (SystemTable, L"\r\n");
 
-  PaintBitStrip (BEACON_STRIP_PS_AFTER,  32, PsAfter,  0x00FFFF00);
-  PaintBitStrip (BEACON_STRIP_VEMC,      16, Vemc,     0x00FF00FF);
-
   //
-  // The verdict, in the same order the reading table asks the questions:
-  // wrapper alive, rail enabled, bus pulled high.  It goes in three places --
-  // the text line, a patch beside the VEMC strip, and the y 40 band -- because
-  // this panel's top rows are exactly where photographs go bad, and a strip
-  // row can be washed out by the backlight.
+  // The verdict, in the order the questions were asked: wrapper alive, rail
+  // enabled, bus pulled high.  It goes in two places -- a patch beside the
+  // strips and the y 40 band -- because this panel's top rows are exactly where
+  // photographs go bad.
   //
   if (Failures != 0) {
     Verdict = 0x00FF00FF;
-    Say (SystemTable, L"POWER NO-WRAP\r\n");
+    Say (SystemTable, L"BUS NO-WRAP\r\n");
   } else if ((Vemc & MT6357_LDO_ENABLE_BIT) == 0) {
     Verdict = 0x00FF0000;
-    Say (SystemTable, L"POWER RAIL-OFF\r\n");
-  } else if ((PsAfter & MSDC_PS_DAT_MASK) != MSDC_PS_DAT_MASK) {
+    Say (SystemTable, L"BUS RAIL-OFF\r\n");
+  } else if (((PsAfter >> MSDC_PS_DAT_SHIFT) & MSDC_PS_DAT_MASK) != MSDC_PS_DAT_MASK) {
     Verdict = 0x00FF8000;
-    Say (SystemTable, L"POWER NO-PULLUP\r\n");
+    Say (SystemTable, L"BUS DAT-LOW\r\n");
+  } else if ((PsAfter & MSDC_PS_CMD_BIT) == 0) {
+    Verdict = 0x00FF8000;
+    Say (SystemTable, L"BUS CMD-LOW\r\n");
   } else {
     Verdict = 0x0000FF00;
-    Say (SystemTable, L"POWER OK\r\n");
+    Say (SystemTable, L"BUS OK\r\n");
   }
 
   PaintPatch (BEACON_VERDICT_LEFT, BEACON_VERDICT_TOP, BEACON_VERDICT_W, BEACON_VERDICT_H, Verdict);
 
   *VerdictColour = Verdict;
+}
+
+/**
+  Which pinctrl register holds the 4-bit mode field of one pin.  GpioImplLib.c:
+  ModeOffset 0x300, one register per eight pins, 4 bits per pin -- which is how
+  0x300 + (122/8)*0x10 lands on the vendor's MSDC0_GPIO_MODE0 (0x3F0).
+**/
+STATIC
+UINTN
+EmmcModeRegister (
+  IN UINTN  Pin
+  )
+{
+  return PINCTRL_MODE_OFS + (Pin / 8) * PINCTRL_MODE_STRIDE;
+}
+
+STATIC
+UINT32
+PinctrlRead32 (
+  IN UINTN  Offset
+  )
+{
+  return *(volatile UINT32 *)(UINTN)(PINCTRL_MMIO_BASE + Offset);
+}
+
+/**
+  Set the whole GPIO122..133 group to one alternate function, one pin at a time.
+
+  Deliberately does not use the MediaTek GPIO protocol: this has to work even if
+  that protocol was never installed, and the two registers it writes are the
+  same ones the vendor's msdc_set_pin_mode() pokes.
+**/
+STATIC
+VOID
+SetEmmcPinMode (
+  IN UINT32  Mode
+  )
+{
+  UINTN   Pin;
+  UINTN   Offset;
+  UINTN   Shift;
+  UINT32  Value;
+
+  for (Pin = EMMC_PIN_FIRST; Pin <= EMMC_PIN_LAST; Pin++) {
+    Offset = EmmcModeRegister (Pin);
+    Shift  = (Pin % 8) * 4;
+    Value  = PinctrlRead32 (Offset);
+    Value  = (Value & ~(0xFu << Shift)) | ((Mode & 0xFu) << Shift);
+    *(volatile UINT32 *)(UINTN)(PINCTRL_MMIO_BASE + Offset) = Value;
+  }
+}
+
+/**
+  Read the pad input level of GPIO122..133, packed as bit0 = pin 122.
+
+  This is a straight read of the pads, one bit each, and it is the only cheap
+  way to see a line that is being held low by something outside the controller
+  -- an asserted reset, for instance.
+**/
+STATIC
+UINT32
+ReadEmmcPinDin (VOID)
+{
+  UINTN   Pin;
+  UINT32  Din;
+
+  Din = 0;
+  for (Pin = EMMC_PIN_FIRST; Pin <= EMMC_PIN_LAST; Pin++) {
+    if (((PinctrlRead32 (PINCTRL_DIN_OFS + (Pin / 8) * PINCTRL_MODE_STRIDE) >> (Pin % 8)) & 1) != 0) {
+      Din |= (1u << (Pin - EMMC_PIN_FIRST));
+    }
+  }
+
+  return Din;
+}
+
+/**
+  Send one CMD1 (SEND_OP_COND) by hand and sample the bus while it is on the wire.
+
+  Why hand-rolled: the question is no longer "what did the driver do" but "can
+  this card hear this controller at all".  CMD1 needs only CMD and CLK, has a
+  response (R3), and works in every card state, so it is the cheapest possible
+  ping.
+
+  The sampling loop has no Stall on purpose.  The command phase is 48 clock
+  cycles -- about 120 us at 400 kHz -- and a 1 ms poll would step straight over
+  it.  AND/OR of MSDC_PS over a few thousand loads answers the useful question
+  directly: if the CMD line (bit 24) never leaves 1, the controller is not
+  driving it at all, which is a pad/mux/clock answer and not a card answer.
+
+  Interrupts are cleared before the command because MSDC_INT is W1C: a stale
+  CMDTMO from MsdcDxe would otherwise be read as this command's result.
+**/
+STATIC
+BOOLEAN
+CardPing (
+  IN  EFI_SYSTEM_TABLE  *SystemTable,
+  IN  CHAR16            *Tag,
+  OUT UINT32            *IntStatus,
+  OUT UINT32            *Resp0,
+  OUT UINT32            *PsAnd,
+  OUT UINT32            *PsOr
+  )
+{
+  volatile UINT32  *Regs;
+  UINT32           Int;
+  UINT32           Ps;
+  UINTN            Tries;
+
+  Regs = (volatile UINT32 *)(UINTN)MSDC0_MMIO_BASE;
+
+  //
+  // Wait for the controller to be idle.  Issuing a command while SDC_STS says
+  // busy is silently dropped by the hardware, which would look like "the card
+  // did not answer".
+  //
+  for (Tries = 0; Tries < 2000; Tries++) {
+    if ((Regs[SDC_STS_OFS / 4] & (SDC_STS_BUSY | SDC_STS_CMDBUSY)) == 0) {
+      break;
+    }
+
+    gBS->Stall (100);
+  }
+
+  Regs[MSDC_INT_OFS / 4] = 0xFFFFFFFF;
+  Regs[SDC_ARG_OFS / 4]  = CMD1_OCR;
+  Regs[SDC_CMD_OFS / 4]  = (1u | (SDC_CMD_RSP_R3 << SDC_CMD_RSP_SHIFT));
+
+  *PsAnd = 0xFFFFFFFF;
+  *PsOr  = 0;
+  for (Tries = 0; Tries < 20000; Tries++) {
+    Ps      = Regs[MSDC_PS_OFS / 4];
+    *PsAnd &= Ps;
+    *PsOr  |= Ps;
+  }
+
+  for (Tries = 0; Tries < 2000; Tries++) {
+    Int = Regs[MSDC_INT_OFS / 4];
+    if ((Int & (MSDC_INT_CMDRDY | MSDC_INT_CMDTMO)) != 0) {
+      break;
+    }
+
+    gBS->Stall (1000);
+  }
+
+  *IntStatus = Regs[MSDC_INT_OFS / 4];
+  *Resp0     = Regs[SDC_RESP0_OFS / 4];
+  Regs[MSDC_INT_OFS / 4] = *IntStatus;
+
+  SayHex (SystemTable, Tag, *IntStatus);
+  SayHex (SystemTable, L" R=", *Resp0);
+  Say (SystemTable, L"\r\n");
+
+  return ((*IntStatus & MSDC_INT_CMDRDY) != 0);
+}
+
+/**
+  Ask the card whether it is listening, and try both pin-mux modes.
+
+  The mux mode comes from a strap bit that was inherited from the vendor kernel
+  and has never been checked on silicon; the two candidate modes differ by one
+  bit per pin, so a wrong choice costs exactly one flash cycle.  Whatever the
+  answer, the AND/OR strips stay on screen: they say whether the controller's
+  CMD output ever moved, which is information the card's silence cannot give.
+**/
+STATIC
+VOID
+ProbeCardAndMux (
+  IN EFI_SYSTEM_TABLE  *SystemTable
+  )
+{
+  UINT32   Strap;
+  UINT32   Mode;
+  UINT32   Other;
+  UINT32   Int;
+  UINT32   Resp;
+  UINT32   PsAnd;
+  UINT32   PsOr;
+  BOOLEAN  Answered;
+
+  Strap = *(volatile UINT32 *)(UINTN)PINCTRL_STRAP_ADDR;
+  Mode  = ((Strap & (1u << PINCTRL_STRAP_BIT)) != 0) ? 1 : 2;
+
+  SayHex (SystemTable, L"MUX strap=", Strap);
+  Say (SystemTable, L" mode=");
+  SayDec (SystemTable, Mode);
+  SayHex (SystemTable, L" m0=", PinctrlRead32 (EmmcModeRegister (EMMC_PIN_FIRST)));
+  SayHex (SystemTable, L" m1=", PinctrlRead32 (EmmcModeRegister (128)));
+  Say (SystemTable, L"\r\n");
+
+  SayHex (SystemTable, L"DIN 122..133=", ReadEmmcPinDin ());
+  Say (SystemTable, L"\r\n");
+
+  Answered = CardPing (SystemTable, L"PING a I=", &Int, &Resp, &PsAnd, &PsOr);
+  PaintBitStrip (BEACON_STRIP_CMD_AND, 32, PsAnd, 0x00FFFFFF);
+  PaintBitStrip (BEACON_STRIP_CMD_OR,  32, PsOr,  0x0000FFFF);
+
+  if (Answered) {
+    Say (SystemTable, L"MUX mode ok\r\n");
+    return;
+  }
+
+  //
+  // No answer in the strap-selected mode.  Try the other one.
+  //
+  Other = (Mode == 1) ? 2 : 1;
+  SetEmmcPinMode (Other);
+
+  Answered = CardPing (SystemTable, L"PING b I=", &Int, &Resp, &PsAnd, &PsOr);
+  PaintBitStrip (BEACON_STRIP_CMD_AND, 32, PsAnd, 0x00FFFFFF);
+  PaintBitStrip (BEACON_STRIP_CMD_OR,  32, PsOr,  0x0000FFFF);
+
+  Say (SystemTable, L"MUX now=");
+  SayDec (SystemTable, Other);
+  Say (SystemTable, L"\r\n");
+
+  if (Answered) {
+    //
+    // Leave the working mode in place: the connect sweep that follows starts
+    // EmmcDxe, and this boot may as well finish what it started.
+    //
+    Say (SystemTable, L"MUX ANSWERED - mode kept\r\n");
+    return;
+  }
+
+  SetEmmcPinMode (Mode);
+  Say (SystemTable, L"MUX restored\r\n");
 }
 
 /**
@@ -905,9 +1187,16 @@ StorageBeaconDxeEntryPoint (
 
   //
   // Then the older register snapshot.  Read-only apart from a bounded CMD12,
-  // and text-only now: the graphics band belongs to the power probe.
+  // and text-only now: the graphics band belongs to the probes above.
   //
   ProbeMsdcLeftovers (SystemTable);
+
+  //
+  // Last diagnostic: ping the card (CMD1) and, if it stays silent, try the
+  // other pin-mux mode.  This runs before the connect sweep on purpose -- if a
+  // mode change wakes the card up, EmmcDxe gets a working bus in this same boot.
+  //
+  ProbeCardAndMux (SystemTable);
 
   Passthru      = NULL;
   PassthruCount = 0;
