@@ -49,6 +49,19 @@
 #define BEACON_ROW1_TOP    1448
 #define BEACON_ROW2_TOP    1496
 
+//
+// MSDC0 register window (LK: platform/mt6765/include/platform/mt_reg_base.h,
+// and bootshim/msdc.c uses the same value).  Offsets follow the MTK MSDC block;
+// the upstream MsdcDxe header has the same ones -- keep them in sync if either
+// side changes.  Read-only here, see ProbeMsdcRegisters().
+//
+#define MSDC0_MMIO_BASE    0x11230000ULL
+#define MSDC_CFG_OFS       0x00
+#define MSDC_INT_OFS       0x0C
+#define MSDC_INTEN_OFS     0x10
+#define SDC_STS_OFS        0x3C
+#define SDC_RESP0_OFS      0x40
+
 /**
   Repaint the status band (y 40..47, full width).
 
@@ -191,6 +204,127 @@ Say (
 }
 
 /**
+  Format a UINT32 as eight upper-case hex digits.
+**/
+STATIC
+VOID
+HexString (
+  IN  UINT32  Value,
+  OUT CHAR16  *Out
+  )
+{
+  STATIC CONST CHAR16  Digits[] = L"0123456789ABCDEF";
+  UINTN                Index;
+
+  for (Index = 0; Index < 8; Index++) {
+    Out[Index] = Digits[(Value >> ((7 - Index) * 4)) & 0xF];
+  }
+
+  Out[8] = L'\0';
+}
+
+/**
+  Paint one 32-bit value as 32 squares, bit 0 on the left, in groups of eight.
+
+  Survives BDS clearing the console, and is readable off a photo without any
+  text rendering.  A cleared bit is dim grey rather than black so the strip is
+  visible even when the value is zero -- "all zero" is itself the evidence we
+  are looking for.
+**/
+STATIC
+VOID
+PaintBits (
+  IN UINTN   Top,
+  IN UINT32  Value,
+  IN UINT32  Colour
+  )
+{
+  volatile UINT32  *Row;
+  UINTN            Bit;
+  UINTN            Left;
+  UINTN            X;
+  UINTN            Y;
+
+  for (Bit = 0; Bit < 32; Bit++) {
+    Left = 8 + Bit * 21 + (Bit >> 3) * 6;
+    for (Y = Top; Y < Top + 9; Y++) {
+      Row = (volatile UINT32 *)(UINTN)(BEACON_FB_BASE + (UINT64)Y * BEACON_FB_STRIDE) + Left;
+      for (X = 0; X < 9; X++) {
+        Row[X] = ((Value >> Bit) & 1) ? Colour : 0x00202020;
+      }
+    }
+  }
+}
+
+/**
+  Read-only probe of the MSDC0 controller registers.
+
+  Evidence this answers (2026-10-29, IMG_5727):
+
+      ddn data: cmd 8 failed: status=0x12      <-- EFI_TIMEOUT
+      ddn data: cmd 8 r1=00000900 len=512      <-- but R1 says TRAN (state 4)
+      ddn data: stall int=00000000             <-- no interrupt bit at all
+
+  A command that reports timeout yet leaves a valid R1 in RESP0 means the
+  completion is not being observed.  Since the controller's own data timeout
+  would set DATTMIO regardless, an all-zero INT suggests the status register is
+  not the one being polled, is masked, or the block is clock-gated.
+
+  Nothing here writes to the controller: a read cannot change card state, start
+  a transfer, or clear an interrupt (INT is read, not written back).  Cell 20
+  is painted first, so a photo ending at cell 20 means the MMIO read itself
+  hung the bus -- which would prove the base address or the clock is wrong.
+**/
+STATIC
+VOID
+ProbeMsdcRegisters (
+  IN EFI_SYSTEM_TABLE  *SystemTable
+  )
+{
+  volatile UINT32  *Regs;
+  UINT32           Cfg;
+  UINT32           IntStatus;
+  UINT32           IntEnable;
+  UINT32           SdSts;
+  UINT32           Resp0;
+  CHAR16           Text[10];
+
+  StageCell (20, 0x0000FFFF);
+
+  Regs      = (volatile UINT32 *)(UINTN)MSDC0_MMIO_BASE;
+  Cfg       = Regs[MSDC_CFG_OFS / 4];
+  IntStatus = Regs[MSDC_INT_OFS / 4];
+  IntEnable = Regs[MSDC_INTEN_OFS / 4];
+  SdSts     = Regs[SDC_STS_OFS / 4];
+  Resp0     = Regs[SDC_RESP0_OFS / 4];
+
+  Say (SystemTable, L"CFG=");
+  HexString (Cfg, Text);
+  Say (SystemTable, Text);
+  Say (SystemTable, L" INT=");
+  HexString (IntStatus, Text);
+  Say (SystemTable, Text);
+  Say (SystemTable, L"\r\nINTEN=");
+  HexString (IntEnable, Text);
+  Say (SystemTable, Text);
+  Say (SystemTable, L" STS=");
+  HexString (SdSts, Text);
+  Say (SystemTable, Text);
+  Say (SystemTable, L" R0=");
+  HexString (Resp0, Text);
+  Say (SystemTable, Text);
+  Say (SystemTable, L"\r\n");
+
+  PaintBits (1132, Cfg,       0x00FFFFFF);
+  PaintBits (1143, IntStatus, 0x00FFFF00);
+  PaintBits (1154, IntEnable, 0x00FF8000);
+  PaintBits (1165, SdSts,     0x0000FFFF);
+  PaintBits (1176, Resp0,     0x00FF00FF);
+
+  StageCell (21, 0x0000FF00);
+}
+
+/**
   Connect every handle in the system, recursively -- what BDS would have done.
 
   Three passes with a short stall between them, because each pass can create
@@ -263,6 +397,12 @@ StorageBeaconDxeEntryPoint (
   PaintBand (0x008000FF);
   StageCell (6, 0x00FFFF00);
   Say (SystemTable, L"\r\nMSDC PASSTHRU\r\n");
+
+  //
+  // Read (never write) the controller registers before doing anything else, so
+  // the numbers describe the state MsdcDxe left behind.
+  //
+  ProbeMsdcRegisters (SystemTable);
 
   Passthru      = NULL;
   PassthruCount = 0;
