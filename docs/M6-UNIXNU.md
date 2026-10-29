@@ -543,3 +543,50 @@ no DLXLOG01 at sector 30000: found b'\x00'*8
 3. 如果有 1080 紫条 → `kprintf` 已经活了，只是 eMMC 通道没注册，那就查
    `MSDC not where it should be` 的判据（很可能是它读 MSDC 版本寄存器的方式与
    `DandelionEmmcDxe` 观察到的不同）。
+---
+
+## 12. 交接记录：补上了，但没生效（2026-10-30 02:0x）
+
+### 12.1 真正的契约（在 `patches/xnu/dandelion-early-trace.patch` 里）
+
+内核的 eMMC 日志**不从设备树取地址**，它读一块**固定物理地址上的记录**：
+
+```c
+handoff = (struct dandelion_emmc_handoff *)DANDELION_EMMC_HANDOFF_PA;   /* 0x5FD00000 */
+if (handoff->magic != 0x444D4844U /* "DHMD" */ || handoff->ok != 1 || handoff->sectors < 2) {
+        printf("eMMC log: bad handoff, channel disabled");
+        return;
+}
+if (dl_emmc_rd(0x114) != 0x20170426u)  printf("eMMC log: MSDC not where it should be, ...");
+if ((dl_emmc_rd(DL_MSDC_CFG) & DL_CFG_CKSTB) == 0) printf("eMMC log: no MSDC clock, ...");
+```
+
+记录布局在 `pexpert/pexpert/arm64/DANDELION.h`：
+`magic / ok / lba / sectors / clock_div / reserved`，共 24 字节。
+
+**固件从来没写过它** —— 这就是 `sector 30000` 全零的原因。而且这是典型的鸡生蛋：
+通道自己关掉了，解释也是通过这条通道打的，所以日志里一个字都看不到。
+
+### 12.2 这一轮的实现与它的 bug
+
+`PayloadBootDxe` 里加了 `PublishEmmcHandoff()`：填记录、并在同一条日志里报出内核剩下的
+两个静默拒绝条件（MSDC 版本寄存器 `0x114` 是否等于 `0x20170426`、`MSDC_CFG.CKSTB`）。
+
+**结果：日志里没有那行。** 而 `.dll` 里确实有那个格式字符串（`strings` 验证过），
+所以代码编进去了、执行了、但在打印之前就返回了 —— **我新写的 `FindFlashInfo()` 返回了 FALSE**。
+
+它是 GPT 扫描的一份**重复实现**；真正被证明可用的是 `FlushLogToFlash()` 里那份内联扫描
+（它成功把日志写到了 LBA 122142431 = flashinfo+30512）。重复实现有 bug，大概率在
+`PartitionNameEquals()` 的用法上。
+
+**教训**：同一个仓库里已经有能用的实现时，**不要重写一份**，把结果传出来就行。
+
+### 12.3 下一轮的最小修法
+
+1. 在 `FlushLogToFlash()` 里把找到的 `FlashInfoStart` 存进一个 `STATIC EFI_LBA`；
+2. `PublishEmmcHandoff()` 直接用那个值算 `start + 30000`，**不再自己扫 GPT**；
+3. 调用点放在第一次 `FlushLogToFlash()` **之后**，这样它的日志行走的是**第二次**
+   （心跳/退出前）flush —— 所以要么在 `mFlushQuiet = TRUE` 之前调用，要么单独刷一次。
+
+这样一次就能拿到两样东西：**内核日志区的 `DLXLOG01`**，以及
+**`msdc ver` 是否等于 `0x20170426`**（如果不等，那就是下一格的根因）。
