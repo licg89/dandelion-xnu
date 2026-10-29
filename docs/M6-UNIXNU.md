@@ -146,14 +146,34 @@ PayloadBoot: firmware log published as an EFI configuration table
 关 MMU → 跳内核」。没有内核它就没有可跳的目标，于是正常返回。
 所以**绿条不是失败**，它是「真的走到跳转那一刻」的标志，而下一次需要给它一个内核。
 
-### 6.2 顺带暴露的呈现问题（已经写在 §4，现在更明显）
+### 6.2 标题行左边被吃掉：改 80 列**没有**修好，列宽不是原因
 
-面板上图里标题行是 `...U dandelion` / `...nfig:` —— 左边被吃掉了。
-原因还是 §4 那一条：UniXNU 按 **80 列**排版并补齐到 80，我们的控制台是 **90 列**，
-于是它的行被拆到了下一行开头。菜单项本身（不带补齐）是正常的，所以这个问题
-只影响 UniXNU 的标题/状态行。
+面板上图里标题行是 `..u dandelion` / `.nfig:` —— 左边被吃掉。当时的假设是「UniXNU 按
+80 列排版并补齐到 80，而我们是 90 列」。于是把 `DANDELION_COLS` 与 `PcdConOutColumn`
+都改成 **80**（`DrawGlyph` 一直是 `Column * 8`，所以只影响换行位置、`QueryMode()` 和
+光标夹取，渲染没动）。
 
-修法二选一，必须在看 XNU 输出之前定：
+**结果：截断一模一样（IMG_5769）。** 所以这个假设是错的。实测两个数据点：
 
-- `PcdConOutColumn` / `QueryMode()` 改成 80 —— UniXNU 与 XNU 排版都对，我们日志每行少 10 字符；
-- 保持 90，确认 UniXNU 是否读 `Mode->CursorColumn` / `QueryMode` 来决定列数。
+| 行 | 完整文本 | 可见部分 | 少掉 |
+|---|---|---|---|
+| 1 | `UniXNU dandelion   (UniXNU 0.1.0)` | `..u dandelion   (UniXNU 0.1.0)` | ~6 字符（≈48 px） |
+| 2 | `config: \EFI\UniXNU\unixnu.toml` | `.nfig: \EFI\UniXNU\unixnu.toml` | ~2 字符（≈16 px） |
+
+**越长的那行少得越多** ⇒ 这些行的绘制起点 `x < 0`，而且偏移随行长变化 —— 典型的
+「按一个比实际更宽的虚拟宽度右对齐」。而菜单项（`1. DarwinBoot (dandelion) [efi]`）是完整的，
+说明只有标题/状态这一类行走了另一条排版路径。
+
+由此可以确定：**UniXNU 的 UI 不是走我们的 ConOut**，它有自己的字体
+（`UniXNULib/Font.c`）和绘制器，直接画 GOP。所以控制台列数改多少都不影响它；
+真正的变量在 **GOP 模式的几何**：
+
+- `HorizontalResolution = 720`（可见宽度）
+- `PixelsPerScanLine = 736`（扫描行 = stride 2944 / 4）
+
+差值正好 16 px = 2 个 8 px 字符，和行 2 丢失的量吻合。下一步该查的是
+`GopFramebuffer` / `SimpleFbDxe` 报出去的这两个值，以及 UniXNU 用哪个算虚拟宽度 ——
+如果它用 stride 当宽度再右对齐，长行就会被推到屏幕外。
+
+不是功能阻塞项：菜单、启动项、`returned: Success` 都正常。但**在看 XNU 自己的控制台之前
+必须解决**，因为 XNU 也会按它看到的宽度排版。
