@@ -8,45 +8,51 @@ checkout 完整复现。构建与打包的完整环境见
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
-| `boot-uefi-power.img` | 16,099,328 B | **当前上机版**：eMMC 供电探针（P_before / MT6357 VEMC,VMC,VIO18 / P_after）+ 原先的 M4/M5 全部内容 |
+| `boot-uefi-ping.img` | 16,099,328 B | **当前上机版**：手工 `CMD1` 探针 + 两种引脚复用模式 + `MSDC_PS`/MT6357 读数，M4/M5 其余内容不变 |
 | `panel-preview.png` | 720×1600 | `tools/render_panel_preview.py` 渲染的仪表区，**不用刷机就能看布局** |
 
-> 更早的几版（`boot-uefi-m5-probe.img`、`boot-uefi-m5-dma.img`、`boot-uefi-pagelog-pio2.img` …）
+> 更早的几版（`boot-uefi-power.img`、`boot-uefi-m5-probe.img`、`boot-uefi-m5-dma.img` …）
 > 不再跟着仓库一起变大：它们仍在 git 历史里，需要时 `git log -- artifacts/` 取。
 > 仓库里只保留当前版本。
 
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-286fe2a285c6b34d32689f9b5cafaccc59ebb86dacc8171e78408aca2bf2886c  SILICIUM_UEFI.fd
-5464574105bcb04aef1d8a3fda710423b63b24b5a37e517ea562e8b76d49273d  boot-uefi-power.img
+791ad79e6ab31307816d133c8ff8946b1429fc015c671842090de77a94191f52  SILICIUM_UEFI.fd
+202be26f79ea89fe945e55ee005a1f4663c7eabf574cc8e92f3299c245d8223f  boot-uefi-ping.img
 ```
 
-## 这一版是什么（2026-10-29 晚）
+## 这一版是什么（2026-10-29 深夜）
 
-**一句话：不再猜"卡有没有电"，改成读出来。** 这一版相对上一版只加了一件事，
-但它是 M4 目前唯一没被证伪的分支（见 `docs/POWER-BEFORE-AFTER.md`）：
+**上一版把「供电」这条分支砍掉了。** IMG_5738 的读数是 `PS=0x81FF0002`、
+`VEMC en=1`；按 vendor 的 `MSDC_PS` 位定义（DAT 在 bits 23..16、CMD 在 bit 24），
+这意味着 **DAT=0xFF、CMD=1、卡在位、轨开着**——卡有电、总线干净，却一句都不回。
 
-1. `StorageBeaconDxe` 在**读任何东西之前**先读一次 `MSDC_PS`（`P_before`）；
-2. 然后用 PMIC wrapper（直接 MMIO，有 10 ms 上限）读 **MT6357** 的
-   `LDO_VEMC_CON0`（0x1988）/ `LDO_VMC_CON0`（0x1AB0）/ `LDO_VIO18_CON0`（0x1958）；
-3. 等 50 ms 再读一次 `MSDC_PS`（`P_after`）；
-4. 三个值各画一条位图条（y 1172 / 1186 / 1200），旁边一个判读块，y 40 状态带同色。
+所以这一版改问**卡能不能听见我们**（见 `docs/POWER-BEFORE-AFTER.md`）：
 
-**只读，不写 PMIC**：开关一条轨需要 MT6357 的 regulator 表在驱动里，不该由诊断代码猜地址。
-判断"有没有电"看的是 `VEMC` 的使能位（bit0），不是 `P_after` 与 `P_before` 的差
-（这一版没有任何代码会去打开轨，所以两者相等是预期的）。
+1. 手工发一条 `CMD1`（只要 CMD + CLK，任何状态都能回）；
+2. **在命令期间用紧循环采样 `MSDC_PS`**，把 AND / OR 画成两条位图条：如果 CMD
+   （bit 24）在 AND 里还是 1，说明控制器**没驱动过** CMD —— 主机侧问题，不是卡；
+3. 没有应答就把 GPIO122..133 换成**另一个复用模式**再问一次（成功则保留新模式，
+   后面的 EmmcDxe 扫描可能当次就跑通）；
+4. 文字区打印 strap、两个 mode 寄存器、12 个脚的 GPIO 输入电平（`DIN 122..133`）。
 
-顺带修掉一个**会毁掉证据**的 bug：上一版 `StorageBeaconDxe` 把 20/21 号格子当
-"探针开始/结束"用，而那两个格子是 `MsdcDxe` 的 CMD10 / CMD8（SEND_EXT_CSD），
-22 是数据读结果、23 是命令报错。本驱动在它们之后跑，画上去等于擦掉 M4 的证据。
-**这一版 16..23 全部留给 `MsdcDxe`，不再覆盖。**
+只读 PMIC，不碰时钟/总线宽度；唯一的写是那条有界的 `CMD1` 和一次（会被恢复的）引脚复用切换。
+顺带修掉上一版的两个解码错误：**VOSEL 在 `VEMC_ANA_CON0`（0x1C20）而不是 `LDO_VEMC_CON0`**，
+以及"NO-PULLUP"这个建立在错误位定义上的判读名。
 
-### 怎么看屏幕（底部格子 + 供电位图条）
+### 怎么看屏幕（三条位图条 + 判读块 + 底部格子）
 
-**先看供电位图条**（y 1172 / 1186 / 1200，青 / 黄 / 洋红）：那是这一版新加的东西，
-`P_before` / `P_after` / `VEMC` 各一条，右边的实心方块是判读结论（绿=轨开且线高、
-橙=轨开但线不高、红=轨关、洋红=PMIC 没应答）。逐条判读见 `docs/POWER-BEFORE-AFTER.md`。
+**先看 y 1172 / 1186 / 1200 三条**：`P_before`（青）/ `CMD1` 期间 AND（白）/ OR（青）。
+关键不是颜色，而是 **bit 24（x≈530 那一格）** 的组合：
+
+| AND bit24 | OR bit24 | 含义 |
+|---|---|---|
+| 1 | 1 | 控制器没驱动 CMD ⇒ pad / 时钟 / 复用 |
+| 0 | 1 | 命令上了线，卡不回 ⇒ 时钟或复位 |
+
+右边 x 400..560 的实心方块是判读结论（绿=BUS OK、橙=DAT/CMD 不高、红=轨关、洋红=PWRAP 没应答）。
+逐条判读见 `docs/POWER-BEFORE-AFTER.md` §6。
 
 **再看底部格子**：三排 8 个 80×80（y 1400 / 1448 / 1496，间距 88，左边距 8）。
 **格子存在 = 那个阶段到达过**，所以一张照片就是完整状态向量：
@@ -91,7 +97,7 @@ boot image 的 header：
 magic=ANDROID!  hver=2  page=2048
 kaddr=0x40080000  ksize=13907597     <- 只改了这一项
 raddr=0x51B00000  rsize=2060079  tags=0x47880000
-kernel 段 = gzip(SILICIUM_UEFI.fd) 606,208 B（FD 2,097,152 B）
+kernel 段 = gzip(SILICIUM_UEFI.fd) 606,720 B（FD 2,097,152 B）
 ```
 
 `kaddr` 必须等于 `[uefi_fd].base`（`Resources/Configs/dandelion.toml` = `0x40080000`）。
@@ -102,7 +108,7 @@ kernel 段 = gzip(SILICIUM_UEFI.fd) 606,208 B（FD 2,097,152 B）
 
 ```powershell
 adb reboot bootloader
-fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-power.img
+fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-ping.img
 fastboot reboot
 ```
 
@@ -127,5 +133,5 @@ wsl -d Ubuntu -e bash /mnt/d/aios/dandelion-xnu/tools/build-local.sh
 
 # 2. 打包 + 校验（读 toml 里的 base，自动断言 kernel_addr）
 cd /mnt/d/aios/dandelion-xnu
-python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-power.img
+python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-ping.img
 ```

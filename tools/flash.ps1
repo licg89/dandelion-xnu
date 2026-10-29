@@ -37,7 +37,7 @@ if ($Restore) {
     throw "stock boot image not found at $Image"
   }
 } elseif ([string]::IsNullOrEmpty($Image)) {
-  $Image = Join-Path $repo "artifacts\boot-uefi-power.img"
+  $Image = Join-Path $repo "artifacts\boot-uefi-ping.img"
 }
 
 if (-not (Test-Path $Image)) {
@@ -96,36 +96,38 @@ What to photograph: ONE shot of the whole lower half -- it must include the thre
 thin strip rows, the verdict patch and the three rows of cells.
 
   y 1172  cyan strip    P_before: MSDC_PS, the driver's very first read
-  y 1186  yellow strip  P_after:  the same register after the PMIC reads
-  y 1200  magenta strip VEMC (MT6357 LDO_VEMC_CON0, 0x1988), low 16 bits
+  y 1186  white strip   PS_AND: bits that stayed high during the hand-sent CMD1
+  y 1200  cyan strip    PS_OR:  bits that were high at some point during it
   x 400..560 y 1197     verdict patch
   y 1216  dots          blue = block devices (x 8), green = volumes (x 380)
   y 1400/1448/1496      stage cells.  16..23 are MsdcDxe's; this driver does
                         not paint them any more, so they stay the M4 evidence.
-  text area             PS before=.. after=.. / PWRAP init=.. failed=..
-                        VEMC=.... en=N vosel=N NNNNmV / VMC=.. VIO18=..
-                        POWER RAIL-OFF | NO-PULLUP | OK | NO-WRAP
+  text area             PS before=.. DAT=FF CMD=1 CD=1 / PWRAP init=.. failed=..
+                        VEMC=.. en=N ANA=.. vosel=N NNNNmV / VMC=.. VIO18=..
+                        BUS OK | DAT-LOW | CMD-LOW | RAIL-OFF | NO-WRAP
+                        MUX strap=.. mode=N m0=.. m1=..  DIN 122..133=....
+                        PING a I=.. R=.. / PING b I=.. R=.. / MUX ...
 
 Reading it, in this order:
 
-  1. Verdict patch and y 40 band (same colour):
-       red      VEMC enable bit is 0 -> the rail was never switched on.  This is
-                the expected answer; next step is an MT6357 regulator driver.
-       orange   rail is on but P_after low byte is not 0xFF -> IO / pull-ups.
-       green    rails fine and the bus is pulled high -> clock / CMD / pad tune.
-       magenta  the PMIC wrapper never completed a transaction -> fix PWRAP
-                before believing anything else.
+  0. The power question is already answered on hardware: PS = 0x81FF0002 means
+     DAT = 0xFF and CMD = 1 (DAT is bits 23..16, CMD is bit 24), and VEMC's
+     enable bit is set.  The card has power and a clean bus.
 
-  2. Free cross-check: the panel is lit, so VIO18 must read enabled (bit 0).
-     If VIO18 is 0 as well, the address or transport is wrong and the VEMC
-     answer means nothing yet.
+  1. The CMD line, bit 24 -- a square at x ~530 on the two CMD1 strips:
+       AND bit24 = 1, OR bit24 = 1   the controller never drove CMD -> host side
+                                     (clock / pad / pin mux), not the card.
+       AND bit24 = 0, OR bit24 = 1   the command did go out and the card stayed
+                                     silent -> clock reaching the card, or reset.
 
-  3. Only P_before present, the other two strips missing: the driver died in
-     the PMIC access, which is the only blocking transaction in this driver.
+  2. PING a / PING b: CMDRDY is bit 8 of I.  If either one sets it, the card is
+     alive and R= holds its OCR (bit 31 set = powered up).
 
-  4. P_before vs P_after: nothing in this build powers the rail, so equal is
-     expected.  If they differ, something is ramping -- report it, do not
-     explain it away.
+  3. MUX: if PING b (the other pin-mux mode) answers and PING a did not, the
+     mode was the whole blockage -- say so, it changes InitGpio.
+
+  4. DIN 122..133: bit0 = GPIO122 ... bit11 = GPIO133.  A pin stuck at 0 while
+     the rest are 1 is a line held from outside (RSTB candidate).
 
 Full legend: docs\POWER-BEFORE-AFTER.md   Context: docs\RESUME-1029.md
 "@ | Write-Host

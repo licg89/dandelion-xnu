@@ -456,10 +456,10 @@ git pull
 python tools\check_modules.py
 python tools\check_docs.py
 # 3) 刷当前镜像，拍一张屏幕下半部
-powershell -File tools\flash.ps1 -Image D:\aios\artifacts\boot-uefi-power.img
-# 4) 按 POWER-BEFORE-AFTER.md §4 读：三条位图条 + 右端判读块 + y 40 状态带
+powershell -File tools\flash.ps1 -Image D:\aios\artifacts\boot-uefi-ping.img
+# 4) 按 POWER-BEFORE-AFTER.md §6 读：两条 CMD1 位图条的 bit24 + PING a/b + MUX + DIN
 ```
 
-现在的卡点只有一个：**卡对任何命令零应答，供电是唯一没被证伪的解释**。
-`boot-uefi-power.img` 一次开机就能回答"MT6357 的 VEMC 到底有没有被打开"，
-在这之前不要再回数据通路（`docs/RESUME-1029.md` 第 6 节列的弯路都已实测反证）。
+现在的卡点只有一个：**卡有电、总线正常，但对任何命令零应答**。
+上一轮已经把「供电」排除（`VEMC en=1`、`PS DAT=0xFF CMD=1`），所以这一版直接问卡：
+手工 `CMD1` + 命令期间采样 `MSDC_PS`，再换一个引脚复用模式重问一次。
