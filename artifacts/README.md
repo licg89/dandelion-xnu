@@ -8,7 +8,7 @@ checkout 完整复现。构建与打包的完整环境见
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
-| `boot-uefi-clock.img` | 16,099,328 B | **当前上机版**：`CMD0` → `CMD1`(到 OCR bit31) → `CMD2/3/7/13` 走到 TRAN，然后 `CMD16/CMD8/CMD17` **真读 512 字节**（EXT_CSD + LBA 1）；整段日志压到 10 行 |
+| `boot-uefi-state.img` | 16,099,328 B | **当前上机版**：`CMD0` → `CMD1`(到 OCR bit31) → `CMD2/3/7/13` 走到 TRAN，然后 `CMD16/CMD8/CMD17` **真读 512 字节**（EXT_CSD + LBA 1）；整段日志压到 10 行 |
 | `panel-preview.png` | 720×1600 | `tools/render_panel_preview.py` 渲染的仪表区，**不用刷机就能看布局** |
 
 > 更早的几版（`boot-uefi-ping.img`、`boot-uefi-power.img`、`boot-uefi-m5-probe.img` …）
@@ -18,68 +18,59 @@ checkout 完整复现。构建与打包的完整环境见
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-10ae0959856a19838f1e616e605301f8d40ba5aa8415d0d459ee114b2a12ef11  SILICIUM_UEFI.fd
-31b89dc27d2bf5824c8eab458c192ef4341a36d4ad5f418a04bd34b57323ee1b  boot-uefi-clock.img
+895099eb6434a8a3d2ad580c2276e6cd2d616d7ffd40df6845d56e83bc20e905  SILICIUM_UEFI.fd
+4703306ceac293ec033faaa961526b8d713609147c05239de169c3221fb6f4bf  boot-uefi-state.img
 ```
 
-## 这一版是什么（2026-10-29 深夜，第十版）
+## 这一版是什么（2026-10-29 深夜，第十一版）
 
-上一版（`boot-uefi-r1.img`）的读数（IMG_5757）非常干净：
+上一版（`boot-uefi-clock.img`）的读数（IMG_5759）把三条主机侧假设全否了：
 
 ```
-H0 C=0200F09B S=FF007FFC P=81FF0002 N=00000001
-IO dir=000 do=000 din=00000DFF
-IO ioc=00000000 f60=00000000 adv=0000E63F
-A8 I=00000100 R=00000900 sz=00000000 ps=EF/FF gp=DF8/DFF f=00 c6=0000
-B8 I=00000100 R=00000900 sz=00000000 ps=EF/FF gp=DF8/DFF f=00 c6=0100
-C8 I=00000100 R=00000900 sz=00000000 ps=EF/FF gp=DF8/DFF f=00 c6=0100
+RST C=0200F09B                    软复位干净，回到同一配置
+A8 I=0100 R=00000900 ps=EF/FF gp=DF8/DFF k=14994 c6=00000000
+B8 I=0100 R=00000900 ps=EF/FF gp=DF8/DFF k=15061 c6=00000900
+C8 I=0100 R=00000900 ps=EF/FF gp=DF8/DFF k=14933 c6=00000900
+D8 I=0100 R=00000900 ps=EF/FF gp=DF8/DFF k=1504x c6=00000000
 B1 -  no data phase
 ```
 
-- `R=00000900`：卡在 TRAN、READY_FOR_DATA、**没有错误位** —— 不是拒绝，是不说话；
-- `gp=DF8/DFF`：整个等待窗口只有 CMD/CLK 动过，**没有一根 DAT**；
-- `dir=000`：GPIO 没抢总线；
-- `H0 C` 的 **bit1 = CKPDN**（时钟 pad 掉电）= **1**。
+- 软复位没用；`CKPDN` 清零没用；
+- `k≈15000/30000` ⇒ **时钟整个等待窗口都在跑**（“没时钟”也死了）；
+- `c6=00000900` ⇒ CMD6 切换被接受、无 SWITCH_ERROR；`R=00000900` ⇒ 卡在
+  TRAN + READY_FOR_DATA、无错误位。
 
-一张状态良好、总线干净、却一位不发的卡，配上“时钟 pad 掉电”，只剩一个解释：
-**数据相位没有时钟**。卡没时钟移不出位；控制器没 sclk 也不数超时——所以连
-`DATTMO` 都从没出现过。
+**卡一直很好，就是不驱动 DAT。** 所以这版只问一个问题：**卡自己认为传输开始了没有？**
+数据命令失败后立刻补一条 `CMD13`：
 
-这一版：
+| 字段 | 含义 |
+|---|---|
+| `t=` | CURRENT_STATE：**4=TRAN**（卡没开始传）／**5=DATA**（开始了、正在被时钟推数据，丢在主机侧） |
+| `r=` | READY_FOR_DATA |
 
-1. **开跑前软复位控制器**（`MSDC_CFG.RST`，自清零，再补回 `PIO` 和继承的
-   `SDC_CFG=0xFF007FFC`）——LK 几分钟前刚用同一个控制器读过同一个卡，中间只
-   经过 MsdcDxe 的一次失败传输；
-2. **第 4 个尝试 `D8`**：1-bit + **`CKPDN` 清零**（时钟 pad 保持供电）；
-3. 每个尝试新增 **`k=`**：等待窗口里 CLK 脚读到 0 的样本数（≈一半 = 时钟一直在跑，
-   很小 = 响应结束就停了）。
+这一个数字决定下一步：
+
+- `t=5` ⇒ 主机接收路径（pad 输入使能 / OE）→ 下一步用 `AddMemorySpace` 映射
+  `0x10002000` 读/修 pad；
+- `t=4` ⇒ 卡确实没开始 → 转卡侧（`EXT_CSD` 可达性 / 分区访问 / 永久锁定）。
+- `t=0` ⇒ CMD13 都没发出去，说明控制器还卡在数据相位（SDCBUSY），即它确实在等数据。
 
 ### 怎么看屏幕
 
 ```
-PWR PS=81FF0002 DAT=FF CMD=1 CD=1 VEMC=1 vsel=3 3000mV w=1 f=0 BUS OK
+PWR ... BUS OK
 RST C=0200F09B
 H0 C=.. S=.. P=.. N=..
-IO dir=000 do=000 din=00000DFF
+IO dir=000 do=000 din=........
 C0 I=.. cl=.. f=.. l=.. kc=..
 C1 n=.. I=.. R=........
 C2 3=.. 2=.. 1=.. 0=..
 C3 I=.. R=.. C7 I=.. R=..
 C13 I=.. R=.. st=..
-A8 I=0100 R=........ sz=........ ps=../../.. gp=.../... f=.. k=..... c6=........
-B8 ...（A8 失败才出现）
-C8 ...（B8 失败才出现）
-D8 ...（C8 失败才出现，CKPDN 已清零）
+A8 I=.. R=.. sz=.. ps=../.. gp=.../... f=.. k=..... c6=........ t=. r=.
+B8 / C8 / D8 ...（前一行失败才出现）
 B1 I=.. S=..
 ```
-
-| 看到 | 结论 |
-|---|---|
-| 任一行 `I=1100` + `sz` 非零 + `B1 S=45464920` | **数据通路打通** |
-| 只有 `D8` 成功 | 就是 CKPDN / 时钟 pad |
-| 都失败但 `k=` 很小 | 数据相位没时钟 |
-| 都失败而 `k≈15000` | 时钟在跑，卡不发 → 查卡侧 |
-| `R=` 带错误位 | 卡拒绝 |
 
 逐条判读见 `docs/POWER-BEFORE-AFTER.md` §3。
 
@@ -137,7 +128,7 @@ kernel 段 = gzip(SILICIUM_UEFI.fd) 608,256 B（FD 2,097,152 B）
 
 ```powershell
 adb reboot bootloader
-fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-clock.img
+fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-state.img
 fastboot reboot
 ```
 
@@ -162,5 +153,5 @@ wsl -d Ubuntu -e bash /mnt/d/aios/dandelion-xnu/tools/build-local.sh
 
 # 2. 打包 + 校验（读 toml 里的 base，自动断言 kernel_addr）
 cd /mnt/d/aios/dandelion-xnu
-python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-clock.img
+python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-state.img
 ```
