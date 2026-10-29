@@ -456,8 +456,8 @@ git pull
 python tools\check_modules.py
 python tools\check_docs.py
 # 3) 刷当前镜像，拍一张屏幕下半部
-powershell -File tools\flash.ps1 -Image D:\aios\artifacts\boot-uefi-ping.img
-# 4) 按 POWER-BEFORE-AFTER.md §6 读：两条 CMD1 位图条的 bit24 + PING a/b + MUX + DIN
+powershell -File tools\flash.ps1 -Image D:\aios\artifacts\boot-uefi-mux.img
+# 4) 按 POWER-BEFORE-AFTER.md §4 读：PING 的 cl= （CMD 有没有动）+ SET mode 的读回 + PAD0/PAD1
 ```
 
 现在的卡点只有一个：**卡有电、总线正常，但对任何命令零应答**。

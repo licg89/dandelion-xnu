@@ -8,51 +8,68 @@ checkout 完整复现。构建与打包的完整环境见
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
-| `boot-uefi-ping.img` | 16,099,328 B | **当前上机版**：手工 `CMD1` 探针 + 两种引脚复用模式 + `MSDC_PS`/MT6357 读数，M4/M5 其余内容不变 |
+| `boot-uefi-mux.img` | 16,099,328 B | **当前上机版**：`CMD1` 探针（`cl=` 计数、DIN 修正、两个复用模式按 vendor 方式写入并读回）、M4/M5 其余内容不变 |
 | `panel-preview.png` | 720×1600 | `tools/render_panel_preview.py` 渲染的仪表区，**不用刷机就能看布局** |
 
-> 更早的几版（`boot-uefi-power.img`、`boot-uefi-m5-probe.img`、`boot-uefi-m5-dma.img` …）
+> 更早的几版（`boot-uefi-ping.img`、`boot-uefi-power.img`、`boot-uefi-m5-probe.img` …）
 > 不再跟着仓库一起变大：它们仍在 git 历史里，需要时 `git log -- artifacts/` 取。
 > 仓库里只保留当前版本。
 
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-791ad79e6ab31307816d133c8ff8946b1429fc015c671842090de77a94191f52  SILICIUM_UEFI.fd
-202be26f79ea89fe945e55ee005a1f4663c7eabf574cc8e92f3299c245d8223f  boot-uefi-ping.img
+cec9ebe24468c7191081014f2f9b2df8802c2816425fa5576979f5d02ebaa0a6  SILICIUM_UEFI.fd
+959205c6f2cf1a15e9e38f150f3062cb2d78ac613ec640a15fbfe7a39da951ed  boot-uefi-mux.img
 ```
 
-## 这一版是什么（2026-10-29 深夜）
+## 这一版是什么（2026-10-29 深夜，第二版）
 
-**上一版把「供电」这条分支砍掉了。** IMG_5738 的读数是 `PS=0x81FF0002`、
-`VEMC en=1`；按 vendor 的 `MSDC_PS` 位定义（DAT 在 bits 23..16、CMD 在 bit 24），
-这意味着 **DAT=0xFF、CMD=1、卡在位、轨开着**——卡有电、总线干净，却一句都不回。
+上一版（`boot-uefi-mux.img`）得到的读数（IMG_5743）：
 
-所以这一版改问**卡能不能听见我们**（见 `docs/POWER-BEFORE-AFTER.md`）：
+```
+PS before=81FF0002 after=81FF0002 DAT=000000FF CMD=1 CD=1
+VEMC=00000001 en=1 ANA=00000300 vosel=3 3000mV
+MUX strap=00094A40 mode=2 m0=2222FF00 m1=11222222
+PING a I=00000200 R=00000000
+PING b I=00000200 R=00000000
+```
 
-1. 手工发一条 `CMD1`（只要 CMD + CLK，任何状态都能回）；
-2. **在命令期间用紧循环采样 `MSDC_PS`**，把 AND / OR 画成两条位图条：如果 CMD
-   （bit 24）在 AND 里还是 1，说明控制器**没驱动过** CMD —— 主机侧问题，不是卡；
-3. 没有应答就把 GPIO122..133 换成**另一个复用模式**再问一次（成功则保留新模式，
-   后面的 EmmcDxe 扫描可能当次就跑通）；
-4. 文字区打印 strap、两个 mode 寄存器、12 个脚的 GPIO 输入电平（`DIN 122..133`）。
+三件事：卡有电（3.0 V）；pins 124..127 复用读回 mode 2，但 **122/123 读回 `0xF`**；
+`DIN` 读出全 0（那是探针自己的 bug）。所以这一版：
 
-只读 PMIC，不碰时钟/总线宽度；唯一的写是那条有界的 `CMD1` 和一次（会被恢复的）引脚复用切换。
-顺带修掉上一版的两个解码错误：**VOSEL 在 `VEMC_ANA_CON0`（0x1C20）而不是 `LDO_VEMC_CON0`**，
-以及"NO-PULLUP"这个建立在错误位定义上的判读名。
+1. **`cl=`**：命令期间 `CMD`（bit24）读到 0 的次数 —— 直接把"控制器有没有驱动 CMD"
+   变成一个十进制数字，不再靠数像素（上一版的紧循环只有 ~100 µs，可能刚好错过 120 µs 的命令相位）；
+2. **`dA=` / `dO=`**：命令期间 12 个脚 DIN 的 AND / OR，某个 bit 翻转就是有时钟；
+3. **按 vendor 方式写复用**（整寄存器一次写 `0x22222200` / `0x222222`），写完**读回打印**，
+   然后 ping；mode 2 和 mode 1 都试，成功的那个保留；
+4. 打印 `PAD0=` / `PAD1=`（`MSDC_PAD_CTL0/1`）：pad 若没有驱动能力，CMD 也出不去。
 
-### 怎么看屏幕（三条位图条 + 判读块 + 底部格子）
+DIN 的寻址也修了：数据寄存器是 `(pin/32)*0x10` + `bit = pin%32`（`GpioDxe.c` 的 `PIN_OFFSET`），
+只有 mode 寄存器才是 `(pin/8)*0x10`、每脚 4 位。
 
-**先看 y 1172 / 1186 / 1200 三条**：`P_before`（青）/ `CMD1` 期间 AND（白）/ OR（青）。
-关键不是颜色，而是 **bit 24（x≈530 那一格）** 的组合：
+### 怎么看屏幕
 
-| AND bit24 | OR bit24 | 含义 |
-|---|---|---|
-| 1 | 1 | 控制器没驱动 CMD ⇒ pad / 时钟 / 复用 |
-| 0 | 1 | 命令上了线，卡不回 ⇒ 时钟或复位 |
+**文字区是主证据**（IMG_5743 证明它拍得很清楚）：
 
-右边 x 400..560 的实心方块是判读结论（绿=BUS OK、橙=DAT/CMD 不高、红=轨关、洋红=PWRAP 没应答）。
-逐条判读见 `docs/POWER-BEFORE-AFTER.md` §6。
+```
+PING a I=00000000 R=00000000 cl=NNNN dA=.... dO=....
+SET mode=2 m0=.... m1=....
+PING b I=.... cl=....
+SET mode=1 m0=.... m1=....
+PING c I=.... cl=....
+MUX ANSWERED - mode kept | MUX restored to N
+```
+
+| 看到 | 结论 |
+|---|---|
+| `PING x` 的 `I` 有 bit8（`...0100` 之类） | 卡回了，`R` 就是 OCR（bit31=1 表示上电完成） |
+| `cl=` 一直是 0 | 控制器没驱动 CMD ⇒ 主机侧（pad / 时钟 / 复用写不进去） |
+| `cl=` > 0 但仍 CMDTMO | 命令确实上了线，卡不回 ⇒ 时钟没到卡 或 RSTB |
+| `SET mode=N` 后 `m0` 跟着变 | 复用写入有效，模式不是问题 |
+| `SET mode=N` 后 `m0` 不变 | 复用寄存器写不进去（别名语义不对） |
+
+三条位图条（y 1172 / 1186 / 1200）仍是最新一次 ping 的 `PS` / AND / OR 备份；
+x 400..560 的方块是判读结论。逐条判读见 `docs/POWER-BEFORE-AFTER.md` §4。
 
 **再看底部格子**：三排 8 个 80×80（y 1400 / 1448 / 1496，间距 88，左边距 8）。
 **格子存在 = 那个阶段到达过**，所以一张照片就是完整状态向量：
@@ -97,7 +114,7 @@ boot image 的 header：
 magic=ANDROID!  hver=2  page=2048
 kaddr=0x40080000  ksize=13907597     <- 只改了这一项
 raddr=0x51B00000  rsize=2060079  tags=0x47880000
-kernel 段 = gzip(SILICIUM_UEFI.fd) 606,720 B（FD 2,097,152 B）
+kernel 段 = gzip(SILICIUM_UEFI.fd) 607,232 B（FD 2,097,152 B）
 ```
 
 `kaddr` 必须等于 `[uefi_fd].base`（`Resources/Configs/dandelion.toml` = `0x40080000`）。
@@ -108,7 +125,7 @@ kernel 段 = gzip(SILICIUM_UEFI.fd) 606,720 B（FD 2,097,152 B）
 
 ```powershell
 adb reboot bootloader
-fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-ping.img
+fastboot flash boot D:\aios\dandelion-xnu\artifacts\boot-uefi-mux.img
 fastboot reboot
 ```
 
@@ -133,5 +150,5 @@ wsl -d Ubuntu -e bash /mnt/d/aios/dandelion-xnu/tools/build-local.sh
 
 # 2. 打包 + 校验（读 toml 里的 base，自动断言 kernel_addr）
 cd /mnt/d/aios/dandelion-xnu
-python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-ping.img
+python3 tools/package_uefi_bootimg.py --out artifacts/boot-uefi-mux.img
 ```

@@ -37,7 +37,7 @@ if ($Restore) {
     throw "stock boot image not found at $Image"
   }
 } elseif ([string]::IsNullOrEmpty($Image)) {
-  $Image = Join-Path $repo "artifacts\boot-uefi-ping.img"
+  $Image = Join-Path $repo "artifacts\boot-uefi-mux.img"
 }
 
 if (-not (Test-Path $Image)) {
@@ -102,32 +102,36 @@ thin strip rows, the verdict patch and the three rows of cells.
   y 1216  dots          blue = block devices (x 8), green = volumes (x 380)
   y 1400/1448/1496      stage cells.  16..23 are MsdcDxe's; this driver does
                         not paint them any more, so they stay the M4 evidence.
-  text area             PS before=.. DAT=FF CMD=1 CD=1 / PWRAP init=.. failed=..
-                        VEMC=.. en=N ANA=.. vosel=N NNNNmV / VMC=.. VIO18=..
-                        BUS OK | DAT-LOW | CMD-LOW | RAIL-OFF | NO-WRAP
-                        MUX strap=.. mode=N m0=.. m1=..  DIN 122..133=....
-                        PING a I=.. R=.. / PING b I=.. R=.. / MUX ...
+  text area             PS before=.. DAT=FF CMD=1 CD=1 / VEMC=.. en=N ANA=..
+                        MUX strap=.. mode=N m0=.. m1=.. / DIN 122..133=....
+                        PAD0=.. PAD1=..
+                        PING a I=.. R=.. cl=.. dA=.. dO=..
+                        SET mode=N m0=.. m1=.. / PING b|c ...
+                        MUX ANSWERED - mode kept | MUX restored to N
 
 Reading it, in this order:
 
-  0. The power question is already answered on hardware: PS = 0x81FF0002 means
-     DAT = 0xFF and CMD = 1 (DAT is bits 23..16, CMD is bit 24), and VEMC's
-     enable bit is set.  The card has power and a clean bus.
+  0. Power is settled: PS = DAT=0xFF CMD=1, VEMC on at 3.0 V.  Do not reopen it.
 
-  1. The CMD line, bit 24 -- a square at x ~530 on the two CMD1 strips:
-       AND bit24 = 1, OR bit24 = 1   the controller never drove CMD -> host side
-                                     (clock / pad / pin mux), not the card.
-       AND bit24 = 0, OR bit24 = 1   the command did go out and the card stayed
-                                     silent -> clock reaching the card, or reset.
+  1. `cl=` on the PING lines -- how many samples saw CMD (bit 24) low while the
+     command was on the wire:
+       cl=0        the controller never drove CMD -> host side (pad / clock /
+                   mux write not landing).  Look at SET mode=/m0 and PAD0/PAD1.
+       cl>0        the command did go out and the card stayed silent -> clock
+                   reaching the card, or RSTB held.
 
-  2. PING a / PING b: CMDRDY is bit 8 of I.  If either one sets it, the card is
-     alive and R= holds its OCR (bit 31 set = powered up).
+  2. PING a/b/c: CMDRDY is bit 8 of I.  If any one sets it the card is alive and
+     R= is its OCR (bit 31 set = powered up).
 
-  3. MUX: if PING b (the other pin-mux mode) answers and PING a did not, the
-     mode was the whole blockage -- say so, it changes InitGpio.
+  3. SET mode=N -> m0/m1 printed after the write: if m0 does not change, the mux
+     register is not taking the write (set/reset alias semantics differ) and the
+     mode was never actually switched.
 
-  4. DIN 122..133: bit0 = GPIO122 ... bit11 = GPIO133.  A pin stuck at 0 while
-     the rest are 1 is a line held from outside (RSTB candidate).
+  4. dA=/dO= (GPIO input AND/OR during the command): a bit that is 0 in dA and 1
+     in dO is a line that toggled -- that is how the card clock shows up.
+
+  5. PAD0=/PAD1= (MSDC_PAD_CTL0/1): drive strength and pull configuration.  All
+     zero would mean the pads cannot drive the command line.
 
 Full legend: docs\POWER-BEFORE-AFTER.md   Context: docs\RESUME-1029.md
 "@ | Write-Host
