@@ -1,0 +1,24 @@
+DANDELION UEFI
+CONSOLE OK 80x68
+Oct 29 2026 14:32:58
+SELFTEST 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZDIRECT CALL 0123456789COUT 0 50x19EMMC OK div=26 sec=0747C000
+INH C=02201A99 S=FF027FFC k=1 C'=02210499
+INH C13 I=00000100 R=00000900 st=4
+INH C8 I=00001100 rev=08 bw=06 hs=01 sec=0747C000
+INH B1 I=00001100 S=45464920
+
+MSDC PASSTHRU
+PWR PS=81FF0002 DAT=FF CMD=1 CD=1 VEMC=1 vsel=3 3000mV w=1 f=0 BUS OK
+INHERIT OK
+BLOCK OK n=44
+FAT OK
+PayloadBoot: device tree 127044 bytes published
+PayloadBoot: device tree published as an EFI configuration table
+PayloadBoot: firmware log handed over, 562 bytes
+PayloadBoot: firmware log published as an EFI configuration table
+PayloadBoot: replacing the previous log at LBA 122111967
+PayloadBoot: firmware log written to LBA 122111967 (679 bytes)
+PayloadBoot: firmware log written to flash
+PayloadBoot: looking for a payload (FAT, then flashinfo, then FV)
+PayloadBoot: using the payload from flashinfo
+UniXNU dandelion  (UniXNU 0.1.0)                                               config: \EFI\UniXNU\unixnu.toml                                                drivers 1 loaded / 0 failed    kits 0    acpi 0                                 > 1. Return to firmware  [action]                                                2. DarwinBoot (dandelion)  [efi]                                               3. Restart  [action]                                                        Up/Down: select    Enter: boot    1-9: boot entry    Esc: stop timer           Booting Return to firmware in 3 s                                              Booting Return to firmware in 2 s                                              Booting Return to firmware in 1 s                                              PayloadBoot: StartImage -> Success

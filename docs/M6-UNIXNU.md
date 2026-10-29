@@ -219,3 +219,36 @@ FILE APPLICATION = 9B665204-A133-47A2-9396-9E2B370A4E25 {
 它是 **application**，DXE 不会自动调度它，只会被按 GUID 找到再启动 —— 正是我们要的。
 `UniXNUPkg` 本身不 vendoring 进仓库：它由 `tools/build_unixnu.sh` 在树外编译，
 产物复制到 `Platforms/Xiaomi/dandelionPkg/UniXNU/`（和 `FdtBlob/dandelion.dtb` 同一个套路）。
+### 6.5 结果：`drivers 1 loaded / 0 failed`
+
+`UniXNU.efi` 进 FV 之后再跑一次，日志（[logs/boot-log-2026-10-29-unixnu-fv.txt](logs/boot-log-2026-10-29-unixnu-fv.txt)）：
+
+```
+PayloadBoot: using the payload from flashinfo
+UniXNU dandelion  (UniXNU 0.1.0)
+config: \EFI\UniXNU\unixnu.toml
+drivers 1 loaded / 0 failed    kits 0    acpi 0       ← 之前是 0 loaded / 1 failed
+> 1. Return to firmware  [action]
+  2. DarwinBoot (dandelion)  [efi]
+  3. Restart  [action]
+Booting Return to firmware in 3 s ... 1 s
+PayloadBoot: StartImage -> Success
+```
+
+`UniXNUDxe: application ... not found in any FV` 和 `config error:` 两行都消失了。
+也就是说 **`UniXNUDxe` 已经能提供 XNU loader 协议**（`Boot.c` 里那句
+`xnu: no loader protocol installed` 不再成立）—— 只是还没有内核可以交给它。
+
+### 6.6 现在缺的只剩内核
+
+```
+固件 → eMMC BlockIo → 分区 → FAT(flashinfo) + UniXNU.efi(FV)
+   → UniXNU → UniXNUDxe 装上 loader 协议 → DarwinBoot 可选
+   → [内核]  ← 只剩这一格
+```
+
+两条路：
+
+1. **`kernel.macho`**：需要 macOS + Xcode（`./unixnu build kernel`）；
+2. **Apple IPSW 的 kernelcache**：不需要编译，但要给 `UniXNU-sheng` 那样的
+   SoC/device profile 做一份 `mt6765` 的，工作量在「设备描述」而不是「编译」。
