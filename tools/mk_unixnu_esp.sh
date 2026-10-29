@@ -81,7 +81,7 @@ fi
 # What UniXNU reads at runtime: the config, the loader it starts, and the drivers
 # it can load through its own [driver] list.  kernel.macho joins them once the
 # macOS build produces one.
-for f in UniXNU.toml DarwinBoot.efi UniXNUDxe.efi UniXNURamDiskDxe.efi mach_kernel; do
+for f in UniXNU.toml DarwinBoot.efi UniXNUDxe.efi UniXNURamDiskDxe.efi mach_kernel kernel.macho.adt; do
   if [ -f "$SRC/$f" ]; then
     if [ "$f" = "mach_kernel" ]; then dst="::/EFI/UniXNU/kernel.macho"; else dst="::/EFI/UniXNU/$f"; fi
     mcopy -i "$OUT" "$SRC/$f" "$dst"
