@@ -7,6 +7,11 @@
 > [`NIGHT-1029.md`](NIGHT-1029.md)（这一夜做了什么、早上刷哪个镜像、怎么判读）、
 > [`ANALYSIS-EMMC-DATA-PATH.md`](ANALYSIS-EMMC-DATA-PATH.md)（eMMC 数据通路的
 > 三份实现对照与判读表）。
+>
+> **2026-10-29 晚之后先读这两份**（更新，覆盖上面两份的结论）：
+> [`RESUME-1029.md`](RESUME-1029.md)（卡零应答、供电是唯一剩下的解释）、
+> [`POWER-BEFORE-AFTER.md`](POWER-BEFORE-AFTER.md)（本轮的 P_before / VEMC / P_after
+> 探针：屏幕坐标、地址出处、判读表）。
 
 ---
 

@@ -102,6 +102,12 @@ LK 引导 → BootShim(gzip FD @0x40080000) → UEFI(Mu / mouseos/uefi-a04br3)
 
 ## 5. 下一步实验（只做这一件）
 
+> **2026-10-29 晚：这一节已经实现了。** 代码在 `StorageBeaconDxe.c` 的 `ProbePower()`；
+> 屏幕坐标、地址出处、判读表都在 [`POWER-BEFORE-AFTER.md`](POWER-BEFORE-AFTER.md)。
+> 实现时的两个决定：PMIC **直接 MMIO**（不走 `MTK_PMIC_PROTOCOL`，因为它的名字解析到
+> MT6358 的地址，而且它等 FSM 是无界的），以及三组数都进位图条（y 1172 / 1186 / 1200）
+> 加文字。下面是原始设计记录，保持原样。
+
 目标：证明「上电前/后 DAT 线电平有没有变」。
 
 1. 在 `StorageBeaconDxe`（我们自己的驱动，`Platforms/Xiaomi/dandelionPkg/Drivers/StorageBeaconDxe/`）
@@ -131,7 +137,9 @@ LK 引导 → BootShim(gzip FD @0x40080000) → UEFI(Mu / mouseos/uefi-a04br3)
 
 | 文件 | 用途 |
 |---|---|
-| `Platforms/Xiaomi/dandelionPkg/Drivers/StorageBeaconDxe/StorageBeaconDxe.c` | **下一步改这里**：双 host 探针 + CMD12，已有 `PaintBits` / `HexString` / `Say` 可复用 |
+| `Platforms/Xiaomi/dandelionPkg/Drivers/StorageBeaconDxe/StorageBeaconDxe.c` | **本轮已改这里**：`ProbePower()` = P_before / MT6357 VEMC,VMC,VIO18 / P_after；旧的 CFG/INT/CMD12 改成纯文字 |
+| `docs/POWER-BEFORE-AFTER.md` | 上面那段的判读表：屏幕坐标、地址出处、下一步分支 |
+| `tools/render_panel_preview.py` | 不用刷机先看布局（本轮已加三条位图条和一排点阵） |
 | `Platforms/Xiaomi/dandelionPkg/Library/MemoryMapLib/MemoryMapLib.c` | `MSDC-0 0x11230000`、`MSDC-1 0x11240000`、`Display Reserved 0x7EC50000` |
 | `Resources/MuPatches/0002-MsdcDxe-dandelion-panel-markers.patch` | 上游 eMMC 驱动的补丁（**改它要同步 hunk 行数，别手改**） |
 | `docs/ANALYSIS-EMMC-DATA-PATH.md` | PIO/DMA 通路调研（现在优先级下降） |
