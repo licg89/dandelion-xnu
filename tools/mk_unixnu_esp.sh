@@ -6,11 +6,18 @@
 # needs a volume anyway -- it looks for \EFI\UniXNU\UniXNU.toml on one, and with
 # no volume it fell back to mBuiltinConfig and printed "no boot entry found".
 #
-# The volume is deliberately only 1 MiB: it is written to the *start* of the
-# 'flashinfo' partition (16 MiB, unused by Android), and the firmware's own log
-# lives at +1 MiB inside the same partition.  Keeping the filesystem short stops
-# the two from meeting.  FAT drivers size a volume from its BPB, not from the
-# partition, so a small filesystem inside a big partition mounts fine.
+# It is written to the *start* of the 'flashinfo' partition (16 MiB, unused by
+# Android).  The layout inside that partition is now:
+#
+#     0      .. 14 MiB   this FAT volume
+#     15 MiB .. 15 MiB+  the firmware's own log block (128 sectors)
+#
+# which is why the volume is 14336 KiB and LOG_PARTITION_OFFSET in
+# PayloadBootDxe.c is 30720.  FAT drivers size a volume from its BPB, not from
+# the partition, so a filesystem that stops short of the log is fine.
+#
+# It used to be 1 MiB with the log at +1 MiB, which was enough for a boot manager
+# and not enough for a kernel.
 #
 # DESTRUCTIVE: this overwrites the vendor's "DOWNLOAD INFORMATION!!" record in
 # the first 64 KiB of flashinfo.  Take the backup first:
@@ -25,7 +32,7 @@ set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 OUT=${ESP_OUT:-$REPO/out/unixnu-esp.img}
 SRC=$REPO/Resources/UniXNU
-SIZE_KIB=${ESP_SIZE_KIB:-1024}
+SIZE_KIB=${ESP_SIZE_KIB:-14336}
 LABEL=${ESP_LABEL:-UNIXNU}
 
 print_steps() {
@@ -54,21 +61,37 @@ done
 mkdir -p "$(dirname "$OUT")"
 rm -f "$OUT"
 truncate -s "${SIZE_KIB}K" "$OUT"
-mkfs.vfat -F 12 -n "$LABEL" "$OUT" >/dev/null
+# No -F: 14 MiB with 4 KiB clusters needs FAT16, and mkfs picks it.  Forcing
+# FAT12 here was fine at 1 MiB and is not fine now.
+mkfs.vfat -n "$LABEL" "$OUT" >/dev/null
 
 mmd -i "$OUT" ::/EFI
 mmd -i "$OUT" ::/EFI/UniXNU
 
-# Only what UniXNU reads at runtime: the config, the loader it starts, and the
-# two drivers UniXNU can load through its own [driver] list later.
-for f in UniXNU.toml DarwinBoot.efi UniXNUDxe.efi UniXNURamDiskDxe.efi; do
+#
+# \UniXNU.efi at the root, because PayloadBootDxe's first candidate name is
+# \UniXNU.efi -- that is what makes the firmware load the boot manager off this
+# volume instead of out of the flash payload slot, which no longer exists now
+# that the volume starts at sector 0.
+#
+if [ -f "$SRC/UniXNU.efi" ]; then
+  mcopy -i "$OUT" "$SRC/UniXNU.efi" "::/UniXNU.efi"
+fi
+
+# What UniXNU reads at runtime: the config, the loader it starts, and the drivers
+# it can load through its own [driver] list.  kernel.macho joins them once the
+# macOS build produces one.
+for f in UniXNU.toml DarwinBoot.efi UniXNUDxe.efi UniXNURamDiskDxe.efi kernel.macho; do
   if [ -f "$SRC/$f" ]; then
     mcopy -i "$OUT" "$SRC/$f" "::/EFI/UniXNU/$f"
+  elif [ "$f" = "kernel.macho" ]; then
+    echo "note: no $SRC/kernel.macho yet -- the volume is ready for it"
   else
     echo "warning: $SRC/$f is missing, leaving it out"
   fi
 done
 
 echo "== $OUT"
+mdir -i "$OUT" ::/
 mdir -i "$OUT" ::/EFI/UniXNU
 print_steps

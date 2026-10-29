@@ -515,7 +515,23 @@ PublishDeviceTree (
 #define LOG_HEADER_VERSION    1
 #define LOG_WRITE_SECTORS     128        // 64 KiB, one ring's worth
 #define LOG_PARTITION_NAME     L"flashinfo"
-#define LOG_PARTITION_OFFSET   2048      // 1 MiB in, as the line-A shim does
+//
+// Where the log lives inside 'flashinfo', and why it moved.
+//
+// It started 1 MiB in, because the line-A shim put it there and the first 64 KiB
+// of the partition is a vendor record.  That left the volume the payload needs
+// squeezed into 1 MiB, which is fine for a boot manager but not for a kernel.
+// The layout is now:
+//
+//     0            .. 14 MiB   FAT volume, containing \UniXNU.efi, \EFI\UniXNU\*
+//                              and, later, the kernel
+//     15 MiB       .. 15 MiB+  this log block (128 sectors)
+//
+// 15 MiB of 32768 sectors, so 30720.  tools/mk_unixnu_esp.sh builds a filesystem
+// that stops short of it, and extract_log_block.py scans for the magic on every
+// sector boundary, so the pull offset does not have to be kept in sync anywhere.
+//
+#define LOG_PARTITION_OFFSET   30720
 #define LOG_SECTOR            512
 
 STATIC
