@@ -51,6 +51,22 @@ gMemoryDescriptor[] = {
   {"UEFI FD",            0x40080000, 0x00200000, AddMem, SYS_MEM, SYS_MEM_CAP, BsData, WRITE_BACK},
   {"DXE Heap",           0x48A80000, 0x03C00000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv,   WRITE_BACK},
   {"ATF Reserved",       0x4CE00000, 0x00060000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_BACK}, // [INHERITED]
+  //
+  // [MEASURED 2026-10-30] The DRAM between the ATF carveout and the TEE carveout
+  // was simply not described, so DXE never offered it to anyone.  That left
+  // "DXE Heap" as the only EfiConventionalMemory region in the whole map, and
+  // after DXE had run, 24.6 MiB of it were still free.  DarwinBoot needs one
+  // contiguous run of at least 256 MiB for the kernel window and said so:
+  //
+  //     DARWINBOOT: NO WINDOW 10000000 BIG RUN 189C000 @ 48A80000
+  //     DARWINBOOT: FREE 48A80000 + 189C000
+  //
+  // 0x4CE60000..0x70000000 is 561 MiB sitting between two inherited carveouts,
+  // which makes it the least ambiguous gap in the table: nothing else claims it.
+  // Other undeclared gaps (0x7FFC0000..0x9F900000 and 0x9FA00000..0xAE000000,
+  // ~509 MiB and ~273 MiB) are candidates if this one turns out to be in use.
+  //
+  {"DRAM Low Conv",      0x4CE60000, 0x231A0000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv,   WRITE_BACK}, // [MEASURED] gap between ATF and TEE
   {"TEE Reserved",       0x70000000, 0x05000000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_BACK}, // [INHERITED]
   {"AP MD C SMEM",       0x76000000, 0x00C00000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_BACK}, // [INHERITED]
   {"SPM Reserved",       0x77FF0000, 0x00010000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_BACK}, // [INHERITED]
