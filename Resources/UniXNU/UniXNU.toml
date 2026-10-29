@@ -1,0 +1,43 @@
+# Runtime configuration for UniXNU, placed at \EFI\UniXNU\UniXNU.toml on the
+# volume UniXNU boots from.
+#
+# Schema read from package/UniXNUPkg/Library/UniXNULib/Config.c: the file is
+# looked for in \EFI\UniXNU on a volume, every [[entry]] takes id / title / type
+# / action / path / args / confirm / initrd / dtb, `path` is relative to
+# \EFI\UniXNU, and `type` defaults to "efi".
+#
+# The built-in configuration this replaces is mBuiltinConfig in Config.c, which
+# is why the first running image said "no boot entry found": with no volume
+# there was no file, so UniXNU fell back to four actions and exited.
+
+version = 1
+
+[boot]
+timeout = 3
+rotate = 0
+
+[ui]
+title = "UniXNU dandelion"
+
+# The real thing eventually: DarwinBoot takes these arguments, builds XNU's
+# command line, paints a green bar at the top of the screen and branches to the
+# kernel.  Even with no kernel behind it, reaching the green bar proves the
+# chain UniXNU -> DarwinBoot -> branch works.
+[[entry]]
+id = "darwinboot"
+title = "DarwinBoot (dandelion)"
+type = "efi"
+path = "DarwinBoot.efi"
+args = "-v keepsyms=1 debug=0x144"
+
+[[entry]]
+id = "exit"
+title = "Return to firmware"
+type = "action"
+action = "exit"
+
+[[entry]]
+id = "reset"
+title = "Restart"
+type = "action"
+action = "reset"
