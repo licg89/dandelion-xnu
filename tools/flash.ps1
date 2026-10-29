@@ -37,7 +37,7 @@ if ($Restore) {
     throw "stock boot image not found at $Image"
   }
 } elseif ([string]::IsNullOrEmpty($Image)) {
-  $Image = Join-Path $repo "artifacts\boot-uefi-mux.img"
+  $Image = Join-Path $repo "artifacts\boot-uefi-cmd0.img"
 }
 
 if (-not (Test-Path $Image)) {
@@ -105,33 +105,34 @@ thin strip rows, the verdict patch and the three rows of cells.
   text area             PS before=.. DAT=FF CMD=1 CD=1 / VEMC=.. en=N ANA=..
                         MUX strap=.. mode=N m0=.. m1=.. / DIN 122..133=....
                         PAD0=.. PAD1=..
-                        PING a I=.. R=.. cl=.. dA=.. dO=..
-                        SET mode=N m0=.. m1=.. / PING b|c ...
-                        MUX ANSWERED - mode kept | MUX restored to N
+                        C0 I=.. cl=.. f=.. l=.. kc=..   (CMD0, no response)
+                        PING a I=.. R=.. cl=.. f=.. l=.. kc=..
+                        PING b I=.. R=.. cl=.. f=.. l=.. kc=..
+                        CARD ANSWERED | NO ANSWER
 
 Reading it, in this order:
 
   0. Power is settled: PS = DAT=0xFF CMD=1, VEMC on at 3.0 V.  Do not reopen it.
+     The mux is settled too: m0 reads 22222200 and survives a reboot.
 
-  1. `cl=` on the PING lines -- how many samples saw CMD (bit 24) low while the
-     command was on the wire:
-       cl=0        the controller never drove CMD -> host side (pad / clock /
-                   mux write not landing).  Look at SET mode=/m0 and PAD0/PAD1.
-       cl>0        the command did go out and the card stayed silent -> clock
-                   reaching the card, or RSTB held.
+  1. `cl=` `f=` `l=` come from GPIO122, the CMD pad itself, sampled while the
+     command is on the wire -- not from MSDC_PS.  PS masks CMD while the
+     controller drives it (IMG_5744: cl=0 there, while the same pin toggled).
+       cl=0            nothing went out at all -> host side (SDC_CMD write,
+                       clock gate, controller reset), not the card.
+       cl>0, l-f small the command frame went out and nothing came back.
+       l ~ 2*(f..l of C0)  the card DID answer and this controller failed to
+                       sample it -> MSDC_PAD_TUNE0 / EMMC50_CFG0, a different bug.
 
-  2. PING a/b/c: CMDRDY is bit 8 of I.  If any one sets it the card is alive and
-     R= is its OCR (bit 31 set = powered up).
+  2. C0 is the transmitter self-check: CMD0 has no response, so its f..l is the
+     pure 48-bit frame.  Compare CMD1's range against it.
 
-  3. SET mode=N -> m0/m1 printed after the write: if m0 does not change, the mux
-     register is not taking the write (set/reset alias semantics differ) and the
-     mode was never actually switched.
+  3. `kc=` how often the CLK pad read 0 in the same window.  A number near 0 or
+     near 30000 means the clock was not running; anything in between is fine.
 
-  4. dA=/dO= (GPIO input AND/OR during the command): a bit that is 0 in dA and 1
-     in dO is a line that toggled -- that is how the card clock shows up.
-
-  5. PAD0=/PAD1= (MSDC_PAD_CTL0/1): drive strength and pull configuration.  All
-     zero would mean the pads cannot drive the command line.
+  4. PING a/b: CMDRDY is bit 8 of I.  If either sets it the card is alive and
+     R= is its OCR (bit 31 set = powered up).  b repeats CMD1 with a plain OCR
+     argument, so a rejection of bit 30/31 is ruled out.
 
 Full legend: docs\POWER-BEFORE-AFTER.md   Context: docs\RESUME-1029.md
 "@ | Write-Host
