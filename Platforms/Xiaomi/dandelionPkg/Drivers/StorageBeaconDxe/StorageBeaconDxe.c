@@ -129,6 +129,15 @@
 #define MSDC_TXDATA_OFS        0x18
 #define MSDC_RXDATA_OFS        0x1C
 #define MSDC_CFG_PIO           (1u << 3)
+#define MSDC_CFG_CKPDN         (1u << 1)
+#define MSDC_CFG_RST           (1u << 2)
+#define MSDC_CFG_CKSTB         (1u << 7)
+//
+// What SDC_CFG must hold after a controller reset: the value this platform
+// inherits from LK (IMG_5757 read it back as 0xFF007FFC), i.e. 1-bit bus, a data
+// timeout of 0xFF and a write/busy timeout of 0x1FFF.
+//
+#define SDC_CFG_INHERITED      0xFF007FFCu
 #define MSDC_FIFOCS_CLR        (1u << 31)
 #define MSDC_FIFOCS_RXCNT(x)   ((x) & 0xFFu)
 #define MSDC_INT_XFER_COMPL    (1u << 12)
@@ -635,6 +644,63 @@ SetHostBusWidth (
   Field = (Bits >= 8) ? 2u : ((Bits >= 4) ? 1u : 0u);
   Cfg   = Msdc0Read32 (SDC_CFG_OFS) & ~(3u << 16);
   Msdc0Write32 (SDC_CFG_OFS, Cfg | (Field << 16));
+}
+
+/**
+  Soft-reset the controller and put back the settings the reset clears.
+
+  Why this exists: LK reads this eMMC in the same boot (it loads the image
+  through MSDC0), so the card and the pads are known good minutes before this
+  probe runs.  Between the two, MediaTek's MsdcDxe drives the controller through
+  a full init that ends in a failed data phase, and the controller's data state
+  machine is the one thing a failed transfer can leave wedged.  MSDC_CFG.RST is
+  the vendor's own recovery (msdc_reset_hw() in both the Linux and the vendor
+  driver), it self-clears, and it does not touch the pads or the clock divider.
+
+  What the reset does clear is SDC_CFG, so the bus width and the two timeouts are
+  written back here; the bus width is then set per attempt anyway.
+**/
+STATIC
+VOID
+ResetHost (
+  VOID
+  )
+{
+  UINT32  Cfg;
+  UINTN   Tries;
+
+  Cfg = Msdc0Read32 (MSDC_CFG_OFS);
+
+  Msdc0Write32 (MSDC_CFG_OFS, Cfg | MSDC_CFG_RST);
+  for (Tries = 0; Tries < 200; Tries++) {
+    if ((Msdc0Read32 (MSDC_CFG_OFS) & MSDC_CFG_RST) == 0) {
+      break;
+    }
+
+    gBS->Stall (100);
+  }
+
+  for (Tries = 0; Tries < 200; Tries++) {
+    if ((Msdc0Read32 (MSDC_CFG_OFS) & MSDC_CFG_CKSTB) != 0) {
+      break;
+    }
+
+    gBS->Stall (100);
+  }
+
+  Msdc0Write32 (MSDC_CFG_OFS, Msdc0Read32 (MSDC_CFG_OFS) | MSDC_CFG_PIO);
+  Msdc0Write32 (SDC_CFG_OFS, SDC_CFG_INHERITED);
+
+  Msdc0Write32 (MSDC_FIFOCS_OFS, Msdc0Read32 (MSDC_FIFOCS_OFS) | MSDC_FIFOCS_CLR);
+  for (Tries = 0; Tries < 200; Tries++) {
+    if ((Msdc0Read32 (MSDC_FIFOCS_OFS) & MSDC_FIFOCS_CLR) == 0) {
+      break;
+    }
+
+    gBS->Stall (100);
+  }
+
+  Msdc0Write32 (MSDC_INT_OFS, 0xFFFFFFFF);
 }
 
 /**
@@ -1214,6 +1280,7 @@ typedef struct {
   UINT32   PsOr;       // DAT[7:0] bits that were high at least once
   UINT32   GpAnd;      // GPIO122..133 the same way, straight off the pads
   UINT32   GpOr;
+  UINT32   ClkLow;     // samples in which GPIO124, the CLK pad, read 0
   UINT32   Fifo;       // MSDC_FIFOCS at the end: RXCNT in [7:0]
 } DATA_RESULT;
 
@@ -1267,6 +1334,7 @@ ReadDataBlock (
   Result.PsOr      = 0x00;
   Result.GpAnd     = 0xFFF;
   Result.GpOr      = 0x000;
+  Result.ClkLow    = 0;
   Result.Fifo      = 0;
 
   Regs = (volatile UINT32 *)(UINTN)MSDC0_MMIO_BASE;
@@ -1330,6 +1398,17 @@ ReadDataBlock (
     Result.GpAnd &= Gp;
     Result.GpOr  |= Gp;
 
+    //
+    // Pin 124 is CLK (the same pin -- and the same evidence -- as the kc= field
+    // of the command trace: it only reads low while the controller is clocking).
+    // Counting it over the data wait says whether the host keeps the clock
+    // running once the response is over, which is what a card needs in order to
+    // shift the block out.
+    //
+    if ((Gp & (1u << (124 - EMMC_PIN_FIRST))) == 0) {
+      Result.ClkLow++;
+    }
+
     for (;;) {
       Count = MSDC_FIFOCS_RXCNT (Regs[MSDC_FIFOCS_OFS / 4]);
       if ((Count == 0) || (Left == 0)) {
@@ -1374,7 +1453,8 @@ ReadDataBlock (
   One data-phase attempt: optionally CMD6 the card into another bus mode, set the
   host's width to match, then read EXT_CSD and print where it stopped.
 
-  Print shape: `<tag> I=........ sz=........ ps=AA/BB gp=CCC/DD f=.. c6=....`
+  Print shape:
+  `<tag> I=.... R=........ sz=........ ps=AA/BB gp=CCC/DD f=.. k=..... c6=........`
 
     I    MSDC_INT at the end.  ...0100 is CMDRDY alone (command ok, no data);
          ...1100 adds XFER_COMPL; ...4100 includes DATTMO; ...8100 DATCRCERR.
@@ -1438,7 +1518,7 @@ ExtCsdAttempt (
             ((UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT + 3] << 24);
 
   Say (SystemTable, Tag);
-  SayHex (SystemTable, L"I=", Data.IntStatus);
+  SayHexN (SystemTable, L"I=", Data.IntStatus, 4);
   SayHex (SystemTable, L" R=", Data.Resp0);
   SayHex (SystemTable, L" sz=", Sectors);
   SayHexN (SystemTable, L" ps=", Data.PsAnd, 2);
@@ -1448,7 +1528,9 @@ ExtCsdAttempt (
   Say (SystemTable, L"/");
   SayHexN (SystemTable, L"", Data.GpOr, 3);
   SayHexN (SystemTable, L" f=", Data.Fifo, 2);
-  SayHexN (SystemTable, L" c6=", Sw.IntStatus, 4);
+  Say (SystemTable, L" k=");
+  SayDec (SystemTable, Data.ClkLow);
+  SayHex (SystemTable, L" c6=", Sw.Resp[0]);
   Say (SystemTable, L"\r\n");
 
   return Data.Ok;
@@ -1528,6 +1610,19 @@ ProbeCardAndMux (
   // longer printed -- rows again; docs/POWER-BEFORE-AFTER.md keeps the number.
   //
   WriteEmmcPinMode (Mode);
+
+  //
+  // IMG_5757: the clock pad (124) is the only pin that moves during the data
+  // wait -- gp=DF8/DFF, bit 2 is the CLK -- while the card answers CMD8 with
+  // R1 = 0x00000900 (TRAN, READY_FOR_DATA) and then sends nothing.  The card and
+  // its pads are known good in this boot because LK loaded this image through
+  // them, so the difference has to be host state, and the one piece of host
+  // state a failed transfer can wedge is the controller.  Reset it before the
+  // sequence instead of inheriting MsdcDxe's wreckage.
+  //
+  ResetHost ();
+  SayHex (SystemTable, L"RST C=", Msdc0Read32 (MSDC_CFG_OFS));
+  Say (SystemTable, L"\r\n");
 
   //
   // CMD0 first: no response, no argument, only CMD and CLK needed.  Its pin
@@ -1614,12 +1709,17 @@ ProbeCardAndMux (
   // IMG_5754 answers it, and the answer is 'neither side is sending': all three
   // attempts read ps=EF/FF -- the controller's DAT[7:0] stayed high except for
   // DAT4, which merely wobbled -- while commands, CID and selection kept
-  // working.  A card that has 512 bytes to send never drives only one lane, so
-  // the next question is which pad that wobble is on, and whether the host is
-  // even looking at it.  Hence gp= in the attempt lines (the GPIO block's own
-  // view of the same twelve pins) plus the pad/pinctrl line printed above.
+  // working.  IMG_5757 then put a second window on the same pins: gp=DF8/DFF
+  // says only CMD, CLK and one neighbour moved at all during the whole wait, and
+  // every attempt returned R1 = 0x00000900, i.e. the card is in TRAN with
+  // READY_FOR_DATA and reports no error -- right before declining to send.
   //
-  // Three attempts, each a complete "make host and card agree, read a block"
+  // A card that is happy and silent, on a bus whose clock pad is powered down
+  // (MSDC_CFG.CKPDN set in H0 C=), has one obvious explanation: it never gets
+  // clocked, so it never shifts a bit, and the controller never counts its data
+  // timeout either.  That is what k= measures and what D8 changes.
+  //
+  // Four attempts, each a complete "make host and card agree, read a block"
   // cycle, so one image covers the plausible modes instead of one flash per
   // guess:
   //
@@ -1640,6 +1740,23 @@ ProbeCardAndMux (
   if (!Worked) {
     (VOID) SendCommand (12, 0, SDC_CMD_RSP_R1B, SDC_CMD_STOP_CMD);
     Worked = ExtCsdAttempt (SystemTable, L"C8 ", Rca, 1, TRUE, EXT_CSD_BUS_WIDTH, 0);
+  }
+
+  //
+  // D8 is the same 1-bit combination with one difference: CKPDN cleared.
+  //
+  // MSDC_CFG[1] is the clock pad's power-down bit, and the inherited register
+  // (H0 C=) has it set.  A card only shifts data out while the clock runs, and
+  // the controller only counts its data timeout in sclk edges: if the clock pad
+  // stays down once the response is over, the card sends nothing, the FIFO stays
+  // empty and no interrupt of any kind ever fires -- which is exactly the shape
+  // of IMG_5752..5757, including the missing DATTMO.  The k= field above counts
+  // CLK-pad-low samples precisely to test that.
+  //
+  if (!Worked) {
+    (VOID) SendCommand (12, 0, SDC_CMD_RSP_R1B, SDC_CMD_STOP_CMD);
+    Msdc0Write32 (MSDC_CFG_OFS, Msdc0Read32 (MSDC_CFG_OFS) & ~MSDC_CFG_CKPDN);
+    Worked = ExtCsdAttempt (SystemTable, L"D8 ", Rca, 1, FALSE, 0, 0);
   }
 
   //
@@ -1748,12 +1865,6 @@ ProbeMsdcLeftovers (
   // the GPIO window (gp=) instead of read.
   //
   SayHex (SystemTable, L" din=", PinGroupBits (PINCTRL_DIN_OFS));
-  Say (SystemTable, L"\r\n");
-
-  Say (SystemTable, L"IO ");
-  SayHex (SystemTable, L"ioc=", Regs[0x04 / 4]);
-  SayHex (SystemTable, L" f60=", Regs[0x60 / 4]);
-  SayHex (SystemTable, L" adv=", Regs[0x64 / 4]);
   Say (SystemTable, L"\r\n");
 }
 

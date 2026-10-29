@@ -104,6 +104,7 @@ thin strip rows, the verdict patch and the three rows of cells.
                         not paint them any more, so they stay the M4 evidence.
   text area             13 lines, fixed position (rows 53..65 of 68):
                         PWR PS=.. DAT=.. CMD=.. CD=.. VEMC=.. vsel=.. w=.. f=..
+                        RST C=..                        (MSDC_CFG after soft reset)
                         H0 C=.. S=.. P=.. N=..          (controller leftovers)
                         C0 I=.. cl=.. f=.. l=.. kc=..   (CMD0: TX self-check)
                         C1 n=.. I=.. R=..               (CMD1 until OCR bit31)
@@ -112,8 +113,9 @@ thin strip rows, the verdict patch and the three rows of cells.
                         C13 I=.. R=.. st=..             (4 = TRAN)
                         IO dir=000 do=000 din=FFF       (pins 122..133, GPIO windows)
                         IO ioc=.. f60=.. adv=..         (controller leftovers)
-                        A8 I=.. R=.. sz=.. ps=../.. gp=.../... f=.. c6=....
-                        B8/C8 ...                       (only if the line above failed)
+                        A8 I=.. R=.. sz=.. ps=../.. gp=.../... f=.. k=..... c6=....
+                        B8/C8/D8 ...                    (only if the line above failed)
+                        D8 is the same 1-bit attempt with CKPDN cleared
                         B1 I=.. S=..                    (LBA 1, GPT header)
 
 Reading it, in this order:
