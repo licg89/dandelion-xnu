@@ -496,3 +496,4 @@ StorageBeaconDxeEntryPoint (
   //
   return EFI_SUCCESS;
 }
+// (dual-host probe: build trigger)
