@@ -58,10 +58,21 @@
 #define MSDC0_MMIO_BASE    0x11230000ULL
 #define MSDC1_MMIO_BASE    0x11240000ULL
 #define MSDC_CFG_OFS       0x00
+#define MSDC_PS_OFS        0x08
 #define MSDC_INT_OFS       0x0C
 #define MSDC_INTEN_OFS     0x10
+#define SDC_CFG_OFS        0x30
+#define SDC_CMD_OFS        0x34
+#define SDC_ARG_OFS        0x38
 #define SDC_STS_OFS        0x3C
 #define SDC_RESP0_OFS      0x40
+#define SDC_BLK_NUM_OFS    0x50
+
+#define SDC_STS_BUSY       (1u << 0)
+#define SDC_CMD_STOP_CMD   (1u << 14)
+#define SDC_CMD_RSP_SHIFT  7
+#define MSDC_INT_CMDRDY    (1u << 8)
+#define MSDC_INT_CMDTMO    (1u << 9)
 
 /**
   Repaint the status band (y 40..47, full width).
@@ -342,6 +353,74 @@ ProbeMsdcRegisters (
 
   PaintBits (1158, Cfg,       0x00FFFFFF);
   PaintBits (1169, IntEnable, 0x00FFFF00);
+
+  //
+  // The eMMC is on H0 and its R1 said CURRENT_STATE = 5 (DATA): the card began
+  // sending a block and nobody finished or stopped the transfer, so every later
+  // command times out.  Issue CMD12 (STOP_TRANSMISSION) once, bounded, to put
+  // the card back into TRAN so the next driver that touches it starts from a
+  // sane state.  Everything is bounded: a wedged controller must not hang here.
+  //
+  {
+    UINT32  SdCfg;
+    UINT32  Ps;
+    UINT32  BlkNum;
+    UINT32  Sts;
+    UINT32  IntAfter;
+    UINT32  RespAfter;
+    UINTN   Tries;
+
+    Regs   = (volatile UINT32 *)(UINTN)MSDC0_MMIO_BASE;
+    SdCfg  = Regs[SDC_CFG_OFS / 4];
+    Ps     = Regs[MSDC_PS_OFS / 4];
+    BlkNum = Regs[SDC_BLK_NUM_OFS / 4];
+
+    Say (SystemTable, L"H0 S=");
+    HexString (SdCfg, Text);
+    Say (SystemTable, Text);
+    Say (SystemTable, L" P=");
+    HexString (Ps, Text);
+    Say (SystemTable, Text);
+    Say (SystemTable, L" N=");
+    HexString (BlkNum, Text);
+    Say (SystemTable, Text);
+    Say (SystemTable, L"\r\n");
+
+    for (Tries = 0; Tries < 2000; Tries++) {
+      Sts = Regs[SDC_STS_OFS / 4];
+      if ((Sts & SDC_STS_BUSY) == 0) {
+        break;
+      }
+
+      gBS->Stall (100);
+    }
+
+    Regs[SDC_ARG_OFS / 4] = 0;
+    Regs[SDC_CMD_OFS / 4] = (12u | (7u << SDC_CMD_RSP_SHIFT) | SDC_CMD_STOP_CMD);
+
+    for (Tries = 0; Tries < 2000; Tries++) {
+      IntAfter = Regs[MSDC_INT_OFS / 4];
+      if ((IntAfter & (MSDC_INT_CMDRDY | MSDC_INT_CMDTMO)) != 0) {
+        break;
+      }
+
+      gBS->Stall (1000);
+    }
+
+    IntAfter  = Regs[MSDC_INT_OFS / 4];
+    RespAfter = Regs[SDC_RESP0_OFS / 4];
+    Regs[MSDC_INT_OFS / 4] = IntAfter;
+
+    Say (SystemTable, L"CMD12 I=");
+    HexString (IntAfter, Text);
+    Say (SystemTable, Text);
+    Say (SystemTable, L" R=");
+    HexString (RespAfter, Text);
+    Say (SystemTable, Text);
+    Say (SystemTable, L"\r\n");
+
+    PaintBits (1180, SdCfg, 0x0000FFFF);
+  }
 
   StageCell (21, 0x0000FF00);
 }
