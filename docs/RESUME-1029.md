@@ -4,6 +4,51 @@
 
 ---
 
+## 0. 项目全貌（30 秒）
+
+**目标**：把 Apple 的 XNU（macOS/iOS 内核）移植到 **Xiaomi Redmi 9A（dandelion，MediaTek MT6762G / MT6765）**，
+让它能在真机上启动到用户态。
+
+**当前走的是「线 B」**（线 A 的纯开源 XNU 已冻结在 `sched_startup`，不要再碰）：
+
+```
+LK 引导 → BootShim(gzip FD @0x40080000) → UEFI(Mu / mouseos/uefi-a04br3)
+   → DXE → BDS → UniXNU.efi → DarwinBoot → XNU → IPSW 用户态
+```
+
+**硬约束（这决定了所有设计）**：
+- 这块板**没有 UART**、也**没有 USB device mode** ⇒ 没有任何日志出口
+- 所以一切诊断只能靠**屏幕**（我们自己写的 framebuffer 控制台）和**持久化到 flash 的日志**
+- 因此本项目里「能看见」比「能跑」更重要：状态格子、位图条、彩色状态带都是为此而存在
+
+**里程碑**：
+
+| | 状态 |
+|---|---|
+| M1 编出 FD | ✅ |
+| M2 SEC/PEI/DXE | ✅ |
+| M3 GOP + ConOut 到面板 | ✅ |
+| M3.5 UEFI 文字可读（自写控制台 90×100） | ✅ |
+| M4 eMMC → BlockIo → FAT | 🔄 卡**零应答**，疑似未上电 |
+| M5 加载 payload + 发布设备树 | ✅（`PayloadHello` 实测跑通） |
+| M6 DarwinBoot → XNU | ⬜ 缺 UniXNU 产物（外部依赖） |
+
+**日常工作流**（每一轮都是这样）：
+```
+改代码 → push 到 GitHub → Actions 构建(~8min) → 下载 artifact
+      → python bootshim\patch_boot.py ... --kernel-addr 0x40080000
+      → fastboot flash boot → 重启 → 拍照 → 判读 → 下一轮
+```
+
+**环境**：
+- 仓库：`D:\aios\dandelion-xnu`
+- 设备序列号：`QS55XCPRCA9LDA5T`
+- `adb` / `fastboot`：`C:\Users\li\AppData\Local\Android\Sdk\platform-tools\`
+- **Android 备份**：`out\boot_backup.img`（要恢复手机时刷它；测试期间一般不需要）
+- 拍照：用户会把照片放在一个 HTTP 目录里，给 URL；图片要下载到本地再用读图工具看
+
+---
+
 ## 1. 一句话现状
 
 固件能跑到 BDS、能加载 payload、能显示文字；**M4 的真问题不是数据通路，而是 eMMC 很可能根本没上电**。
