@@ -1158,6 +1158,17 @@ PublishEmmcHandoff (
   UINT32                 Version;
   UINT32                 Cfg;
 
+  //
+  // Unconditional, before the early return: the point of this line is to say
+  // whether FlushLogToFlash recorded the partition at all.  Guessing at it cost
+  // two boots.
+  //
+  DEBUG ((
+    DEBUG_ERROR,
+    "PayloadBoot: emmc handoff: flashinfo start %lu\n",
+    (UINT64)mFlashInfoStart
+    ));
+
   if (mFlashInfoStart == 0) {
     return;
   }
