@@ -110,6 +110,34 @@
 #define MSDC_INT_CMDTMO    (1u << 9)
 
 //
+// Data phase.  SDC_CMD carries the transfer description, not a separate length
+// register: [10:9] data type (1 = single block read), [13] direction (1 =
+// write), [28:16] block length.  Same encoding as bootshim/msdc.c CMDW() and as
+// MediaTek's mtk-sd.c, which is why the constants below look like a shift soup.
+//
+#define MSDC_FIFOCS_OFS        0x14
+#define MSDC_TXDATA_OFS        0x18
+#define MSDC_RXDATA_OFS        0x1C
+#define MSDC_CFG_PIO           (1u << 3)
+#define MSDC_FIFOCS_CLR        (1u << 31)
+#define MSDC_FIFOCS_RXCNT(x)   ((x) & 0xFFu)
+#define MSDC_INT_XFER_COMPL    (1u << 12)
+#define MSDC_INT_DATTMO        (1u << 14)
+#define MSDC_INT_DATCRCERR     (1u << 15)
+#define MSDC_INT_DAT_ALL       (MSDC_INT_XFER_COMPL | MSDC_INT_DATTMO | MSDC_INT_DATCRCERR)
+#define SDC_CMD_DTYPE_SHIFT    9
+#define SDC_CMD_DTYPE_READ     1u
+#define SDC_CMD_BLKLEN_SHIFT   16
+//
+// EXT_CSD byte offsets (JEDEC JESD84-B51 section 10): SEC_COUNT is 512-byte
+// units and is the capacity number BlockIo needs.
+//
+#define EXT_CSD_REV            192u
+#define EXT_CSD_BUS_WIDTH      183u
+#define EXT_CSD_HS_TIMING      185u
+#define EXT_CSD_SECTOR_COUNT   212u
+
+//
 // MSDC_PS is pin state, not controller state, and the field layout is NOT
 // "DAT in the low byte" -- that misreading is what produced the "the card has
 // no power" conclusion in docs/RESUME-1029.md section 3.  The vendor header
@@ -420,6 +448,40 @@ SayHex (
 }
 
 /**
+  Print `label` followed by exactly Digits hex digits.
+
+  The eight-digit SayHex() is right for registers but wasteful in a log that
+  has a 12-row budget: DAT is one byte and a sector count is not, so lines are
+  written with the width that fits.  This is also why IMG_5750's CMD2..CMD13
+  never appeared -- see ProbeCardAndMux().
+**/
+STATIC
+VOID
+SayHexN (
+  IN EFI_SYSTEM_TABLE  *SystemTable,
+  IN CHAR16            *Label,
+  IN UINT32            Value,
+  IN UINTN             Digits
+  )
+{
+  STATIC CONST CHAR16  Hex[] = L"0123456789ABCDEF";
+  CHAR16               Text[9];
+  UINTN                Index;
+
+  if (Digits > 8) {
+    Digits = 8;
+  }
+
+  for (Index = 0; Index < Digits; Index++) {
+    Text[Index] = Hex[(Value >> ((Digits - 1 - Index) * 4)) & 0xF];
+  }
+
+  Text[Digits] = L'\0';
+  Say (SystemTable, Label);
+  Say (SystemTable, Text);
+}
+
+/**
   Print a decimal number (stays inside 10 digits; every caller passes a small
   value such as a bit, a VOSEL index or a millivolt figure).
 **/
@@ -611,9 +673,9 @@ ProbePower (
   UINT32  Vio18;
   UINT32  WrapInit;
   UINT32  Failures;
-  UINT32  Vosel;
-  UINT32  Millivolts;
-  UINT32  Verdict;
+  UINT32   Vosel;
+  UINT32   Verdict;
+  CHAR16   *VerdictText;
 
   //
   // 1. P_before -- the first load this driver performs.  Nothing else in here
@@ -671,65 +733,65 @@ ProbePower (
   PsAfter = Msdc0Read32 (MSDC_PS_OFS);
 
   //
-  // Text first: it is the readable version and the one that reaches the flash
-  // log.  The strips are the backstop when the photo is bad.
-  //
-  SayHex (SystemTable, L"PS before=", PsBefore);
-  SayHex (SystemTable, L" after=", PsAfter);
-  SayHex (SystemTable, L" DAT=", (PsAfter >> MSDC_PS_DAT_SHIFT) & MSDC_PS_DAT_MASK);
-  Say (SystemTable, L" CMD=");
-  SayDec (SystemTable, (PsAfter & MSDC_PS_CMD_BIT) ? 1 : 0);
-  Say (SystemTable, L" CD=");
-  SayDec (SystemTable, (PsAfter & MSDC_PS_CDSTS_BIT) ? 1 : 0);
-  Say (SystemTable, L"\r\n");
-
-  SayHex (SystemTable, L"PWRAP init=", WrapInit & 0x1);
-  SayHex (SystemTable, L" failed=", Failures);
-  Say (SystemTable, L"\r\n");
-
-  SayHex (SystemTable, L"VEMC=", Vemc);
-  Say (SystemTable, L" en=");
-  SayDec (SystemTable, (Vemc & MT6357_LDO_ENABLE_BIT) ? 1 : 0);
-
-  if (VemcAna != 0xFFFFFFFF) {
-    Vosel      = (VemcAna >> MT6357_VEMC_VOSEL_SHIFT) & MT6357_VEMC_VOSEL_MASK;
-    Millivolts = mVemcMillivolts[Vosel];
-    SayHex (SystemTable, L" ANA=", VemcAna);
-    Say (SystemTable, L" vosel=");
-    SayDec (SystemTable, Vosel);
-    Say (SystemTable, L" ");
-    SayDec (SystemTable, Millivolts);
-    Say (SystemTable, L"mV");
-  }
-
-  Say (SystemTable, L"\r\n");
-
-  SayHex (SystemTable, L"VMC=", Vmc);
-  SayHex (SystemTable, L" VIO18=", Vio18);
-  Say (SystemTable, L"\r\n");
-
-  //
   // The verdict, in the order the questions were asked: wrapper alive, rail
   // enabled, bus pulled high.  It goes in two places -- a patch beside the
   // strips and the y 40 band -- because this panel's top rows are exactly where
   // photographs go bad.
   //
   if (Failures != 0) {
-    Verdict = 0x00FF00FF;
-    Say (SystemTable, L"BUS NO-WRAP\r\n");
+    Verdict     = 0x00FF00FF;
+    VerdictText = L"BUS NO-WRAP";
   } else if ((Vemc & MT6357_LDO_ENABLE_BIT) == 0) {
-    Verdict = 0x00FF0000;
-    Say (SystemTable, L"BUS RAIL-OFF\r\n");
+    Verdict     = 0x00FF0000;
+    VerdictText = L"BUS RAIL-OFF";
   } else if (((PsAfter >> MSDC_PS_DAT_SHIFT) & MSDC_PS_DAT_MASK) != MSDC_PS_DAT_MASK) {
-    Verdict = 0x00FF8000;
-    Say (SystemTable, L"BUS DAT-LOW\r\n");
+    Verdict     = 0x00FF8000;
+    VerdictText = L"BUS DAT-LOW";
   } else if ((PsAfter & MSDC_PS_CMD_BIT) == 0) {
-    Verdict = 0x00FF8000;
-    Say (SystemTable, L"BUS CMD-LOW\r\n");
+    Verdict     = 0x00FF8000;
+    VerdictText = L"BUS CMD-LOW";
   } else {
-    Verdict = 0x0000FF00;
-    Say (SystemTable, L"BUS OK\r\n");
+    Verdict     = 0x0000FF00;
+    VerdictText = L"BUS OK";
   }
+
+  //
+  // Text first: it is the readable version and the one that reaches the flash
+  // log.  The strips are the backstop when the photo is bad.
+  //
+  // This used to be six lines.  It is one now, and that is a correctness fix,
+  // not a tidy-up: the console's own self-test leaves the cursor at row 53 of
+  // its 68-row text area, so this driver has a 15-row budget for everything it
+  // prints.  IMG_5750 shows what overrunning it does -- CMD1 landed on the last
+  // row and CMD2..CMD13 were wrapped off the bottom, which is why the init
+  // sequence looked like it had stopped after one line.
+  //
+  Say (SystemTable, L"PWR ");
+  SayHex (SystemTable, L"PS=", PsBefore);
+  SayHexN (SystemTable, L" DAT=", (PsAfter >> MSDC_PS_DAT_SHIFT) & MSDC_PS_DAT_MASK, 2);
+  Say (SystemTable, L" CMD=");
+  SayDec (SystemTable, (PsAfter & MSDC_PS_CMD_BIT) ? 1 : 0);
+  Say (SystemTable, L" CD=");
+  SayDec (SystemTable, (PsAfter & MSDC_PS_CDSTS_BIT) ? 1 : 0);
+  Say (SystemTable, L" VEMC=");
+  SayDec (SystemTable, (Vemc & MT6357_LDO_ENABLE_BIT) ? 1 : 0);
+
+  if (VemcAna != 0xFFFFFFFF) {
+    Vosel = (VemcAna >> MT6357_VEMC_VOSEL_SHIFT) & MT6357_VEMC_VOSEL_MASK;
+    Say (SystemTable, L" vsel=");
+    SayDec (SystemTable, Vosel);
+    Say (SystemTable, L" ");
+    SayDec (SystemTable, mVemcMillivolts[Vosel]);
+    Say (SystemTable, L"mV");
+  }
+
+  Say (SystemTable, L" w=");
+  SayDec (SystemTable, WrapInit & 0x1);
+  Say (SystemTable, L" f=");
+  SayDec (SystemTable, Failures);
+  Say (SystemTable, L" ");
+  Say (SystemTable, VerdictText);
+  Say (SystemTable, L"\r\n");
 
   PaintPatch (BEACON_VERDICT_LEFT, BEACON_VERDICT_TOP, BEACON_VERDICT_W, BEACON_VERDICT_H, Verdict);
 
@@ -757,34 +819,6 @@ PinctrlRead32 (
   )
 {
   return *(volatile UINT32 *)(UINTN)(PINCTRL_MMIO_BASE + Offset);
-}
-
-/**
-  Read the pad input level of GPIO122..133, packed as bit0 = pin 122.
-
-  The data registers are NOT laid out like the mode registers: GpioDxe.c uses
-  `PIN_OFFSET(pin) = (pin/32)*0x10` and `bit = pin%32` for direction, output and
-  input, and `(pin/8)*0x10` with four bits per pin only for the mode registers.
-  Reading DIN with the mode formula (as the first version of this probe did)
-  lands on the wrong register and always returns 0 -- which is exactly what the
-  panel showed (IMG_5743: `DIN 122..133=00000000` while PS said the same lines
-  were high).
-**/
-STATIC
-UINT32
-ReadEmmcPinDin (VOID)
-{
-  UINTN   Pin;
-  UINT32  Din;
-
-  Din = 0;
-  for (Pin = EMMC_PIN_FIRST; Pin <= EMMC_PIN_LAST; Pin++) {
-    if (((PinctrlRead32 (PINCTRL_DIN_OFS + (Pin / 32) * PINCTRL_MODE_STRIDE) >> (Pin % 32)) & 1) != 0) {
-      Din |= (1u << (Pin - EMMC_PIN_FIRST));
-    }
-  }
-
-  return Din;
 }
 
 /**
@@ -1082,24 +1116,171 @@ SayResp (
   Say (SystemTable, L"\r\n");
 }
 
+typedef struct {
+  BOOLEAN  Ok;
+  UINT32   IntStatus;
+  UINT32   Resp0;
+  UINT32   BytesLeft;
+} DATA_RESULT;
+
+//
+// One sector: EXT_CSD (CMD8) and the GPT header (CMD17 LBA 1) both fit, and the
+// first is decoded before the second overwrites it.  File scope and explicitly
+// initialised so the linker gives it a real .data image rather than a .bss the
+// PE loader has to know to zero.
+//
+STATIC UINT8  mDataBlock[512] = { 0 };
+
 /**
-  Walk the card up to TRAN by hand: CMD0, CMD1 until ready, CMD2, CMD3, CMD7
-  and finally CMD13, whose status says which state the card really reached.
+  Read one 512-byte block with the controller's polled PIO path.
 
-  What IMG_5747 established: `CMD0` then `CMD1` gets a reply at all.  The OCR
-  it returns is 0x00FF8080 -- bit 31 clear, i.e. "I heard you, I am still
-  powering up".  The spec's answer to that is to repeat CMD1 until bit 31 is
-  set, and only then ask for the CID.  So this version does exactly that and
-  prints the numbers that say how far it got:
+  This is the data half that a plain command does not need and that the previous
+  rounds never exercised: SDC_CMD carries the transfer type and block length,
+  the card streams into the FIFO, and the loop below drains it while watching
+  MSDC_INT for XFER_COMPL.  The sequence is the one bootshim/msdc.c uses against
+  this same controller (CMDW(): rsp type 1, data type 1, direction 0, length
+  512), which is why the register writes look identical.
 
-      C1 n=..  I=..  R=........     n = CMD1 attempts until bit31
-      C2 3=.. 2=.. 1=.. 0=..        the 128-bit CID (R2)
-      C3 I=.. R=..                  R6: status + the RCA the card took
-      C7 I=.. R=..                  R1b: the card is selected
-      C13 I=.. R=.. st=..           CURRENT_STATE, 4 = TRAN
+  Bounded at ~3 s in 100 us steps, so a card that never starts the data phase
+  costs a boot a few seconds and a line in the log -- not a hang.
+**/
+STATIC
+DATA_RESULT
+ReadDataBlock (
+  IN  UINT32  Opcode,
+  IN  UINT32  Arg,
+  OUT UINT8   *Buffer,
+  IN  UINTN   Bytes
+  )
+{
+  volatile UINT32  *Regs;
+  DATA_RESULT       Result;
+  UINTN             Tries;
+  UINTN             Step;
+  UINT32            Left;
+  UINT32            Count;
+  UINT32            Word;
+  UINT32            Off;
+  UINT32            Chunk;
 
-  If C13 says st=4 the hardware path is proven end to end and what is left is
-  purely the driver.
+  Result.Ok        = FALSE;
+  Result.IntStatus = 0;
+  Result.Resp0     = 0;
+  Result.BytesLeft = (UINT32)Bytes;
+
+  Regs = (volatile UINT32 *)(UINTN)MSDC0_MMIO_BASE;
+
+  for (Tries = 0; Tries < 2000; Tries++) {
+    if ((Regs[SDC_STS_OFS / 4] & (SDC_STS_BUSY | SDC_STS_CMDBUSY)) == 0) {
+      break;
+    }
+
+    gBS->Stall (100);
+  }
+
+  Regs[MSDC_FIFOCS_OFS / 4] |= MSDC_FIFOCS_CLR;
+  for (Tries = 0; Tries < 200; Tries++) {
+    if ((Regs[MSDC_FIFOCS_OFS / 4] & MSDC_FIFOCS_CLR) == 0) {
+      break;
+    }
+
+    gBS->Stall (100);
+  }
+
+  Regs[SDC_BLK_NUM_OFS / 4] = 1;
+  if ((Regs[MSDC_CFG_OFS / 4] & MSDC_CFG_PIO) == 0) {
+    Regs[MSDC_CFG_OFS / 4] |= MSDC_CFG_PIO;
+  }
+
+  Regs[MSDC_INT_OFS / 4] = 0xFFFFFFFF;
+
+  Regs[SDC_ARG_OFS / 4] = Arg;
+  Regs[SDC_CMD_OFS / 4] = ((Opcode & 0x3Fu) |
+                           (SDC_CMD_RSP_R1 << SDC_CMD_RSP_SHIFT) |
+                           (SDC_CMD_DTYPE_READ << SDC_CMD_DTYPE_SHIFT) |
+                           (((UINT32)Bytes & 0x1FFFu) << SDC_CMD_BLKLEN_SHIFT));
+
+  Left = (UINT32)Bytes;
+  Off  = 0;
+
+  for (Tries = 0; Tries < 30000; Tries++) {
+    Result.IntStatus = Regs[MSDC_INT_OFS / 4];
+    if ((Result.IntStatus & (MSDC_INT_DATTMO | MSDC_INT_DATCRCERR)) != 0) {
+      break;
+    }
+
+    for (;;) {
+      Count = MSDC_FIFOCS_RXCNT (Regs[MSDC_FIFOCS_OFS / 4]);
+      if ((Count == 0) || (Left == 0)) {
+        break;
+      }
+
+      if (Count > Left) {
+        Count = Left;
+      }
+
+      while ((Count > 0) && (Left > 0)) {
+        Word  = Regs[MSDC_RXDATA_OFS / 4];
+        Chunk = (Count >= 4) ? 4 : Count;
+        for (Step = 0; (Step < Chunk) && (Left > 0); Step++) {
+          Buffer[Off++] = (UINT8)(Word >> (8 * Step));
+          Left--;
+        }
+
+        Count -= Chunk;
+      }
+    }
+
+    if (((Result.IntStatus & MSDC_INT_XFER_COMPL) != 0) && (Left == 0)) {
+      break;
+    }
+
+    gBS->Stall (100);
+  }
+
+  Result.IntStatus = Regs[MSDC_INT_OFS / 4];
+  Result.Resp0     = Regs[SDC_RESP0_OFS / 4];
+  Result.BytesLeft = Left;
+  Regs[MSDC_INT_OFS / 4] = 0xFFFFFFFF;
+
+  Result.Ok = (((Result.IntStatus & MSDC_INT_XFER_COMPL) != 0) && (Left == 0));
+
+  return Result;
+}
+
+/**
+  Walk the card up to TRAN by hand and then read from it: CMD0, CMD1 until
+  ready, CMD2, CMD3, CMD7, CMD13, and -- past TRAN -- CMD16, CMD8 (EXT_CSD) and
+  CMD17 (the GPT header at LBA 1).
+
+  Two rounds of evidence feed this.  IMG_5747 was the first reply this hardware
+  ever gave: `CMD0` then `CMD1` answered, because the card was not in idle state
+  and had been ignoring CMD1 as an illegal command.  IMG_5750 is the answer to
+  that:
+
+      C1 n=1 I=00000100 R=C0FF8080
+
+  OCR bit 31 set, so the card finished powering up on the first poll and the
+  sequence went on to CMD2 -- except nothing after C1 appeared.  Not a failure:
+  the console's text area is 68 rows, its own self-test leaves the cursor at row
+  53, and this driver had 15 lines to say 21 things, so CMD2..CMD13 were printed
+  past the last row and lost.  Hence the compression above (power on one line,
+  H1 and CMD12 gone, no PING line) and hence the shape of the log below.
+
+  What each line means:
+
+      C0  I=..  cl=.. f=.. l=.. kc=..   transmitter self-check, CMD0 has no reply
+      C1  n=..  I=..  R=........        CMD1 attempts until OCR bit 31
+      C2  3=.. 2=.. 1=.. 0=..           the 128-bit CID (R2)
+      C3  ..    C7  ..                  R6 (RCA 1 accepted), R1b (selected)
+      C13 I=..  R=..  st=..             CURRENT_STATE, 4 = TRAN
+      C8  I=..  sz=.. rv=.. bw=.. hs=.. EXT_CSD: capacity, revision, bus, timing
+      B1  I=..  S=..                    LBA 1's first four bytes, 45464920 = "EFI "
+
+  `st=4` plus `C8 I=...100` plus `B1 S=45464920` is the whole storage stack the
+  UEFI side needs: commands, long responses, a 512-byte data read and a sector
+  address.  Anything less names the step that broke, which is the next thing to
+  port into MsdcDxe/EmmcDxe.
 **/
 STATIC
 VOID
@@ -1110,53 +1291,40 @@ ProbeCardAndMux (
   UINT32           Strap;
   UINT32           Mode;
   CARD_CMD_RESULT  Cmd0;
-  CARD_CMD_RESULT  Ping;
   CARD_RESP        Ready;
   CARD_RESP        Cid;
   CARD_RESP        R6;
   CARD_RESP        Sel;
   CARD_RESP        Status;
+  CARD_RESP        BlkLen;
+  DATA_RESULT      Data;
+  DATA_RESULT      Gpt;
   UINTN            Tries;
   UINT32           Rca;
+  UINT32           Sectors;
+  UINT32           Signature;
 
   Strap = *(volatile UINT32 *)(UINTN)PINCTRL_STRAP_ADDR;
   Mode  = ((Strap & (1u << PINCTRL_STRAP_BIT)) != 0) ? 1 : 2;
 
   //
-  // Write the mux the vendor's way once, then print the readback: this is the
-  // state every measurement below runs in.
+  // Write the mux the vendor's way once.  It has read back 0x22222200 and
+  // survived a reboot in every round since IMG_5744, so its readback is no
+  // longer printed -- rows again; docs/POWER-BEFORE-AFTER.md keeps the number.
   //
   WriteEmmcPinMode (Mode);
 
-  SayHex (SystemTable, L"MUX strap=", Strap);
-  Say (SystemTable, L" mode=");
-  SayDec (SystemTable, Mode);
-  SayHex (SystemTable, L" m0=", PinctrlRead32 (EmmcModeRegister (EMMC_PIN_FIRST)));
-  SayHex (SystemTable, L" m1=", PinctrlRead32 (EmmcModeRegister (128)));
-  Say (SystemTable, L"\r\n");
-
-  SayHex (SystemTable, L"DIN 122..133=", ReadEmmcPinDin ());
-  Say (SystemTable, L"\r\n");
-
   //
-  // CMD0 first: no response, no argument, only CMD and CLK needed.  Its trace
-  // is the transmitter self-check -- CMD0's frame is almost all zeros, so a
-  // healthy one reads as "about 100 samples low, all in one run".
+  // CMD0 first: no response, no argument, only CMD and CLK needed.  Its pin
+  // trace is the transmitter self-check -- CMD0's frame is almost all zeros,
+  // so a healthy one reads as "about 100 samples low, all in one run".  The
+  // strips keep that measurement in pixels now that the line is shorter.
   //
   Cmd0 = SendCommandSampled (0, 0, 0);
   SayHex (SystemTable, L"C0 I=", Cmd0.IntStatus);
   SayCmdTrace (SystemTable, &Cmd0);
-
-  //
-  // One sampled CMD1 for the strips and for the record, then the polling loop
-  // that the spec actually asks for.
-  //
-  Ping = SendCommandSampled (1, CMD1_OCR, SDC_CMD_RSP_R3);
-  SayHex (SystemTable, L"PING a I=", Ping.IntStatus);
-  SayHex (SystemTable, L" R=", Ping.Resp0);
-  SayCmdTrace (SystemTable, &Ping);
-  PaintBitStrip (BEACON_STRIP_CMD_AND, 32, Ping.PsAnd, 0x00FFFFFF);
-  PaintBitStrip (BEACON_STRIP_CMD_OR,  32, Ping.PsOr,  0x0000FFFF);
+  PaintBitStrip (BEACON_STRIP_CMD_AND, 32, Cmd0.PsAnd, 0x00FFFFFF);
+  PaintBitStrip (BEACON_STRIP_CMD_OR,  32, Cmd0.PsOr,  0x0000FFFF);
 
   //
   // CMD1 until OCR bit 31 (power-up done).  ~1 ms between attempts, 300
@@ -1194,18 +1362,70 @@ ProbeCardAndMux (
   // RCA 1 is what LK uses on this board; any value works, but matching the
   // inherited one keeps the log comparable with RESP0's earlier 0xB00.
   //
-  Rca = 1;
-  R6 = SendCommand (3, Rca << 16, SDC_CMD_RSP_R1);
-  SayResp (SystemTable, L"C3 I=", &R6);
+  Rca  = 1;
+  R6   = SendCommand (3, Rca << 16, SDC_CMD_RSP_R1);
+  Sel  = SendCommand (7, Rca << 16, SDC_CMD_RSP_R1B);
 
-  Sel = SendCommand (7, Rca << 16, SDC_CMD_RSP_R1B);
-  SayResp (SystemTable, L"C7 I=", &Sel);
+  Say (SystemTable, L"C3 ");
+  SayHex (SystemTable, L"I=", R6.IntStatus);
+  SayHex (SystemTable, L" R=", R6.Resp[0]);
+  Say (SystemTable, L" C7 ");
+  SayHex (SystemTable, L"I=", Sel.IntStatus);
+  SayHex (SystemTable, L" R=", Sel.Resp[0]);
+  Say (SystemTable, L"\r\n");
 
   Status = SendCommand (13, Rca << 16, SDC_CMD_RSP_R1);
-  SayHex (SystemTable, L"C13 I=", Status.IntStatus);
+  Say (SystemTable, L"C13 ");
+  SayHex (SystemTable, L"I=", Status.IntStatus);
   SayHex (SystemTable, L" R=", Status.Resp[0]);
   Say (SystemTable, L" st=");
   SayDec (SystemTable, (Status.Resp[0] >> 9) & 0xFu);
+  Say (SystemTable, L"\r\n");
+
+  if (((Status.Resp[0] >> 9) & 0xFu) != 4) {
+    Say (SystemTable, L"NOT IN TRAN\r\n");
+    return;
+  }
+
+  //
+  // Past TRAN, the card is addressable and two data questions decide whether
+  // BlockIo is reachable at all:
+  //
+  //   CMD16  SET_BLOCKLEN 512  -- what LK leaves behind, made explicit.
+  //   CMD8   SEND_EXT_CSD      -- 512-byte DATA READ: capacity (SEC_COUNT),
+  //                               revision, bus width and HS timing.
+  //   CMD17  READ_BLOCK(LBA 1) -- the GPT header, i.e. the first sector of the
+  //                               thing a BlockIo would hand to FAT.
+  //
+  // Both reads print the interrupt word, because "XFER_COMPL" versus "DATTMO"
+  // separates "the card sent nothing" from "the FIFO was never drained".
+  //
+  BlkLen = SendCommand (16, 512, SDC_CMD_RSP_R1);
+
+  Data    = ReadDataBlock (8, 0, mDataBlock, 512);
+  Sectors = (UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT] |
+            ((UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT + 1] << 8) |
+            ((UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT + 2] << 16) |
+            ((UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT + 3] << 24);
+
+  Say (SystemTable, L"C8 ");
+  SayHex (SystemTable, L"I=", Data.IntStatus);
+  SayHex (SystemTable, L" sz=", Sectors);
+  SayHexN (SystemTable, L" rv=", mDataBlock[EXT_CSD_REV], 2);
+  SayHexN (SystemTable, L" bw=", mDataBlock[EXT_CSD_BUS_WIDTH], 2);
+  SayHexN (SystemTable, L" hs=", mDataBlock[EXT_CSD_HS_TIMING], 2);
+  SayHexN (SystemTable, L" c16=", BlkLen.IntStatus, 4);
+  Say (SystemTable, L"\r\n");
+
+  Gpt       = ReadDataBlock (17, 1, mDataBlock, 512);
+  Signature = ((UINT32)mDataBlock[0] << 24) |
+              ((UINT32)mDataBlock[1] << 16) |
+              ((UINT32)mDataBlock[2] << 8) |
+              (UINT32)mDataBlock[3];
+
+  Say (SystemTable, L"B1 ");
+  SayHex (SystemTable, L"I=", Gpt.IntStatus);
+  SayHex (SystemTable, L" S=", Signature);
   Say (SystemTable, L"\r\n");
 }
 
@@ -1275,44 +1495,15 @@ ProbeMsdcLeftovers (
   Say (SystemTable, Text);
   Say (SystemTable, L"\r\n");
 
-  Regs      = (volatile UINT32 *)(UINTN)MSDC1_MMIO_BASE;
-  Cfg       = Regs[MSDC_CFG_OFS / 4];
-  IntStatus = Regs[MSDC_INT_OFS / 4];
-  IntEnable = Regs[MSDC_INTEN_OFS / 4];
-  Resp0     = Regs[SDC_RESP0_OFS / 4];
-
-  Say (SystemTable, L"H1 C=");
-  HexString (Cfg, Text);
-  Say (SystemTable, Text);
-  Say (SystemTable, L" E=");
-  HexString (IntEnable, Text);
-  Say (SystemTable, Text);
-  Say (SystemTable, L" I=");
-  HexString (IntStatus, Text);
-  Say (SystemTable, Text);
-  Say (SystemTable, L" R=");
-  HexString (Resp0, Text);
-  Say (SystemTable, Text);
-  Say (SystemTable, L"\r\n");
-
   //
-  // The eMMC is on H0.  An earlier round read R1 = 0xB00 (CURRENT_STATE = 5,
-  // DATA) and that turned out to be LK's leftover register value, so this CMD12
-  // is now best effort rather than a repair: if the card really is mid-transfer
-  // it puts it back into TRAN, and if it is not, it is one bounded command that
-  // times out and is ignored.  Everything here is bounded; a wedged controller
-  // must not hang the beacon.
+  // H1 is the SD slot and has read its reset values in every round since
+  // IMG_5727; the line is gone for the same reason as ProbePower's: rows.
   //
   {
     UINT32  SdCfg;
     UINT32  Ps;
     UINT32  BlkNum;
-    UINT32  Sts;
-    UINT32  IntAfter;
-    UINT32  RespAfter;
-    UINTN   Tries;
 
-    Regs   = (volatile UINT32 *)(UINTN)MSDC0_MMIO_BASE;
     SdCfg  = Regs[SDC_CFG_OFS / 4];
     Ps     = Regs[MSDC_PS_OFS / 4];
     BlkNum = Regs[SDC_BLK_NUM_OFS / 4];
@@ -1325,39 +1516,6 @@ ProbeMsdcLeftovers (
     Say (SystemTable, Text);
     Say (SystemTable, L" N=");
     HexString (BlkNum, Text);
-    Say (SystemTable, Text);
-    Say (SystemTable, L"\r\n");
-
-    for (Tries = 0; Tries < 2000; Tries++) {
-      Sts = Regs[SDC_STS_OFS / 4];
-      if ((Sts & SDC_STS_BUSY) == 0) {
-        break;
-      }
-
-      gBS->Stall (100);
-    }
-
-    Regs[SDC_ARG_OFS / 4] = 0;
-    Regs[SDC_CMD_OFS / 4] = (12u | (7u << SDC_CMD_RSP_SHIFT) | SDC_CMD_STOP_CMD);
-
-    for (Tries = 0; Tries < 2000; Tries++) {
-      IntAfter = Regs[MSDC_INT_OFS / 4];
-      if ((IntAfter & (MSDC_INT_CMDRDY | MSDC_INT_CMDTMO)) != 0) {
-        break;
-      }
-
-      gBS->Stall (1000);
-    }
-
-    IntAfter  = Regs[MSDC_INT_OFS / 4];
-    RespAfter = Regs[SDC_RESP0_OFS / 4];
-    Regs[MSDC_INT_OFS / 4] = IntAfter;
-
-    Say (SystemTable, L"CMD12 I=");
-    HexString (IntAfter, Text);
-    Say (SystemTable, Text);
-    Say (SystemTable, L" R=");
-    HexString (RespAfter, Text);
     Say (SystemTable, Text);
     Say (SystemTable, L"\r\n");
   }
