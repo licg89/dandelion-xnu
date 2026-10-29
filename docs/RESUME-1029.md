@@ -7,7 +7,50 @@
 
 ---
 
-## ★ 最新结论（2026-10-29 21:0x）——M4 数据通路已打通
+## ★ 最新结论（2026-10-29 21:2x）——M4 完成，日志不再靠拍照
+
+**eMMC 读写已全通，日志已经落盘。** 第一次成功取回的完整启动日志在
+[logs/boot-log-2026-10-29-first.txt](logs/boot-log-2026-10-29-first.txt)
+（`tools/extract_log_block.py` 从 `flashinfo` 解出，621 字节，checksum ok，LBA 122111967）。
+
+```
+EMMC OK div=26 sec=0747C000
+INH C=02201A99 S=FF027FFC k=1 C'=02210499
+INH C8  I=00001100 rev=08 bw=06 hs=01 sec=0747C000
+INH B1  I=00001100 S=45464920
+INHERIT OK
+BLOCK OK n=44
+FAT NONE
+```
+
+- **`div=26`** —— 时钟自校准第一档就过（CKDIV=26 ≈ 7.7 MHz，四档里最快）；
+- **`BLOCK OK n=44`** —— GPT 解析成功：整盘 media + DiskIo 子句柄 + 各分区；
+- **`FAT NONE` 是真话** —— 这台机器分区全是 ext4/f2fs，没有 FAT 卷可挂。
+  **M4 的判据因此改成「eMMC → BlockIo → 分区表」**，已达成。
+
+### 读日志的循环（以后不用拍照）
+
+```powershell
+powershell -File tools\flash.ps1                       # 1) 刷 UEFI 跑一轮
+# 2) 跑完按住 音量下+电源 进 fastboot，刷回原厂 boot 进 Android
+fastboot flash boot D:\aios\artifacts\boot_backup.img ; fastboot reboot
+# 3) 拉 flashinfo 并解码（拿到的是整个 64 KiB 环形日志，不是面板最后 68 行）
+adb shell su -c "dd if=/dev/block/by-name/flashinfo of=/sdcard/fi.img bs=4096"
+adb pull /sdcard/fi.img out\fi.img
+python tools\extract_log_block.py out\fi.img --out out\last-boot.log --verbose
+```
+
+### 仍然待办
+
+| | |
+|---|---|
+| M6 DarwinBoot → XNU | ⬜ 缺外部产物（`UniXNU.efi` / `UniXNUDxe` / `DarwinBoot` / `UniXNURamDiskDxe`） |
+| 给 `UniXNU.efi` 找个家 | 有产物后二选一：塞进 FV（还剩 ~1.4 MiB）、或 `flashinfo` 里划一段裸 LBA 由 `PayloadBootDxe` 直接读 |
+| `flashinfo` 里建 FAT | 想要 `FAT OK` 就得有 FAT 卷；但 `flashinfo` 前 64 KiB 是 MTK 的 `DOWNLOAD INFORMATION` 记录，别动 |
+
+---
+
+## ★ 更早一版（2026-10-29 21:0x）——M4 数据通路打通
 
 **IMG_5762 证明 eMMC 数据读成功**，方式是照抄仓库里已有的 `bootshim/msdc.c`
 （line A 早就用它在这台手机上读写过 eMMC：[EMMC-LOG.md](EMMC-LOG.md)）：
