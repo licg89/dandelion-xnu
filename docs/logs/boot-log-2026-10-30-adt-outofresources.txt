@@ -1,0 +1,134 @@
+DANDELION UEFI
+CONSOLE OK 80x68
+Oct 29 2026 16:00:07
+SELFTEST 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZDIRECT CALL 0123456789COUT 0 50x19EMMC OK div=26 sec=0747C000
+INH C=02201A99 S=FF027FFC k=1 C'=02210499
+INH C13 I=00000100 R=00000900 st=4
+INH C8 I=00001100 rev=08 bw=06 hs=01 sec=0747C000
+INH B1 I=00001100 S=45464920
+
+MSDC PASSTHRU
+PWR PS=81FF0002 DAT=FF CMD=1 CD=1 VEMC=1 vsel=3 3000mV w=1 f=0 BUS OK
+INHERIT OK
+BLOCK OK n=44
+FAT OK
+PayloadBoot: device tree 127044 bytes published
+PayloadBoot: device tree published as an EFI configuration table
+PayloadBoot: firmware log handed over, 562 bytes
+PayloadBoot: firmware log published as an EFI configuration table
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (679 bytes)
+PayloadBoot: firmware log written to flash
+PayloadBoot: log flush on a 2 s timer
+PayloadBoot: looking for a payload (FAT, then flashinfo, then FV)
+PayloadBoot: found \UniXNU.efi
+DARWINBOOT: loader v2 installed EL1
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (1020 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (1143 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (1266 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (1389 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (1512 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (1635 bytes)
+UniXNU dandelion  (UniXNU 0.1.0)                                               config: \EFI\UniXNU\unixnu.toml                                                drivers 2 loaded / 0 failed    kits 0    acpi 0                                 > 1. XNU (dandelion)  [xnu]                                                      2. Return to firmware  [action]                                                3. DarwinBoot (dandelion)  [efi]                                               4. Restart  [action]                                                        Up/Down: select    Enter: boot    1-9: boot entry    Esc: stop timer           Booting XNU (dandelion) in 3 s                                                 PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (2469 bytes)
+Booting XNU (dandelion) in 2 s                                                 PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (2671 bytes)
+Booting XNU (dandelion) in 1 s                                                 PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (2873 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (2996 bytes)
+DARWINBOOT: boot refused: Out of Resources; firmware retained
+UniXNU dandelion  (UniXNU 0.1.0)                                               config: \EFI\UniXNU\unixnu.toml                                                drivers 2 loaded / 0 failed    kits 0    acpi 0                                 > 1. XNU (dandelion)  [xnu]                                                      2. Return to firmware  [action]                                                3. DarwinBoot (dandelion)  [efi]                                               4. Restart  [action]                                                        Up/Down: select    Enter: boot    1-9: boot entry    Esc: stop timer           'XNU (dandelion)' returned: Out of Resources                                   Select an entry                                                                PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (3972 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (4095 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (4218 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (4341 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (4464 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (4587 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (4710 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (4833 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (4956 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (5079 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (5202 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (5325 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (5448 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (5571 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (5694 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (5817 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (5940 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (6063 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (6186 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (6309 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (6432 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (6555 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (6678 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (6801 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (6924 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (7047 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (7170 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (7293 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (7416 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (7539 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (7662 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (7785 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (7908 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (8031 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (8154 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (8277 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (8400 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (8523 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (8646 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (8769 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (8892 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (9015 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (9138 bytes)
+PayloadBoot: replacing the previous log at LBA 122142431
+PayloadBoot: firmware log written to LBA 122142431 (9261 bytes)

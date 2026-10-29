@@ -304,3 +304,42 @@ powershell -File tools\ci\fetch_kernel.ps1 -RunId 40894367790
 不再依赖 `flashinfo + 2 MiB` 的 payload 槽（那块现在在卷里面了）。
 
 `extract_log_block.py` 是按扇区边界扫 magic 的，所以日志换位置不需要同步改任何东西。
+---
+
+## 8. 走到哪儿了：DarwinBoot 真的在跑它的逻辑
+
+加了 2 秒周期 flush 之后，日志从 679 → 2873 → 9623 → 9384 字节，payload 里发生的事第一次能完整读出来。
+每一步的错误码都是 DarwinBoot 自己给的，一路在往前挪：
+
+| 轮次 | DarwinBoot 的输出 | 说明 |
+|---|---|---|
+| 1 | （没有输出，`returned: Unsupported`） | 找不到 `gUniXNULoaderProtocolGuid` —— 提供者是 **DarwinBoot 自己**，得先把它作为驱动装起来 |
+| 2 | `DARWINBOOT: loader v2 installed EL1` | 驱动入口跑到了，协议装上了（但那次卡在读内核） |
+| 3 | 仍无输出，read bar 全暗 | 进度条判据写错了（只在跨 MiB 时重绘） |
+| 4 | read bar **整条变绿** + `boot refused: Not Found` | **14.8 MB 内核在我们的驱动里读完了**；缺 `<kernel>.adt` |
+| 5 | `boot refused: Out of Resources` | ADT 已经在卷里，过了 `ReadFile(.adt)`；卡在 `AllocateWindow()` |
+
+现在的现场：
+
+```
+DARWINBOOT: loader v2 installed EL1
+drivers 2 loaded / 0 failed
+Booting XNU (dandelion) in 3 s / 2 s / 1 s
+DARWINBOOT: boot refused: Out of Resources; firmware retained
+```
+
+### 8.1 下一个具体要补的东西：`window-size`
+
+`bootshim/adt.c` 生成的 ADT 里有 `model` / `memory-map` / `cpus` / `timebase-frequency` /
+`arm-io` / `uart0`，但**没有 `window-size`**。而 DarwinBoot 是这样用的：
+
+```c
+AdtNode (Tree, TreeSize, &Offset, 0, 3, &RamdiskOffset, &TrustCacheOffset,
+         &AddonOffset, &WindowSize, &KeepPacked);
+...
+Status = AllocateWindow (&Kernel, WindowSize, &Address);   // WindowSize = 0 → Out of Resources
+```
+
+所以下一步就是在 ADT 里（`chosen` 节点，或 DarwinBoot 的 `AdtNode` 搜索的那个位置）
+补 `window-size` —— 一个 32 位字节数，比如 256 MiB。顺带可能要补
+`ramdisk` / `trustcache` / `addon` 的偏移（否则它们保持 `MAX_UINTN`；只有在 `KeepPacked` 时才致命）。
