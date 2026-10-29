@@ -1632,6 +1632,14 @@ InheritProbe (
   CfgBefore = Msdc0Read32 (MSDC_CFG_OFS);
   SdcBefore = Msdc0Read32 (SDC_CFG_OFS);
 
+  //
+  // Cell 0 is the "this driver was dispatched at all" marker.  It has to be the
+  // first thing painted, before a single register write and before any ConOut
+  // call, because the two failure modes this build has to tell apart are
+  // "the dispatcher never got here" and "we got here and something below hung".
+  //
+  StageCell (0, 0x00FFFFFF);
+
   Msdc0Write32 (MSDC_INTEN_OFS, 0);
   Msdc0Write32 (MSDC_INT_OFS, 0xFFFFFFFFu);
 
@@ -1658,12 +1666,28 @@ InheritProbe (
   Sdc |= (0xFFu << 24) | (0x1FFFu << 2);
   Msdc0Write32 (SDC_CFG_OFS, Sdc);
 
+  //
+  // Cell 1: every register write above completed.  Anything that hangs between
+  // here and cell 2 is in the print path or in the first command.
+  //
+  StageCell (1, 0x00FFFFFF);
+
   SayHex (SystemTable, L"INH C=", CfgBefore);
   SayHex (SystemTable, L" S=", SdcBefore);
   Say (SystemTable, L" k=");
   SayDec (SystemTable, ((CfgAfter & MSDC_CFG_CKSTB) != 0) ? 1u : 0u);
   SayHex (SystemTable, L" C'=", CfgAfter);
   Say (SystemTable, L"\r\n");
+
+  if ((CfgAfter & MSDC_CFG_CKSTB) == 0) {
+    //
+    // No clock.  bootshim returns MSDC_ENOCLK here and so do we: with the clock
+    // gated, CMD13 costs 200 ms of stall and CMD8 costs three seconds of it, and
+    // neither can possibly succeed.
+    //
+    StageCell (1, 0x00FF0000);
+    return FALSE;
+  }
 
   //
   // The card should still be selected with RCA 1 and idle in TRAN, because LK
@@ -1677,6 +1701,8 @@ InheritProbe (
   SayDec (SystemTable, (Status.Resp[0] >> 9) & 0xFu);
   Say (SystemTable, L"\r\n");
 
+  StageCell (2, 0x00FFFFFF);
+
   Ext     = ReadDataBlock (8, 0, mDataBlock, 512);
   Sectors = (UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT] |
             ((UINT32)mDataBlock[EXT_CSD_SECTOR_COUNT + 1] << 8) |
@@ -1689,6 +1715,8 @@ InheritProbe (
   SayHexN (SystemTable, L" hs=", mDataBlock[EXT_CSD_HS_TIMING], 2);
   SayHex (SystemTable, L" sec=", Sectors);
   Say (SystemTable, L"\r\n");
+
+  StageCell (3, Ext.Ok ? 0x0000FF00 : 0x00FFFF00);
 
   //
   // LBA 1 is the GPT header, and 45464920 is "EFI " in big-endian reading order

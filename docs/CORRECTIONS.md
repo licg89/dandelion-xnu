@@ -390,5 +390,49 @@ A8 I=0100 R=00000900 sz=00000000 ps=EF/FF gp=DF8/DFF f=00 k=14999 c6=........ t=
    只放宽 `DTOC`/`WRDTOC`、不动 `BUSWIDTH`，然后 `CMD13 → CMD8 → CMD17`；
 4. `A8/B8/C8/D8` 那条四轮阶梯缩成单条 `A8`（它才是"和 LK 留下的一致"那一档）。
 
+## C16. 「刷进去的就是我刚构建的东西」——**错**，打包脚本读的是另一份树
+
+**现象**：把 `MsdcDxe` 从 FV 里移除后刷机，面板变成只有 `DANDELION UEFI` + `SELFTEST` +
+`DIRECT CALL` + `COUT 0 50x19` + 一行糊字，底部只剩控制台那两条证明横条，再没有任何
+`StorageBeaconDxe` 的输出。第一反应是"拿掉 `MsdcDxe` 把 DXE 调度链弄断了"，或者
+"`InheritProbe()` 卡住了"。**两个判断都不成立** —— 因为那次刷机根本没有包含任何新代码。
+
+**真因**：`tools/package_uefi_bootimg.py` 的 `--fd` 默认值是
+
+```python
+os.path.join(os.path.dirname(REPO), "uefi-a04br3", "Build", "dandelionPkg",
+             "DEBUG_CLANGPDB", "FV", "SILICIUM_UEFI.fd")
+```
+
+也就是 **`D:\aios\uefi-a04br3`**，一份 2026-10-28 23:48 的旧副本。
+而 `tools/build-local.sh` 是在 WSL 里构建的（`/root/uefi-a04br3`），产物只写到
+`D:\aios\artifacts\SILICIUM_UEFI.fd`。于是两次刷机（`boot-uefi-inh.img` 和
+`boot-uefi-inh2.img`）**byte 相同**（sha256 都是 `ba70223d…`），里面是前一天的固件：
+
+```
+D:\aios\uefi-a04br3\...\SILICIUM_UEFI.fd   2026-10-28 23:48  d4a643ab…
+D:\aios\artifacts\SILICIUM_UEFI.fd         2026-10-29 20:50  a4e9f3ef…   <- 真正构建的
+```
+
+**判据（唯一权威）**：打完包先看 payload 大小。同一次构建两遍打包，
+`kernel payload:` 那行数字必须一致；换了一次源码就必须**变化**。
+`ba70223d…` 出现两次就是没换固件的铁证。也可以直接
+
+```powershell
+(Get-FileHash D:\aios\artifacts\SILICIUM_UEFI.fd).Hash
+(Get-FileHash D:\aios\artifacts\boot-uefi-*.img).Hash   # 每次必须不同
+```
+
+**教训**：这条和 C13/C14 是同一族 —— **"我刷了" 不等于 "我刷的是这个"**。
+在没有串口的板子上，一个过期的镜像会伪装成一次全新的、可解释的失败，
+而且它看起来完全像一个合理的失败（调度链断了 / 新代码卡住了），
+会让人朝完全错误的方向再烧掉几轮。**任何刷机动作都必须先钉住 FD 的 sha256。**
+
+**已修**：
+1. `package_uefi_bootimg.py` 的 `--fd` 默认值改成 `artifacts/SILICIUM_UEFI.fd`
+   （构建脚本实际写出的那个），`--stock` 同样改到 `artifacts/`；
+2. 新增 `stale_reason()`：如果传入的 FD 与 `artifacts/SILICIUM_UEFI.fd` 内容不同，
+   **直接拒绝打包**并提示需要显式 `--fd` —— 把"刷错固件"从静默失败变成硬失败。
+
 
 

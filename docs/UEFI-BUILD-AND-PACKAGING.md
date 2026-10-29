@@ -147,7 +147,7 @@ python3 tools/package_uefi_bootimg.py --out /mnt/d/aios/artifacts/boot-uefi-beac
 | 参数 | 默认值 |
 |---|---|
 | `--stock` | `D:\aios\artifacts\boot_backup.img`（原厂 boot 分区 64 MiB dump） |
-| `--fd` | `D:\aios\uefi-a04br3\Build\dandelionPkg\DEBUG_CLANGPDB\FV\SILICIUM_UEFI.fd` |
+| `--fd` | `D:\aios\artifacts\SILICIUM_UEFI.fd`（**构建脚本写出来的那个**；2026-10-29 之前默认是 `D:\aios\uefi-a04br3\Build\...`，那是另一份树，见 CORRECTIONS C16） |
 | `--dtb` | `dandelion-xnu/Resources/DTBs/dandelion.dtb` |
 | `--out` | `D:\aios\artifacts\boot-uefi.img` |
 

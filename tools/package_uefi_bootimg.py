@@ -32,12 +32,24 @@ import sys
 import tomllib
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_FD = os.path.join(
+ARTIFACTS = os.path.join(os.path.dirname(REPO), "artifacts")
+#
+# Where the FD comes from.  This default used to be
+#   ../uefi-a04br3/Build/dandelionPkg/DEBUG_CLANGPDB/FV/SILICIUM_UEFI.fd
+# which on this machine is a *stale copy of the tree from another session* --
+# `tools/build-local.sh` builds inside WSL (/root/uefi-a04br3) and drops the
+# finished FD in artifacts/.  On 2026-10-29 that cost two flash cycles: the
+# packaged images were byte-identical because both were built from a 10-28 FD,
+# so the panel showed a build from the day before and looked like a new hang.
+# The artifact the build script actually writes is the right default.
+#
+DEFAULT_FD = os.path.join(ARTIFACTS, "SILICIUM_UEFI.fd")
+BUILD_TREE_FD = os.path.join(
     os.path.dirname(REPO), "uefi-a04br3", "Build", "dandelionPkg",
     "DEBUG_CLANGPDB", "FV", "SILICIUM_UEFI.fd")
 DEFAULT_DTB = os.path.join(REPO, "Resources", "DTBs", "dandelion.dtb")
-DEFAULT_STOCK = os.path.join(os.path.dirname(REPO), "artifacts", "boot_backup.img")
-DEFAULT_OUT = os.path.join(os.path.dirname(REPO), "artifacts", "boot-uefi.img")
+DEFAULT_STOCK = os.path.join(ARTIFACTS, "boot_backup.img")
+DEFAULT_OUT = os.path.join(ARTIFACTS, "boot-uefi.img")
 TOML = os.path.join(REPO, "Resources", "Configs", "dandelion.toml")
 
 
@@ -62,6 +74,25 @@ def verify(img, fd_path, want_kaddr):
     print("         fd on disk: %d bytes" % os.path.getsize(fd_path))
 
 
+def stale_reason(fd_path):
+    """Explain why `fd_path` is not the FD the build just produced, or None."""
+    fresh = os.path.join(ARTIFACTS, "SILICIUM_UEFI.fd")
+    if not os.path.isfile(fresh):
+        return None                      # nothing to compare against
+    if os.path.abspath(fd_path) == os.path.abspath(fresh):
+        return None
+    if not os.path.isfile(fd_path):
+        return None
+    with open(fd_path, "rb") as fh:
+        a = fh.read()
+    with open(fresh, "rb") as fh:
+        b = fh.read()
+    if a == b:
+        return None
+    return ("%s is NOT artifacts/SILICIUM_UEFI.fd (the build output); "
+            "the two differ" % fd_path)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -78,6 +109,18 @@ def main():
     for path in (args.stock, args.fd, args.dtb):
         if not os.path.isfile(path):
             sys.exit("missing input: %s" % path)
+
+    #
+    # Refuse to package an FD that is not the one the build produced.  There are
+    # two copies of the tree on this machine and only the WSL one is built, so an
+    # FD read from the wrong one is silently a *different firmware* -- measured
+    # 2026-10-29: two consecutive flashes shipped byte-identical images built from
+    # a tree two days old, and the resulting panel was read as a new hang.
+    #
+    stale = stale_reason(args.fd)
+    if stale:
+        sys.exit("refusing to package: %s\n"
+                 "         pass --fd explicitly if this is intentional" % stale)
 
     base = fd_base()
     patch_boot = os.path.join(REPO, "bootshim", "patch_boot.py")
