@@ -116,6 +116,6 @@ checksum 有效，任何一个只看 "找到的第一个/最后一个块" 的工
 ## 7. 参考实现（别忘了它）
 
 `Dracen-W/UniXNU-merlinx`（Redmi Note 9，MT6768/MT6769Z）已经跑到
-`initproc 和 launchd exec 完成`。它的 `docs/devices/merlinx.md` 有完整的 build/启动条件，
+`initproc 和 launchd exec 完成`。它的 [docs/devices/merlinx.md](https://github.com/Dracen-W/UniXNU-merlinx/blob/merlinx-work/docs/devices/merlinx.md) 有完整的 build/启动条件，
 对照表在 [MERLINX-COMPARISON.md](MERLINX-COMPARISON.md)。
 **注意：它的 `payload` 步骤需要 board trust cache 和 platform identity，上游不分发。**
