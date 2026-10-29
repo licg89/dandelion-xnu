@@ -177,12 +177,27 @@
 //
 #define PINCTRL_MMIO_BASE    0x10005000ULL
 #define PINCTRL_DIN_OFS      0x200
+#define PINCTRL_DOUT_OFS     0x100
+#define PINCTRL_DIR_OFS      0x000
 #define PINCTRL_MODE_OFS     0x300
 #define PINCTRL_MODE_STRIDE  0x10
 #define PINCTRL_STRAP_ADDR   0x100056F0ULL
 #define PINCTRL_STRAP_BIT    13
 #define EMMC_PIN_FIRST       122
 #define EMMC_PIN_LAST        133
+//
+// The MSDC0 pads are configured in their own block, NOT in the controller and not
+// in the pinctrl block: docs/research/mtk6765-drivers.md section 1.6 lists
+// MSDC0_IO_PAD_BASE = 0x10002000 with DRV +0x00, IES +0x10, PUPD +0x30,
+// R0 +0x50, R1 +0x60 (vendor sets PUPD=0x401, R0=0xBFE, R1=0x401 for pull-up).
+// IES is the input-enable mask: with a data pin's bit clear the controller
+// simply cannot see the card on that lane, which is one of the two ways a data
+// phase can look dead.
+//
+#define MSDC0_PAD_BASE       0x10002000ULL
+#define MSDC0_PAD_DRV_OFS    0x00
+#define MSDC0_PAD_IES_OFS    0x10
+#define MSDC0_PAD_PUPD_OFS   0x30
 
 //
 // SDC_CMD response type field (MsdcDxe.c switch on ResponseType):
@@ -864,6 +879,35 @@ PinctrlRead32 (
 }
 
 /**
+  Pack one per-pin property of GPIO122..133 into 12 bits, bit 0 = pin 122.
+
+  The data registers are NOT laid out like the mode registers: GpioImplLib.c
+  uses DirOffset 0x0, DataOutOffset 0x100, DataInOffset 0x200, ModeOffset 0x300,
+  `(pin/32)*0x10` and `bit = pin%32` for the first three, and `(pin/8)*0x10`
+  with four bits per pin only for mode.  Reading DIN with the mode formula (as
+  the first version of this probe did) lands on the wrong register and always
+  returns 0, which is what IMG_5743 showed.
+**/
+STATIC
+UINT32
+PinGroupBits (
+  IN UINTN  BaseOffset
+  )
+{
+  UINTN   Pin;
+  UINT32  Bits;
+
+  Bits = 0;
+  for (Pin = EMMC_PIN_FIRST; Pin <= EMMC_PIN_LAST; Pin++) {
+    if (((PinctrlRead32 (BaseOffset + (Pin / 32) * PINCTRL_MODE_STRIDE) >> (Pin % 32)) & 1) != 0) {
+      Bits |= (1u << (Pin - EMMC_PIN_FIRST));
+    }
+  }
+
+  return Bits;
+}
+
+/**
   Write the eMMC pin group's mode the way the vendor does it: one plain 32-bit
   store per register, whole field at once, instead of per-pin read-modify-write.
 
@@ -1171,6 +1215,8 @@ typedef struct {
   UINT32   BytesLeft;
   UINT32   PsAnd;      // DAT[7:0] bits that never went low during the wait
   UINT32   PsOr;       // DAT[7:0] bits that were high at least once
+  UINT32   GpAnd;      // GPIO122..133 the same way, straight off the pads
+  UINT32   GpOr;
   UINT32   Fifo;       // MSDC_FIFOCS at the end: RXCNT in [7:0]
 } DATA_RESULT;
 
@@ -1214,6 +1260,7 @@ ReadDataBlock (
   UINT32            Off;
   UINT32            Chunk;
   UINT32            Ps;
+  UINT32            Gp;
 
   Result.Ok        = FALSE;
   Result.IntStatus = 0;
@@ -1221,6 +1268,8 @@ ReadDataBlock (
   Result.BytesLeft = (UINT32)Bytes;
   Result.PsAnd     = 0xFF;
   Result.PsOr      = 0x00;
+  Result.GpAnd     = 0xFFF;
+  Result.GpOr      = 0x000;
   Result.Fifo      = 0;
 
   Regs = (volatile UINT32 *)(UINTN)MSDC0_MMIO_BASE;
@@ -1275,6 +1324,15 @@ ReadDataBlock (
     Result.PsAnd &= Ps;
     Result.PsOr  |= Ps;
 
+    //
+    // The same question asked through a different window: the GPIO block reads
+    // the pads itself, so if the pins move here and not in MSDC_PS it is the
+    // controller's input path (pad IES, mux) and not the card.
+    //
+    Gp = PinGroupBits (PINCTRL_DIN_OFS);
+    Result.GpAnd &= Gp;
+    Result.GpOr  |= Gp;
+
     for (;;) {
       Count = MSDC_FIFOCS_RXCNT (Regs[MSDC_FIFOCS_OFS / 4]);
       if ((Count == 0) || (Left == 0)) {
@@ -1319,15 +1377,19 @@ ReadDataBlock (
   One data-phase attempt: optionally CMD6 the card into another bus mode, set the
   host's width to match, then read EXT_CSD and print where it stopped.
 
-  Print shape: `<tag> I=........ sz=........ ps=AA/BB f=.. c6=....`
+  Print shape: `<tag> I=........ sz=........ ps=AA/BB gp=CCC/DD f=.. c6=....`
 
     I    MSDC_INT at the end.  ...0100 is CMDRDY alone (command ok, no data);
          ...1100 adds XFER_COMPL; ...4100 includes DATTMO; ...8100 DATCRCERR.
     sz   EXT_CSD SEC_COUNT -- meaningful only when the read worked.
-    ps   DAT[7:0] that never went low / that went high at least once, accumulated
-         over the whole wait.  ps=FF/FF means the controller never saw the card
-         drive the bus at all; ps=FE/FF means DAT0 was low at some point, i.e.
-         the card did start sending and the host missed it.
+    ps   MSDC_PS DAT[7:0] that never went low / that went high at least once,
+         accumulated over the whole wait: the controller's own view of the pads.
+         ps=FF/FF means it never saw the card drive the bus at all; anything
+         darker means the card did start sending and the host missed it.
+    gp   the same AND/OR taken from the GPIO block's DIN for pins 122..133 (bit
+         0 = pin 122, so DAT0 is bit 2 if 122/123 are CMD/CLK).  Two
+         independent windows onto the same pads: if the pins move in gp and not
+         in ps, the controller's input path is the broken half, not the card.
     f    MSDC_FIFOCS.RXCNT still queued at the end: non-zero means bytes arrived.
     c6   CMD6's interrupt word, 0000 when this attempt did not switch anything.
 
@@ -1384,6 +1446,9 @@ ExtCsdAttempt (
   SayHexN (SystemTable, L" ps=", Data.PsAnd, 2);
   Say (SystemTable, L"/");
   SayHexN (SystemTable, L"", Data.PsOr, 2);
+  SayHexN (SystemTable, L" gp=", Data.GpAnd, 3);
+  Say (SystemTable, L"/");
+  SayHexN (SystemTable, L"", Data.GpOr, 2);
   SayHexN (SystemTable, L" f=", Data.Fifo, 2);
   SayHexN (SystemTable, L" c6=", Sw.IntStatus, 4);
   Say (SystemTable, L"\r\n");
@@ -1548,11 +1613,13 @@ ProbeCardAndMux (
   // shows the CMD6 switches being accepted (I=00000100 twice, st=4 after n=1),
   // so "the card ignored the switch" is not it either.
   //
-  // What is left is which side is silent, and that is cheap to answer: the
-  // ps=<and>/<or> field below is MSDC_PS sampled through the whole wait, i.e.
-  // the pin levels the controller itself sees.  ps=FF/FF -> the card never
-  // drove DAT.  ps=FE/FF or darker -> it did, and the host's data path is the
-  // problem.
+  // IMG_5754 answers it, and the answer is 'neither side is sending': all three
+  // attempts read ps=EF/FF -- the controller's DAT[7:0] stayed high except for
+  // DAT4, which merely wobbled -- while commands, CID and selection kept
+  // working.  A card that has 512 bytes to send never drives only one lane, so
+  // the next question is which pad that wobble is on, and whether the host is
+  // even looking at it.  Hence gp= in the attempt lines (the GPIO block's own
+  // view of the same twelve pins) plus the pad/pinctrl line printed above.
   //
   // Three attempts, each a complete "make host and card agree, read a block"
   // cycle, so one image covers the plausible modes instead of one flash per
@@ -1636,9 +1703,6 @@ ProbeMsdcLeftovers (
 {
   volatile UINT32  *Regs;
   UINT32           Cfg;
-  UINT32           IntStatus;
-  UINT32           IntEnable;
-  UINT32           Resp0;
   CHAR16           Text[10];
 
   //
@@ -1647,50 +1711,45 @@ ProbeMsdcLeftovers (
   // previous single-host snapshot read CFG=0x02000000 (no BIT3), which is
   // exactly the signature of "this is not the host driving the eMMC".
   //
-  Regs      = (volatile UINT32 *)(UINTN)MSDC0_MMIO_BASE;
-  Cfg       = Regs[MSDC_CFG_OFS / 4];
-  IntStatus = Regs[MSDC_INT_OFS / 4];
-  IntEnable = Regs[MSDC_INTEN_OFS / 4];
-  Resp0     = Regs[SDC_RESP0_OFS / 4];
+  Regs = (volatile UINT32 *)(UINTN)MSDC0_MMIO_BASE;
+  Cfg  = Regs[MSDC_CFG_OFS / 4];
 
+  //
+  // One line instead of three: the values have not moved since IMG_5727, and the
+  // text area has a fixed row budget (see ProbeCardAndMux).  H1 is gone for the
+  // same reason -- it is the SD slot and has read its reset values every round.
+  //
   Say (SystemTable, L"H0 C=");
   HexString (Cfg, Text);
   Say (SystemTable, Text);
-  Say (SystemTable, L" E=");
-  HexString (IntEnable, Text);
+  Say (SystemTable, L" S=");
+  HexString (Regs[SDC_CFG_OFS / 4], Text);
   Say (SystemTable, Text);
-  Say (SystemTable, L" I=");
-  HexString (IntStatus, Text);
+  Say (SystemTable, L" P=");
+  HexString (Regs[MSDC_PS_OFS / 4], Text);
   Say (SystemTable, Text);
-  Say (SystemTable, L" R=");
-  HexString (Resp0, Text);
+  Say (SystemTable, L" N=");
+  HexString (Regs[SDC_BLK_NUM_OFS / 4], Text);
   Say (SystemTable, Text);
   Say (SystemTable, L"\r\n");
 
   //
-  // H1 is the SD slot and has read its reset values in every round since
-  // IMG_5727; the line is gone for the same reason as ProbePower's: rows.
+  // And one more line for the things that would make a data phase look dead
+  // while every command works: the pads' input enables, whether the GPIO block
+  // is driving the bus instead of the controller, and the three controller
+  // registers the vendor driver touches that this probe has inherited.
   //
-  {
-    UINT32  SdCfg;
-    UINT32  Ps;
-    UINT32  BlkNum;
+  Say (SystemTable, L"IO ");
+  SayHexN (SystemTable, L"dir=", PinGroupBits (PINCTRL_DIR_OFS), 3);
+  SayHexN (SystemTable, L" do=", PinGroupBits (PINCTRL_DOUT_OFS), 3);
+  SayHex (SystemTable, L" ies=", *(volatile UINT32 *)(UINTN)(MSDC0_PAD_BASE + MSDC0_PAD_IES_OFS));
+  Say (SystemTable, L"\r\n");
 
-    SdCfg  = Regs[SDC_CFG_OFS / 4];
-    Ps     = Regs[MSDC_PS_OFS / 4];
-    BlkNum = Regs[SDC_BLK_NUM_OFS / 4];
-
-    Say (SystemTable, L"H0 S=");
-    HexString (SdCfg, Text);
-    Say (SystemTable, Text);
-    Say (SystemTable, L" P=");
-    HexString (Ps, Text);
-    Say (SystemTable, Text);
-    Say (SystemTable, L" N=");
-    HexString (BlkNum, Text);
-    Say (SystemTable, Text);
-    Say (SystemTable, L"\r\n");
-  }
+  Say (SystemTable, L"IO ");
+  SayHex (SystemTable, L"ioc=", Regs[0x04 / 4]);
+  SayHex (SystemTable, L" f60=", Regs[0x60 / 4]);
+  SayHex (SystemTable, L" adv=", Regs[0x64 / 4]);
+  Say (SystemTable, L"\r\n");
 }
 
 /**

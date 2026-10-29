@@ -102,18 +102,18 @@ thin strip rows, the verdict patch and the three rows of cells.
   y 1216  dots          blue = block devices (x 8), green = volumes (x 380)
   y 1400/1448/1496      stage cells.  16..23 are MsdcDxe's; this driver does
                         not paint them any more, so they stay the M4 evidence.
-  text area             10 lines, fixed position (rows 53..62 of 68):
+  text area             13 lines, fixed position (rows 53..65 of 68):
                         PWR PS=.. DAT=.. CMD=.. CD=.. VEMC=.. vsel=.. w=.. f=..
-                        H0 C=.. E=.. I=.. R=..          (controller leftovers)
-                        H0 S=.. P=.. N=..               (SDC_CFG / PS / BLK_NUM)
+                        H0 C=.. S=.. P=.. N=..          (controller leftovers)
                         C0 I=.. cl=.. f=.. l=.. kc=..   (CMD0: TX self-check)
                         C1 n=.. I=.. R=..               (CMD1 until OCR bit31)
                         C2 3=.. 2=.. 1=.. 0=..          (CID, R2)
                         C3 I=.. R=.. C7 I=.. R=..       (RCA, select)
                         C13 I=.. R=.. st=..             (4 = TRAN)
-                        A8 I=.. sz=.. ps=../.. f=.. c6=....  (8-bit host, card as LK left it)
-                        B8/C8 ...                      (only if the line above failed)
-                        C8 I=.. sz=.. rv=.. bw=.. hs=.. (EXT_CSD, 512-byte read)
+                        IO dir=000 do=000 ies=........  (pins 122..133 / MSDC0 pads)
+                        IO ioc=.. f60=.. adv=..         (controller leftovers)
+                        A8 I=.. sz=.. ps=../.. gp=.../.. f=.. c6=....
+                        B8/C8 ...                       (only if the line above failed)
                         B1 I=.. S=..                    (LBA 1, GPT header)
 
 Reading it, in this order:
@@ -133,9 +133,11 @@ Reading it, in this order:
      `I=...1100` is XFER_COMPL (good); `...0100` alone means the command answered
      and no data ever started; `...4100` adds DATTMO, `...8100` DATCRCERR.
      `sz=` is SEC_COUNT in 512-byte sectors.  `ps=AA/BB` is MSDC_PS sampled
-     through the whole wait: FF/FF means the card never drove DAT at all, FE/FF
-     means it did and the host missed it -- those two need opposite fixes.
-     `f=` is what was still queued in the FIFO.
+     through the whole wait, and `gp=CCC/DD` is the GPIO block's own view of the
+     same pins: ps quiet with gp moving means the controller is not seeing the
+     card, both quiet means the card is not sending.  `f=` is what the FIFO held.
+     `dir=` / `do=` / `ies=` on the IO lines say whether anything else is driving
+     the bus or whether the pads' input enables are off.
 
   4. `B1 S=45464920` is "EFI " from the GPT header at LBA 1; anything else means
      the read worked but the addressing or the partition table did not.
