@@ -7,31 +7,40 @@
 
 ---
 
-## ★ 最新结论（2026-10-29 20:3x）——先读这一节
+## ★ 最新结论（2026-10-29 21:0x）——M4 数据通路已打通
 
-**答案一直在仓库里：line A 的 `bootshim/msdc.c` 已经在同一台手机上读写过 eMMC**
-（[EMMC-LOG.md](EMMC-LOG.md)：往 `flashinfo` 写入 5159 字节并逐字节读回校验通过）。
-它的策略是**「继承 LK 留下的控制器与卡状态，绝不重新初始化」**，而 UEFI 侧这几轮做的
-恰好是它的反面：复位控制器、发 CMD0、从 IDLE 重新初始化卡、把主机位宽改掉。
+**IMG_5762 证明 eMMC 数据读成功**，方式是照抄仓库里已有的 `bootshim/msdc.c`
+（line A 早就用它在这台手机上读写过 eMMC：[EMMC-LOG.md](EMMC-LOG.md)）：
 
-`EXT_CSD[183]`（`BUS_WIDTH`）和 `EXT_CSD[185]`（`HS_TIMING`）是**卡的配置，CMD0 清不掉**，
-所以重新初始化之后卡仍然是 LK 留下的 8 位 HS 模式，而主机已经把自己设成了 1 位 ——
-这就是「命令全通、DAT 一根都不动」的具体形态。
+```
+COUT 0 50x19INH C=02200199 S=09020000 k=1 C'=02210499
+INH C13 I=00000100 R=00000900 st=4
+INH C8  I=00001100 rev=08 bw=06 hs=01 sec=0747C000
+INH B1  I=00001100 S=45464920
+INHERIT OK
+```
 
-完整判读见 [ANALYSIS-INHERIT-VS-REINIT.md](ANALYSIS-INHERIT-VS-REINIT.md)，
-更正见 [CORRECTIONS.md](CORRECTIONS.md) C15。本轮改动：
+- `I=00001100` = CMDRDY + **XFER_COMPL**（四轮重新初始化时永远是 `0100`）；
+- `S=45464920` = LBA 1 的 GPT 头 `"EFI "`，**512 字节读成功**；
+- `bw=06` = `EXT_CSD[183]` **8 位 DDR**，`hs=01` = high speed，`rev=08` = eMMC 5.1；
+- `sec=0747C000` = **122,159,104 扇区 ≈ 62.5 GB**（`flashinfo` 的 LBA 122,109,919 落在里面）；
+- `S=09020000` = `SDC_CFG` 的 `[17:16]=2`，**主机本来也是 8 位**。
 
-- `MsdcDxe` 从 `Include/DXE.inc` + `Include/APRIORI.inc` **整条移除**；
-- `StorageBeaconDxe` Depex 改 `TRUE`，新增 `InheritProbe()`（逐字照抄 `host_bringup()`），
-  打印 `INH C=.. S=.. k=.. C'=..` / `INH C13 ..` / `INH C8 .. rev=.. bw=.. hs=.. sec=..` /
-  `INH B1 .. S=..`；
-- `A8/B8/C8/D8` 四轮阶梯缩成单条 `A8`；
-- `PV ... STALE` 是误读（CMD10 在 TRAN 态非法，bit22 是锁存后由下一条 CMD13 报出的），
-  `SDC_RESP0` **是活的**，本仓库所有 R1 都可信。
+所以真正的错配是「主机把自己设成 1 位、卡还在 8 位 DDR」＋「复位控制器、重新初始化卡」。
+`bootshim/msdc.c` 的策略是**继承 LK 留下的控制器与卡状态，绝不重新初始化**，只改时钟分频。
 
-**下一个动作**：看 `INH` 四行。`INH C8 I=...1100`（含 `XFER_COMPL`）+ `INH B1 S=45464920`
-就是成功，接下来把 `bootshim/msdc.c` 的读路径整体搬成一个 `DandelionEmmcDxe` 产出 `BlockIo`，
-M4 收尾；判读表在 [ANALYSIS-INHERIT-VS-REINIT.md](ANALYSIS-INHERIT-VS-REINIT.md) §5。
+**已落地**：`Platforms/Xiaomi/dandelionPkg/Drivers/DandelionEmmcDxe/` —— 继承 `MSDC0`、
+**时钟自校准**（CKDIV `26/52/104/260` 依次试，每档读 LBA 1 校验 `"EFI "`）、
+发布 `EFI_BLOCK_IO_PROTOCOL`。**这一版 `ReadOnly = TRUE`**：写路径（CMD24/CMD25）已实现但没打开，
+因为这是日常手机，读通路先验证几轮。
+
+本文档其余部分（尤其 §1、§3 那些"卡不发数据"的分析）**保留为历史**；
+现在的判读以 [ANALYSIS-INHERIT-VS-REINIT.md](ANALYSIS-INHERIT-VS-REINIT.md) §8 为准，
+打包踩过的坑（刷了两轮旧固件）见 [CORRECTIONS.md](CORRECTIONS.md) C16。
+
+**下一个动作**：看面板上是否出现 `EMMC OK div=.. sec=..`、`BLOCK OK`、`FAT OK`。
+出现 `FAT OK` 就是 M4 收尾；然后把 `ReadOnly` 打开，`PayloadBootDxe` 的
+`FlushLogToFlash()` 就活了 —— **日志写进 `flashinfo`，`adb pull` 就能读，不用再拍照**。
 
 ---
 
@@ -122,7 +131,7 @@ R1=0x00000900，无错误位），但**没有任何一根 DAT 被驱动**：
 
 ### 3.1 先看 `PV` 行：`SDC_RESP0` 到底跟不跟着命令走
 
-**刷 `artifacts/boot-uefi-inh.img`**（sha256 `ba70223d…`，2026-10-29 20:3x 本地构建），
+**刷 `artifacts/boot-uefi-blockio.img`**（sha256 `22499561…`，2026-10-29 20:3x 本地构建），
 `C13` 那行后面会多出一行：
 
 ```
@@ -158,7 +167,7 @@ A8 I=0100 R=00000900 sz=00000000 ps=EF/FF gp=DF8/DFF f=00 k=14994 c6=00000000 t=
 刷机（手机必须在 fastboot；MTK LK 不支持 `fastboot boot`）：
 
 ```powershell
-powershell -File tools\flash.ps1        # 默认就是 boot-uefi-inh.img
+powershell -File tools\flash.ps1        # 默认就是 boot-uefi-blockio.img
 # 手机关机：长按电源 ~10 s；然后 电源 + 音量下 进 fastboot
 ```
 
@@ -196,7 +205,7 @@ GitHub API 用 git credential fill 取 token 后带 Bearer；匿名会被限流�
 
 **已经在 git 里、不用重建就能刷的**：
 
-- `artifacts\boot-uefi-inh.img`（16 MB，当前上机镜像，sha256 `ba70223d…`）
+- `artifacts\boot-uefi-blockio.img`（16 MB，当前上机镜像，sha256 `22499561…`）
 
 另外 D:\aios\xnu（Apple xnu-8796.141.3 的本地移植，**线 A，已冻结**）**没有可推送的远端**：
 已在那棵树里提交为分支 dandelion-port（5a023ec），并把整份改动的 patch 放进本仓库

@@ -104,6 +104,7 @@ APRIORI DXE {
   # system" -- went to the serial port and never to the panel.
   #
   INF dandelionPkg/Drivers/DandelionConsoleDxe/DandelionConsoleDxe.inf
+  INF dandelionPkg/Drivers/DandelionEmmcDxe/DandelionEmmcDxe.inf
   #
   # Storage connect sweep -- after the console on purpose (2026-10-29 01:0x).
   #
@@ -116,8 +117,7 @@ APRIORI DXE {
   #
   # Dispatch is safe to leave past the console: the console's own entry point
   # now paints a bar at y 1384 when it returns, and on hardware that bar appears,
-  # so the dispatcher keeps going.  MsdcDxe (which must not depend on any of
-  # this) stays before the console.
+  # so the dispatcher keeps going.
   #
   INF dandelionPkg/Drivers/StorageBeaconDxe/StorageBeaconDxe.inf
   #

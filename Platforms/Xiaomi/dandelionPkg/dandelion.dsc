@@ -185,8 +185,15 @@
   dandelionPkg/Drivers/DandelionConsoleDxe/DandelionConsoleDxe.inf
 
   #
-  # M4 storage beacon: [Depex] gEfiSimpleFileSystemProtocolGuid, so it only
-  # runs once FAT has a volume.  Its line on the panel is the M4 criterion.
+  # M4 eMMC: inherit LK's MSDC0 controller and card state, then publish BlockIo.
+  # This has to be the first thing in the firmware that touches MSDC0 -- see
+  # docs/ANALYSIS-INHERIT-VS-REINIT.md.
+  #
+  dandelionPkg/Drivers/DandelionEmmcDxe/DandelionEmmcDxe.inf
+
+  #
+  # M4 storage beacon: reports how far eMMC -> BlockIo -> partition -> FAT got.
+  # Its line on the panel is the M4 criterion.
   #
   dandelionPkg/Drivers/StorageBeaconDxe/StorageBeaconDxe.inf
 

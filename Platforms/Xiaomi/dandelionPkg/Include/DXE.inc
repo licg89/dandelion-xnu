@@ -59,6 +59,8 @@
   # want until the inherit path produces a BlockIo of its own.
   #
 # INF MediaTekPkg/Drivers/MsdcDxe/MsdcDxe.inf
+  # M4 eMMC, before the beacon so the beacon has a BlockIo handle to report on.
+  INF dandelionPkg/Drivers/DandelionEmmcDxe/DandelionEmmcDxe.inf
   # M4 beacon: now self-contained -- it is the eMMC driver, not a reporter on
   # top of one.
   INF dandelionPkg/Drivers/StorageBeaconDxe/StorageBeaconDxe.inf

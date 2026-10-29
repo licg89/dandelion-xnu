@@ -167,3 +167,59 @@ CMD0 不会清掉它们**。卡被 LK 留在 8 位 HS 模式，我们重新初�
 
 > 附带修正：`InheritProbe()` 现在在 `CKSTB` 没回来时**直接返回**（`bootshim` 也是这么做的，
 > 返回 `MSDC_ENOCLK`），不再在时钟被门控的情况下白等 200 ms + 3 s。
+
+---
+
+## 8. 结论（IMG_5762）：继承路径就是答案，M4 数据通路打通
+
+```
+COUT 0 50x19INH C=02200199 S=09020000 k=1 C'=02210499
+INH C13 I=00000100 R=00000900 st=4
+INH C8  I=00001100 rev=08 bw=06 hs=01 sec=0747C000
+INH B1  I=00001100 S=45464920
+INHERIT OK
+```
+
+逐条：
+
+| 读数 | 含义 |
+|---|---|
+| `I=00001100` | CMDRDY **+ XFER_COMPL** —— 数据相位真的走完了。四轮重新初始化时这里永远是 `0100` |
+| `S=45464920` | LBA 1 的 GPT 头，`"EFI "`。**512 字节读成功** |
+| `bw=06` | `EXT_CSD[183]` = **8 位 DDR**。LK 一直把卡留在 8 位 DDR 高速模式 |
+| `hs=01` | `EXT_CSD[185]` = high speed（不是 HS200/HS400） |
+| `rev=08` | eMMC 5.1 |
+| `sec=0747C000` | **122,159,104 扇区 = 62.5 GB**，与 `flashinfo` 的 LBA 122,109,919 一致 |
+| `C=02200199` | 继承的 `MSDC_CFG`：`CKDIV=1`（满速）、`CKMOD=2`、`CKSTB=1`、`MODE=1`、`PIO=1` |
+| `S=09020000` | 继承的 `SDC_CFG`：`[17:16]=2` → **主机也是 8 位**。和 `EXT_CSD[183]` 对上了 |
+| `C'=02210499` | 我们改完的 `MSDC_CFG`：`CKDIV=0x104=260`，其余位（CKMOD/CCKPD/CKSTB）原样保留 |
+
+**所以真正的错配是"主机把自己设成 1 位、卡还在 8 位 DDR"**，加上"控制器被复位、卡被重新初始化"。
+`A8` 那一档虽然也把主机设成 8 位，但前面已经复位过控制器并从 IDLE 重新初始化过卡 ——
+现在可以确定变量在**重新初始化**这一侧（或者复位），而不在总线位宽本身。
+
+### 8.1 落地
+
+新增 `Platforms/Xiaomi/dandelionPkg/Drivers/DandelionEmmcDxe/`：
+
+- `EmmcInherit()`：`INTEN=0`、`INT` 全清、`SDC_CFG` 只放宽 `DTOC`/`WRDTOC`（**不动 BUSWIDTH**）、
+  `CMD13` 确认 TRAN、`CMD8` 读 `EXT_CSD`、`CMD17` 读 LBA 1 校验 `"EFI "`；
+- **时钟自校准**：依次试 `CKDIV = 26 / 52 / 104 / 260`（快→慢），
+  每一档都"设时钟 → 等 `CKSTB` → 读 `EXT_CSD` → 读 LBA 1 校验签名"，
+  第一个通过的留下。bootshim 固定 260（≈385 kHz）是因为它只写 5 KiB；
+  FAT 要读几个 MB，所以这里要尽量快，但不能猜采样点；
+- `ReadSectors`/`WriteSectors`：单块 `CMD17`/`CMD24`，多块 `CMD18`/`CMD25`，
+  每次最多 128 块（64 KiB），中间用 64 KiB bounce buffer（BlockIo 调用方不保证对齐）；
+- 发布 `EFI_BLOCK_IO_PROTOCOL` + `VENDOR_DEVICE_PATH`，`LastBlock = sec - 1`。
+
+**这一版 `Media->ReadOnly = TRUE`。** 写路径（`CMD24`/`CMD25`）已经实现了，但没打开：
+这是用户的日常手机，读通路先在真机上验证几轮，写通路再一步打开。
+
+### 8.2 下一步
+
+1. `BlockIo` → `PartitionDxe` → `FatPkg` 应该能自己绑上（`StorageBeaconDxe` 的
+   `ConnectEverything()` 会做 connect sweep），面板上要出现 `BLOCK OK` / `FAT OK`；
+2. 读通路稳定后把 `ReadOnly` 改成 `FALSE`，`PayloadBootDxe` 的 `FlushLogToFlash()` 就活了 ——
+   **日志写进 `flashinfo`，直接 `adb pull`，不用再拍照**；
+3. 然后 M6 的外部依赖照旧（缺 `UniXNU.efi` 等产物）。
+

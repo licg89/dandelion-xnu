@@ -2207,18 +2207,20 @@ StorageBeaconDxeEntryPoint (
   Inherited = InheritProbe (SystemTable);
 
   //
-  // Then the older register snapshot, which now describes what LK left rather
-  // than what MsdcDxe left: MsdcDxe is no longer in the firmware volume, because
-  // its bring-up (controller reset, CMD0, card re-init, host bus width) is
-  // exactly what InheritProbe exists to avoid.  Read-only apart from a bounded
-  // CMD12, and text-only: the graphics band belongs to the probes below.
+  // The older register snapshot does one bounded CMD12 to put a card stuck
+  // mid-transfer back into TRAN.  That is exactly the wrong thing to do to a
+  // card that just proved it can read: CMD12 with nothing in flight latches an
+  // error bit in the card's status, and the next command's R1 then carries it.
+  // So it only runs when the inherit path failed and there is nothing to
+  // protect.  Text-only either way.
   //
-  ProbeMsdcLeftovers (SystemTable);
+  if (!Inherited) {
+    ProbeMsdcLeftovers (SystemTable);
+  }
 
   //
   // The band, cell 6 and the header: reads MSDC_PS before it draws a single
-  // pixel.  It runs after InheritProbe on purpose -- InheritProbe has already
-  // re-divided the clock by then, and that is the state worth reporting.
+  // pixel.  Read-only, so it is safe on a working bus.
   //
   ProbePower (SystemTable, &PowerVerdict);
 

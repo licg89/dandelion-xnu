@@ -8,19 +8,43 @@ checkout 完整复现。构建与打包的完整环境见
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
-| `boot-uefi-inh.img` | 16,099,328 B | **当前上机版**：`MsdcDxe` 已从 FV 里移除，改由 `StorageBeaconDxe` 的 **`InheritProbe()`** 逐字照抄 `bootshim/msdc.c` 的「继承、绝不重新初始化」路径，打印 4 行 `INH` |
+| `boot-uefi-blockio.img` | 16,099,328 B | **当前上机版**：新增 `DandelionEmmcDxe`，按 `bootshim/msdc.c` 的「继承、绝不重新初始化」策略读 eMMC 并发布 `BlockIo`（只读）；`StorageBeaconDxe` 保留 4 行 `INH` 作为证据 |
 | `panel-preview.png` | 720×1600 | `tools/render_panel_preview.py` 渲染的仪表区，**不用刷机就能看布局** |
 
-> 更早的几版（`boot-uefi-pv.img`、`boot-uefi-state.img`、`boot-uefi-blockio.img`、
+> 更早的几版（`boot-uefi-inh.img`、`boot-uefi-pv.img`、`boot-uefi-state.img`、
 > `boot-uefi-power.img` …）不再跟着仓库一起变大：它们仍在 git 历史里，需要时
 > `git log -- artifacts/` 取。仓库里只保留当前版本。
 
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-a4e9f3ef479908edf0c12b8123439317a35d2a99401d0d2a464b03e98cb16a5f  SILICIUM_UEFI.fd
-307f025c28253266042d60cfa1fb5b9441d004aaf7a0b34677be525d061778e5  boot-uefi-inh.img
+442e7232511c216fa5311dc81c3d8a7932d72719806fb6b52f9a45070701b521  SILICIUM_UEFI.fd
+22499561e900b795ddda5b8e8e03ed684590dee3bcdd84b93c12438926136403  boot-uefi-blockio.img
 ```
+
+## 这一版是什么（2026-10-29 21:0x，第十三版）——M4 数据通路打通
+
+上一版（`boot-uefi-inh.img`）的读数（IMG_5762）把 eMMC 数据相位解决了：
+
+```
+COUT 0 50x19INH C=02200199 S=09020000 k=1 C'=02210499
+INH C13 I=00000100 R=00000900 st=4
+INH C8  I=00001100 rev=08 bw=06 hs=01 sec=0747C000
+INH B1  I=00001100 S=45464920
+INHERIT OK
+```
+
+`I=00001100` = CMDRDY + **XFER_COMPL**；`S=45464920` = LBA 1 的 `"EFI "`。
+`bw=06` = `EXT_CSD[183]` **8 位 DDR**，`hs=01` = high speed，`sec=0747C000` = 122,159,104 扇区
+（62.5 GB）。所以真正的错配一直是「主机把自己设成 1 位、卡还在 8 位 DDR」＋「复位控制器、
+重新初始化卡」—— 而 `bootshim/msdc.c` 早就在同一台手机上用「继承」策略读写成功过。
+
+这一版把那条路径变成驱动：新增 `Platforms/Xiaomi/dandelionPkg/Drivers/DandelionEmmcDxe/`，
+继承 `MSDC0`、**时钟自校准**（CKDIV 26/52/104/260 依次试，读 LBA 1 校验签名）、
+发布 `EFI_BLOCK_IO_PROTOCOL`（**这一版只读**，写路径实现了但没打开）。
+
+完整判读见 [`docs/ANALYSIS-INHERIT-VS-REINIT.md`](../docs/ANALYSIS-INHERIT-VS-REINIT.md) §8，
+打包踩过的坑见 [`docs/CORRECTIONS.md`](../docs/CORRECTIONS.md) C16。
 
 ## 这一版是什么（2026-10-29 20:3x，第十二版）
 
