@@ -931,6 +931,27 @@ PublishLog (
   return EFI_SUCCESS;
 }
 
+/**
+  Tell the console to stop rendering.
+
+  BDS runs after this driver and prints a screenful of its own; the text area holds
+  68 lines, so that output is what pushed the eMMC evidence out of earlier
+  photographs.  The console recognises a line starting with the marker below and
+  drops everything after it (see DandelionOutputString).  This has to be the last
+  thing printed here: it is, by construction, the point at which the firmware
+  stops talking and the panel becomes stable evidence.
+**/
+STATIC
+VOID
+FreezeConsole (
+  VOID
+  )
+{
+  if ((gST != NULL) && (gST->ConOut != NULL)) {
+    gST->ConOut->OutputString (gST->ConOut, L"@@FREEZE@@\r\n");
+  }
+}
+
 EFI_STATUS
 EFIAPI
 PayloadBootEntryPoint (
@@ -985,9 +1006,11 @@ PayloadBootEntryPoint (
     //
     PaintBar (PAYLOAD_BAR_FAIL);
     Say (L"PayloadBoot: no payload found (this is expected before M4/M5)\r\n");
+    FreezeConsole ();
     return EFI_SUCCESS;
   }
 
   PaintBar (PAYLOAD_BAR_OK);
+  FreezeConsole ();
   return EFI_SUCCESS;
 }

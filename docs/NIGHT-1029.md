@@ -36,7 +36,7 @@ powershell -File tools\flash.ps1
 
 | 文件 | 大小 | sha256 |
 |---|---|---|
-| `SILICIUM_UEFI.fd` | 2,097,152 | `8b8c702a…65758` |
+| `SILICIUM_UEFI.fd` | 2,097,152 | `8fa1919b…4cb35` |
 | `boot-uefi-m5-dma.img` | 16,099,328 | `2028dbb6…a8bce` |
 
 恢复原厂：`powershell -File tools\flash.ps1 -Restore`

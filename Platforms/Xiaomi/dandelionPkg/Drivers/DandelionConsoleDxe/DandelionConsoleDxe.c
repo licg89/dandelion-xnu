@@ -75,6 +75,14 @@ STATIC UINT32  mBg = 0x00000000;
 //
 STATIC BOOLEAN  mRowNeedsClear = FALSE;
 
+//
+// Set once the console has been told to stop rendering (see the marker check in
+// DandelionOutputString).  Everything printed afterwards is dropped, which is the
+// point: BDS prints a screenful of its own after bring-up and the text area only
+// holds 68 lines.
+//
+STATIC BOOLEAN  mFrozen = FALSE;
+
 /*
   Text log ring.
 
@@ -313,6 +321,27 @@ DandelionOutputString (
 {
   if (String == NULL) {
     return EFI_INVALID_PARAMETER;
+  }
+
+  //
+  // Freeze request.
+  //
+  // After eMMC bring-up has printed its evidence, BDS still prints a screenful of
+  // its own -- and the console keeps only the last 68 lines, so BDS output is
+  // exactly what pushed the `ddn ...` lines out of earlier photographs.  A line
+  // that begins with the marker below stops the console rendering anything else,
+  // so what a photo shows from then on is what the bring-up decided to show.
+  //
+  // The marker itself is swallowed, and so is its newline; the last visible line
+  // is whatever came before it.
+  //
+  if (mFrozen) {
+    return EFI_SUCCESS;
+  }
+
+  if ((mMode.CursorColumn == 0) && (String[0] == L'@') && (String[1] == L'@') && (String[2] == L'F')) {
+    mFrozen = TRUE;
+    return EFI_SUCCESS;
   }
 
   for ( ; *String != L'\0'; String++) {
