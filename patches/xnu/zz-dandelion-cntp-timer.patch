@@ -55,19 +55,6 @@ index 76582da..4510431 100644
  }
  
  void
-diff --git a/pexpert/pexpert/arm64/DANDELION.h b/pexpert/pexpert/arm64/DANDELION.h
-index 4a93691..a1e8f2f 100644
---- a/pexpert/pexpert/arm64/DANDELION.h
-+++ b/pexpert/pexpert/arm64/DANDELION.h
-@@ -104,7 +104,7 @@
- 
- /* ARM generic timer: clock-frequency = <13000000>, GIC PPI 11. */
- #define DANDELION_TIMER_FREQ      13000000
--#define DANDELION_TIMER_IRQ       27
-+#define DANDELION_TIMER_IRQ       30   /* CNTP: what Linux uses on this GIC */
- 
- /* MediaTek TOPRGU watchdog. */
- #define DANDELION_WDT_BASE        0x10007000ULL
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
 index b4cad4e..788cc9c 100644
 --- a/pexpert/arm/pe_fiq.c

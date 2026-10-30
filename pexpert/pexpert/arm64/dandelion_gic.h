@@ -889,9 +889,9 @@ dgic_timer_test(struct dgic *g, unsigned int irq, unsigned long timeout_us)
 	}
 
 	/* One tick of 1 kHz, then unmask; the counter runs regardless of DAIF. */
-	__asm__ volatile("msr CNTV_TVAL_EL0, %0" : :
+	__asm__ volatile("msr CNTP_TVAL_EL0, %0" : :
 	    "r"(frequency / 1000u) : "memory");
-	__asm__ volatile("msr CNTV_CTL_EL0, %0" : : "r"(1ul) : "memory");
+	__asm__ volatile("msr CNTP_CTL_EL0, %0" : : "r"(1ul) : "memory");
 	dgic_isb();
 
 	start = dgic_cntvct();
@@ -901,7 +901,7 @@ dgic_timer_test(struct dgic *g, unsigned int irq, unsigned long timeout_us)
 		unsigned long ctl;
 		unsigned int intid;
 
-		__asm__ volatile("mrs %0, CNTV_CTL_EL0" : "=r"(ctl));
+		__asm__ volatile("mrs %0, CNTP_CTL_EL0" : "=r"(ctl));
 		if (ctl & 4ul) {                /* ISTATUS: the timer expired */
 			fired = 1;
 		}
@@ -920,7 +920,7 @@ dgic_timer_test(struct dgic *g, unsigned int irq, unsigned long timeout_us)
 	}
 
 	/* Stop the timer again so the caller starts from a known state. */
-	__asm__ volatile("msr CNTV_CTL_EL0, %0" : : "r"(0ul) : "memory");
+	__asm__ volatile("msr CNTP_CTL_EL0, %0" : : "r"(0ul) : "memory");
 	dgic_isb();
 
 	/* bit0: reached the CPU interface, bit1: the timer itself expired. */

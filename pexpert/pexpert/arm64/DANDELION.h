@@ -104,7 +104,7 @@
 
 /* ARM generic timer: clock-frequency = <13000000>, GIC PPI 11. */
 #define DANDELION_TIMER_FREQ      13000000
-#define DANDELION_TIMER_IRQ       27
+#define DANDELION_TIMER_IRQ       30   /* CNTP: the PPI Linux gets on this GIC */
 
 /* MediaTek TOPRGU watchdog. */
 #define DANDELION_WDT_BASE        0x10007000ULL
