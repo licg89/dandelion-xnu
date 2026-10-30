@@ -1,0 +1,117 @@
+diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
+index 797d033..aa161a1 100644
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -365,11 +365,13 @@ arm_init(
+ 	DTEntry chosen = NULL;
+ 	unsigned int dt_entry_size = 0;
+ 
++	DANDELION_PROBE(900, 0xff00ffffU);      /* cyan: arm_init entered */
+ 	DANDELION_TRACE("\n=== xnu: arm_init ===\n");
+ 
+ 	arm_setup_pre_sign();
+ 
+ 	arm_slide_rebase_and_sign_image();
++	DANDELION_PROBE(910, 0xffffff00U);      /* yellow: pre-sign + slide done */
+ 
+ 	/* If kernel integrity is supported, use a constant copy of the boot args. */
+ 	const_boot_args = *args;
+@@ -383,6 +385,7 @@ arm_init(
+ #endif /* defined(HAS_APPLE_PAC) */
+ 
+ 	PE_init_platform(FALSE, args); /* Get platform expert set up */
++	DANDELION_PROBE(920, 0xff00ff00U);      /* green: PE_init_platform(FALSE) done */
+ 	DANDELION_TRACE("arm_init: PE_init_platform(FALSE)\n");
+ 
+ #if __arm64__
+@@ -445,6 +448,7 @@ arm_init(
+ #endif
+ 
+ 	ml_parse_cpu_topology();
++	DANDELION_PROBE(930, 0xff0000ffU);      /* blue: cpu topology parsed */
+ 
+ 	DANDELION_TRACE("arm_init: cpu topology\n");
+ 
+@@ -483,7 +487,9 @@ arm_init(
+ 	DANDELION_TRACE("arm_init: rtclock_early_init\n");
+ 
+ 	kernel_debug_string_early("kernel_startup_bootstrap");
++	DANDELION_PROBE(940, 0xffff00ffU);      /* magenta: before kernel_startup_bootstrap */
+ 	kernel_startup_bootstrap();
++	DANDELION_PROBE(950, 0xffff8000U);      /* orange: kernel_startup_bootstrap done */
+ 	DANDELION_TRACE("arm_init: kernel_startup_bootstrap\n");
+ 
+ 	/*
+diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
+index ad6eb44..d842f85 100644
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -1841,6 +1841,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 	vm_offset_t      ptpage_vaddr;
+ 	vm_map_address_t dynamic_memory_begin;
+ 
++	DANDELION_PROBE(960, 0xffff0000U);      /* red: arm_vm_init entered */
+ 	DANDELION_TRACE("arm_vm_init: enter\n");
+ 
+ 	/*
+@@ -1931,6 +1932,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ #endif
+ #endif
+ 	DANDELION_TRACE("vm: memory bounds\n");
++	DANDELION_PROBE(970, 0xff8000ffU);      /* purple: memory bounds ok, before boot_tte */
+ 	if (dynamic_memory_begin > VM_MAX_KERNEL_ADDRESS) {
+ 		panic("Unsupported memory configuration %lx", mem_size);
+ 	}
+@@ -2211,6 +2213,7 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ 
+ 	flush_mmu_tlb();
+ 	kva_active = TRUE;
++	DANDELION_PROBE(980, 0xff00ff80U);      /* spring green: kva_active, identity map kept */
+ 	/* The identity map is gone; the physmap covers the trace buffer. */
+ 	DANDELION_TRACE_ATTACH();
+ 	DANDELION_TRACE("arm_vm_init: kva_active\n");
+diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
+index 6987219..254e126 100644
+--- a/osfmk/kern/printf.c
++++ b/osfmk/kern/printf.c
+@@ -1189,21 +1189,29 @@ dandelion_fb_putc(char c)
+  * bar is written straight into the panel's own pixel rows, independent of
+  * the text cursor and of the trace buffer, and the D-cache lines are
+  * cleaned afterwards so the display controller actually sees the pixels.
++ *
++ * Six pixel rows, not one: a single scanline is 1/1600 of the panel and does
++ * not survive a hand-held photograph of a 6-inch screen (IMG_5797: the ladder
++ * was invisible even where the probe had certainly run).
+  */
++#define DANDELION_PROBE_H 6
++
+ void
+ dandelion_probe_bar(unsigned int row, unsigned int color)
+ {
+-	volatile unsigned int *p = (volatile unsigned int *)
+-	    (DANDELION_FB_PA + (unsigned long)row * DANDELION_FB_STRIDE +
+-	    (unsigned long)DANDELION_PROBE_X * 4);
+-	unsigned long base = (unsigned long)p & ~63UL;
+-	unsigned long bytes = ((unsigned long)DANDELION_PROBE_W * 4 + 63UL) & ~63UL;
+-
+-	for (unsigned int i = 0; i < DANDELION_PROBE_W; i++) {
+-		p[i] = color;
+-	}
+-	for (unsigned long i = 0; i < bytes; i += 64) {
+-		__asm__ volatile("dc cvac, %0" :: "r"(base + i) : "memory");
++	for (unsigned int r = 0; r < DANDELION_PROBE_H; r++) {
++		volatile unsigned int *p = (volatile unsigned int *)
++		    (DANDELION_FB_PA + (unsigned long)(row + r) * DANDELION_FB_STRIDE +
++		    (unsigned long)DANDELION_PROBE_X * 4);
++		unsigned long base = (unsigned long)p & ~63UL;
++		unsigned long bytes = ((unsigned long)DANDELION_PROBE_W * 4 + 63UL) & ~63UL;
++
++		for (unsigned int i = 0; i < DANDELION_PROBE_W; i++) {
++			p[i] = color;
++		}
++		for (unsigned long i = 0; i < bytes; i += 64) {
++			__asm__ volatile("dc cvac, %0" :: "r"(base + i) : "memory");
++		}
+ 	}
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ }
