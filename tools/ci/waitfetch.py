@@ -59,7 +59,10 @@ def main():
 
     run = None
     while True:
-        runs = json.loads(curl(api + "/actions/runs?per_page=10"))["workflow_runs"]
+        # Authenticate this call too: the unauthenticated rate limit is 60/hour
+        # per IP and this loop runs every 20 s, so it used to end in a JSON
+        # KeyError ('workflow_runs') the moment the limit was hit.
+        runs = json.loads(curl(api + "/actions/runs?per_page=10", token))["workflow_runs"]
         if args.sha:
             run = next((r for r in runs
                         if r["name"] == "build-xnu" and r["head_sha"].startswith(args.sha)), None)
