@@ -36,12 +36,13 @@ env:
 
 jobs:
   build:
-    # macos-14 is retired on 2026-11-02 and is in a brownout schedule until then,
-    # which cancels queued jobs with "This job failed because of a scheduled macOS 14
-    # runner image brownout".  It stays until the macos-15 path can build this tree:
-    # that image carries only Xcode 16.x/26.x (clang 17+), which rejects xnu-8796's
-    # uio_stackbuf_t arrays and its DriverKit IIG glue.  See docs/CI-RUNNERS.md.
-    runs-on: macos-14
+    # macos-14 is retired on 2026-11-02 and its brownout windows cancel queued jobs
+    # ("This job failed because of a scheduled macOS 14 runner image brownout"), so
+    # the build lives on macos-15 now.  That image has no Xcode 15 - only 16.x and
+    # 26.x, i.e. clang 17+ - which rejected this 2023 tree in two ways; patches
+    # zzz7 (uio_stackbuf_t array alignment) and zzz8 (DriverKit IORPC::kernelContent)
+    # are what make it buildable there.  docs/CI-RUNNERS.md has the details.
+    runs-on: macos-15
     timeout-minutes: 240
 
     env:
@@ -53,18 +54,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # xnu-8796 is from 2023 and expects clang 15.  The macos-15 image's default
-      # Xcode ships a much newer clang, which rejects code this tree still has
-      # (first: the -enable-trivial-auto-var-init-zero-... flag, then the
-      # uio_stackbuf_t arrays in bsd/vfs/vfs_attrlist.c and security/mac_vfs_subr.c:
-      # "size of array element ... isn't a multiple of its alignment").  Pinning an
-      # older Xcode is the fix that does not require touching the tree; the list of
-      # installed Xcodes is printed so a future image change is diagnosable from the
-      # log instead of by guesswork.
-      - name: Select an Xcode whose clang can build this tree
+      # Pick one Xcode explicitly instead of taking whatever the image defaults to,
+      # so a toolchain change shows up as a one-line difference in this file rather
+      # than as a mysterious compile error.  Xcode 16.4 is the version whose clang 17
+      # produced the two failures zzz7/zzz8 fix; the list is printed either way so a
+      # future image change is diagnosable from the log.
+      - name: Select the Xcode this tree is verified against
         run: |
           ls -d /Applications/Xcode*.app || true
-          for candidate in Xcode_15.4 Xcode_15.3 Xcode_15.2 Xcode_15.1 Xcode_15.0; do
+          for candidate in Xcode_16.4 Xcode_16.3 Xcode_16.2 Xcode_16.1 Xcode_16.0 Xcode_16; do
             if [ -d "/Applications/$candidate.app" ]; then
               echo "selecting $candidate"
               sudo xcode-select -s "/Applications/$candidate.app"
