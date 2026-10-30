@@ -289,10 +289,10 @@ index aeedc7d..1d72b3e 100644
  	OSSafeReleaseNULL(matching);
  
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
-index c771097..c7b8308 100644
+index c771097..c2988dc 100644
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
-@@ -1,332 +1,426 @@
+@@ -1,332 +1,391 @@
 -/*
 - * Copyright (c) 2021 Apple Inc. All rights reserved.
 - *
@@ -963,51 +963,16 @@ index c771097..c7b8308 100644
 +	}
 +
 +	/*
-+	 * Experiment C: does the Group 1 NS path work at all?
-+	 *
-+	 * Sending a software generated interrupt to this PE asks the question
-+	 * without the timer: an SGI is not gated by GICR_ICFGR, does not depend
-+	 * on the counter, and its INTID is known.  ICC_IGRPEN1 is cleared first
-+	 * so that a pending interrupt can never be delivered to the CPU during
-+	 * the test (an unexpected IRQ at this point would run the kernel's
-+	 * handler with a stack that is not expecting it); the pending bit is
-+	 * still observable, because pending state does not depend on the group
-+	 * enable.  Everything is restored afterwards.
-+	 *
-+	 *   ISPENDR0 bit9 set  the redistributor frame is this PE's and Group 1
-+	 *                      NS interrupts can be pended -> the timer problem
-+	 *                      is the PPI line, not the group enable
-+	 *   bit9 still clear   nothing of Group 1 NS can be made pending here
++	 * Experiment C (the SGI self-test) used to live here.  It cleared
++	 * ICC_IGRPEN1_EL1 to keep an SGI from being delivered, and the
++	 * 2026-10-31 01:0x boot showed the probe never advancing past it
++	 * once timer interrupts were live -- with a working tick, masking
++	 * the group enable under a running kernel is a hostile thing to do.
++	 * It has also answered its question already: on 690cb43 the SGI set
++	 * GICR_ISPENDR0 bit 9, so Group 1 NS interrupts can be pended in
++	 * this PE's redistributor.  Removed rather than fixed: nothing
++	 * downstream needs it.
 +	 */
-+	printf("[dl] gic step C: sgi\n");
-+	{
-+		uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
-+		unsigned int aff0 = (unsigned int)(mpidr & 0xffull);
-+		unsigned int aff1 = (unsigned int)((mpidr >> 8) & 0xffull);
-+		uint32_t before = dgic_read32(redist, DGICR_ISPENDR0);
-+		uint32_t after = 0;
-+		unsigned int spin;
-+
-+		printf("[dl] gic step C1: igrpen1 off\n");
-+		__builtin_arm_wsr64("ICC_IGRPEN1_EL1", 0ul);
-+		dgic_isb();
-+		dgic_send_sgi(&dandelion_gic, 9u, aff1, 1u << aff0);
-+		for (spin = 0; spin < 100000u; spin++) {
-+			after = dgic_read32(redist, DGICR_ISPENDR0);
-+			if (after & (1u << 9)) {
-+				break;
-+			}
-+		}
-+		printf("[dl] gic step C2: ispender0=%x\n", after);
-+		dgic_write32(redist, DGICR_ICPENDR0, 1u << 9);
-+		__builtin_arm_wsr64("ICC_IGRPEN1_EL1", 1ul);
-+		dgic_isb();
-+		printf("[dl] gic step C3: igrpen1 restored\n");
-+		printf("[dl] gic late: sgi self-test ispender0 %x -> %x "
-+		    "(bit9=%u spin=%u mpidr=%llx)\n", before, after,
-+		    (after & (1u << 9)) ? 1u : 0u, spin,
-+		    (unsigned long long)mpidr);
-+	}
 +
 +	/* 4. Make sure the CPU interface and the ack/eoi helpers are usable. */
 +	if (!dandelion_gic_ready) {
