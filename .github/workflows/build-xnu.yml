@@ -53,6 +53,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # xnu-8796 is from 2023 and expects clang 15.  The macos-15 image's default
+      # Xcode ships a much newer clang, which rejects code this tree still has
+      # (first: the -enable-trivial-auto-var-init-zero-... flag, then the
+      # uio_stackbuf_t arrays in bsd/vfs/vfs_attrlist.c and security/mac_vfs_subr.c:
+      # "size of array element ... isn't a multiple of its alignment").  Pinning an
+      # older Xcode is the fix that does not require touching the tree; the list of
+      # installed Xcodes is printed so a future image change is diagnosable from the
+      # log instead of by guesswork.
+      - name: Select an Xcode whose clang can build this tree
+        run: |
+          ls -d /Applications/Xcode*.app || true
+          for candidate in Xcode_15.4 Xcode_15.3 Xcode_15.2 Xcode_15.1 Xcode_15.0; do
+            if [ -d "/Applications/$candidate.app" ]; then
+              echo "selecting $candidate"
+              sudo xcode-select -s "/Applications/$candidate.app"
+              break
+            fi
+          done
+          xcode-select -p
+          clang --version
+
       - name: Toolchain
         run: |
           sw_vers
