@@ -21,13 +21,13 @@ set -uo pipefail
 TREE=${XNU_TREE:-/mnt/d/aios/xnu}
 CLANG=${CLANG:-clang}
 
-# Files that the Dandelion patches touch and that have broken the build before.
+# Files that the Dandelion patches touch and whose include chain resolves here.
+# bsd/kern/bsd_init.c and iokit/bsddev/IOKitBSDInit.cpp cannot be checked this
+# way: their include chain needs real SDK headers (mach/clock_priv.h and C11
+# atomics from the SDK), and stubbing those would test the stubs, not the code.
+# Those two are still verified by CI; keep the edits small and obvious there.
 DEFAULT_FILES=(
 	pexpert/arm/pe_fiq.c
-	bsd/kern/bsd_init.c
-	iokit/bsddev/IOKitBSDInit.cpp
-	osfmk/arm64/machine_routines.c
-	pexpert/arm/arm_init.c
 )
 
 FILES=("$@")
@@ -63,6 +63,30 @@ char *strcpy(char *, const char *);
 char *strncpy(char *, const char *, size_t);
 size_t strlcpy(char *, const char *, size_t);
 size_t strlcat(char *, const char *, size_t);
+EOF
+
+# Three headers in XNU's include chain come from the macOS SDK, not the tree, so
+# without stubs only pexpert/arm/pe_fiq.c could be checked at all.  These are the
+# minimum that keeps the compiler going; a file that needs more SDK declarations
+# still reports itself as n/a below.
+mkdir -p "$SHIM/mach"
+cat >"$SHIM/TargetConditionals.h" <<'EOF'
+#pragma once
+#define TARGET_OS_OSX 1
+#define TARGET_OS_IPHONE 0
+#define TARGET_OS_MAC 1
+#define TARGET_OS_EMBEDDED 0
+#define TARGET_OS_SIMULATOR 0
+EOF
+cat >"$SHIM/mach/clock.h" <<'EOF'
+#pragma once
+#include <mach/mach_types.h>
+EOF
+cat >"$SHIM/mach_assert.h" <<'EOF'
+#pragma once
+#define mach_assert(x)
+#define __improbable(x, y) (x)
+#define __probable(x, y) (x)
 EOF
 
 COMMON=(

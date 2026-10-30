@@ -1,5 +1,5 @@
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
-index ffa214d..ed20eee 100644
+index ffa214d..dac726d 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
 @@ -920,9 +920,49 @@ bsd_init(void)
@@ -55,21 +55,93 @@ index ffa214d..ed20eee 100644
  	}
  #endif
  	while (TRUE) {
+@@ -935,7 +975,25 @@ bsd_init(void)
+ #endif
+ 
+ 		bsd_init_kprintf("vfs_mountroot\n");
++#if defined(DANDELION)
++		/*
++		 * Time the attempt: vfs_mountroot() is where every timed wait in the
++		 * root path eventually lands, so the number itself says whether the
++		 * deadline machinery is running (a value near 13 000 000 per second)
++		 * or the call returned because something gave up early.
++		 */
++		{
++			uint64_t _m0 = __builtin_arm_rsr64("CNTPCT_EL0");
++
++			err = vfs_mountroot();
++			printf("[dl] vfs_mountroot -> %d in %llu ticks (13000000 = 1 s)\n",
++			    err, (unsigned long long)(__builtin_arm_rsr64("CNTPCT_EL0") -
++			    _m0));
++		}
++		if (err == 0) {
++#else
+ 		if (0 == (err = vfs_mountroot())) {
++#endif
+ #if defined(DANDELION)
+ 			{
+ 				extern void dandelion_trace_mark(const char *);
+@@ -957,15 +1015,36 @@ bsd_init(void)
+ 			dandelion_trace_mark(_buf);
+ 
+ 			/*
+-			 * Bring-up: we have no real root device.  Cap retries so
+-			 * the panel shows the failure instead of an infinite
+-			 * silent loop, and so the kernel can continue to the
+-			 * next boot stage (which will panic with a useful
+-			 * message rather than hang forever).
++			 * Bring-up: no root filesystem exists on this port yet, so
++			 * after three failed mounts there is nothing honest left to
++			 * do -- the code after this loop (IOSecureBSDRoot, then
++			 * VFS_ROOT on an empty mount list) assumes a mounted root
++			 * and would fault rather than report.
++			 *
++			 * So park here and print, once every five seconds, what the
++			 * counter reads across an IOSleep(1000).  IOSleep() parks
++			 * the thread on a timed wait, so it can only return if a
++			 * timer interrupt woke it: this line is a continuous proof
++			 * that the tick is alive, and it keeps the panel and the
++			 * eMMC log channel usable for the next round.
+ 			 */
+ 			if (_mount_fail_count >= 3) {
+-				dandelion_trace_mark("[dl] root mount: giving up\n");
+-				break;
++				unsigned int _round = 0;
++
++				dandelion_trace_mark("[dl] root mount: giving up, parking\n");
++				for (;;) {
++					uint64_t _t0 = __builtin_arm_rsr64("CNTPCT_EL0");
++					uint64_t _t1;
++
++					IOSleep(1000);
++					_t1 = __builtin_arm_rsr64("CNTPCT_EL0");
++					_round++;
++					if ((_round % 5) == 0) {
++						printf("[dl] parked %u: IOSleep(1s) returned "
++						    "after %llu ticks (13000000 = 1 s)\n", _round,
++						    (unsigned long long)(_t1 - _t0));
++					}
++				}
+ 			}
+ 		}
+ #endif
 diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
-index aeedc7d..01ccbf4 100644
+index aeedc7d..1d72b3e 100644
 --- a/iokit/bsddev/IOKitBSDInit.cpp
 +++ b/iokit/bsddev/IOKitBSDInit.cpp
-@@ -684,25 +684,60 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
+@@ -684,25 +684,62 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
  	matching->setObject(gIOResourceMatchedKey, gIOBSDKey);
  
  #if defined(DANDELION)
 +	/*
-+	 * Bring-up: this port has no timer interrupt yet (see pexpert/arm/pe_fiq.c),
-+	 * so the 30 s timed wait cannot expire -- a thread blocked on a deadline
-+	 * needs a tick to wake it, and there is none.  Poll the registry for a
-+	 * bounded span of counter ticks instead, and report which way it went, so
-+	 * the boot keeps moving and the log says whether an IOBSD resource exists
-+	 * at all.
++	 * Bring-up: poll instead of waiting 30 s for the IOBSD resource.
++	 *
++	 * Before GICD_CTLR.EnableGrp1NS was fixed a timed wait here blocked
++	 * forever, because a deadline needs a tick to expire it.  The tick works
++	 * now (see patches/xnu/zzz-dandelion-timer-probe.patch), but this
++	 * resource still cannot appear on this port -- nothing publishes
++	 * kIOBSDKey -- so spending 30 s to learn that is pointless.  Poll for
++	 * 200 ms and say which way it went.
 +	 */
 +	{
 +		uint64_t _freq = __builtin_arm_rsr64("CNTFRQ_EL0");
@@ -125,6 +197,97 @@ index aeedc7d..01ccbf4 100644
  	}
  
  	str = OSDataAllocation<char>( kMaxPathBuf + kMaxBootVar, OSAllocateMemory );
+@@ -884,6 +921,63 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
+ 		IOService::startDeferredMatches();
+ 	}
+ 
++#if defined(DANDELION)
++	/*
++	 * Bring-up: this loop waits for an IOMedia with Content=Apple_HFS.  No such
++	 * media can ever appear on this port (the open-source tree has no HFS+), so
++	 * waiting the full 60 s per attempt only costs time -- and before
++	 * GICD_CTLR.EnableGrp1NS was fixed it also blocked forever.  Wait one
++	 * second at a time instead, report how long each wait really took, and give
++	 * up after three, so the boot proceeds to its honest failure quickly.
++	 *
++	 * The IOSleep() round trip is the decisive tick test: IOSleep() parks the
++	 * thread on a timed wait, so it can only return if a timer interrupt woke
++	 * it.  The counter it is measured against runs regardless, so a returned
++	 * IOSleep() whose elapsed ticks are ~CNTFRQ is proof of a live tick, and a
++	 * returned-and-immediate one is proof of the opposite.
++	 */
++	{
++		unsigned int _attempts = 0;
++		bool _found = false;
++
++		while (!_found && _attempts < 3) {
++			uint64_t _before, _after;
++
++			_before = __builtin_arm_rsr64("CNTPCT_EL0");
++			t.tv_sec = 1;
++			t.tv_nsec = 0;
++			matching->retain();
++			service = IOService::waitForService( matching, &t );
++			_after = __builtin_arm_rsr64("CNTPCT_EL0");
++			_attempts++;
++			_found = (service != NULL);
++			printf("[dl] hfs wait %u: %llu ticks, service=%s\n", _attempts,
++			    (unsigned long long)(_after - _before),
++			    service ? "found" : "none");
++
++			if (_attempts == 1) {
++				uint64_t _a = __builtin_arm_rsr64("CNTPCT_EL0");
++				IOSleep(1000);
++				uint64_t _b = __builtin_arm_rsr64("CNTPCT_EL0");
++				printf("[dl] iosleep(1000 ms) returned after %llu ticks "
++				    "(13000000 ticks = 1 s): %s\n",
++				    (unsigned long long)(_b - _a),
++				    ((_b - _a) > 130ull) ? "a tick woke the thread"
++				    : "returned without a tick");
++			}
++			if (!_found) {
++				IOLog( "Still waiting for root device\n" );
++			}
++		}
++
++		if (!_found) {
++			printf("[dl] IOFindBSDRoot: no Apple_HFS medium after %u tries; "
++			    "no root device can appear on this port\n", _attempts);
++			OSSafeReleaseNULL(matching);
++			return kIOReturnNotFound;
++		}
++	}
++#else
+ 	do {
+ 		t.tv_sec = ROOTDEVICETIMEOUT;
+ 		t.tv_nsec = 0;
+@@ -913,25 +1007,12 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
+ #if XNU_TARGET_OS_OSX && defined(__arm64__)
+ 			// The disk isn't found - have the user pick from System Recovery.
+ 			(void)IOSetRecoveryBoot(BSD_BOOTFAIL_MEDIA_MISSING, NULL, true);
+-#elif defined(DANDELION)
+-			/*
+-			 * The open-source XNU tree ships neither HFS+/APFS nor a
+-			 * memory-disk driver, so no root device can ever appear on
+-			 * this port.  Do not panic: stay in the wait loop so the
+-			 * kernel keeps running and the framebuffer console (the only
+-			 * console this board has) stays readable.
+-			 */
+-			static boolean_t no_root_logged = FALSE;
+-			if (!no_root_logged) {
+-				no_root_logged = TRUE;
+-				IOLog("DANDELION: no root filesystem can be mounted on this port "
+-				    "(open-source XNU has no HFS+/APFS); kernel stays up\n");
+-			}
+ #elif XNU_TARGET_OS_IOS
+ 			panic("Failed to mount root device");
+ #endif
+ 		}
+ 	} while (!service);
++#endif
+ 
+ 	OSSafeReleaseNULL(matching);
+ 
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
 index c771097..690fab5 100644
 --- a/pexpert/arm/pe_fiq.c
