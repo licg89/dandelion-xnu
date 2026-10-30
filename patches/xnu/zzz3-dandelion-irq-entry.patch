@@ -1,12 +1,9 @@
 diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
-index 9e64376..382afdd 100644
+index 9e64376..b4b2e7e 100644
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
-@@ -1869,48 +1869,78 @@ sleh_irq(arm_saved_state_t *state)
- 	 */
- 	{
+@@ -1871,46 +1871,69 @@ sleh_irq(arm_saved_state_t *state)
  		uint32_t intid = dandelion_gic_ack();
-+		int dl_skip_dispatch = 0;
  
  		/*
 -		 * First-interrupt decider (see docs/research/irq-entry-audit.md).
@@ -41,19 +38,13 @@ index 9e64376..382afdd 100644
 +				    (unsigned long long)__builtin_arm_rsr64("ICC_HPPIR1_EL1"));
 +				dandelion_trace_mark(_buf);
 +			}
-+			if (dl_irq_count == 1u) {
-+				extern void dandelion_trace_mark(const char *);
-+
-+				if (intid == DANDELION_TIMER_IRQ) {
-+					__builtin_arm_wsr64("CNTP_CTL_EL0", 0ul);
-+					dandelion_trace_mark("[dl] irq1: timer; CNTP masked, "
-+					    "rtclock_intr() skipped\n");
-+				} else {
-+					dandelion_trace_mark("[dl] irq1: not the timer; EOI only, "
-+					    "rtclock_intr() skipped\n");
-+				}
-+				dl_skip_dispatch = 1;
-+			}
++			/*
++			 * Nothing is skipped any more: the previous boot proved that
++			 * acknowledging and EOI-ing this interrupt leaves the machine
++			 * alive, so the next thing to measure is rtclock_intr() itself,
++			 * which now reports its own steps through the ring
++			 * (osfmk/arm/rtclock.c, DL_RTC_MARK).
++			 */
 +		}
 +
 +		/*
@@ -98,7 +89,7 @@ index 9e64376..382afdd 100644
 -			    cdp->interrupt_refCon,
 -			    cdp->interrupt_nub,
 -			    cdp->interrupt_source);
-+		if (!dl_skip_dispatch) {
++		{
 +			if (intid == DANDELION_TIMER_IRQ) {
 +				cdp->cpu_decrementer = -1; /* Large */
 +				rtclock_intr(TRUE);

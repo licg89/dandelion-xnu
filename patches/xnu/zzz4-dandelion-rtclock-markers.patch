@@ -1,0 +1,64 @@
+diff --git a/osfmk/arm/rtclock.c b/osfmk/arm/rtclock.c
+index 5989b48..a36b6cf 100644
+--- a/osfmk/arm/rtclock.c
++++ b/osfmk/arm/rtclock.c
+@@ -319,6 +319,31 @@ clock_timebase_info(mach_timebase_info_t info)
+ /*
+  * Real-time clock device interrupt.
+  */
++/*
++ * Ring markers for rtclock_intr(), DANDELION only.
++ *
++ * The 2026-10-30 23:5x boot proved the timer interrupt is delivered (INTID 30)
++ * and that the first one can be acked and EOI'd with the machine surviving; the
++ * second one takes this path and the machine stops.  So the fault is somewhere
++ * in here, and the only way to find it is to report each step.
++ *
++ * dandelion_trace_mark() writes into the in-memory ring that the eMMC log
++ * channel drains later.  printf()/IOLog()/kprintf() must not be used: this runs
++ * with DAIF.I set and serial_console.c:168 panics on console I/O from that
++ * context (that panic is what made three earlier boots look silent).
++ */
++#if defined(DANDELION)
++#define DL_RTC_MARK(s) do {                                             \
++		static int _dl_once;                                            \
++		if (_dl_once++ == 0) {                                          \
++			extern void dandelion_trace_mark(const char *);           \
++			dandelion_trace_mark(s);                                \
++		}                                                               \
++} while (0)
++#else
++#define DL_RTC_MARK(s) do { } while (0)
++#endif
++
+ void
+ rtclock_intr(__unused unsigned int is_user_context)
+ {
+@@ -328,6 +353,8 @@ rtclock_intr(__unused unsigned int is_user_context)
+ 	unsigned int             user_mode;
+ 	uintptr_t                pc;
+ 
++	DL_RTC_MARK("[dl] rtc 1: enter\n");
++
+ 	cdp = getCpuDatap();
+ 
+ 	cdp->cpu_stat.timer_cnt++;
+@@ -336,6 +363,7 @@ rtclock_intr(__unused unsigned int is_user_context)
+ 	assert(!ml_get_interrupts_enabled());
+ 
+ 	abstime = mach_absolute_time();
++	DL_RTC_MARK("[dl] rtc 2: abstime ok\n");
+ 
+ 	if (cdp->cpu_idle_pop != 0x0ULL) {
+ 		if ((cdp->rtcPop - abstime) < cdp->cpu_idle_latency) {
+@@ -365,8 +393,10 @@ rtclock_intr(__unused unsigned int is_user_context)
+ 		    user_mode ? pc : VM_KERNEL_UNSLIDE(pc), user_mode);
+ 	}
+ 
++	DL_RTC_MARK("[dl] rtc 3: before timer_intr\n");
+ 	/* call the generic etimer */
+ 	timer_intr(user_mode, pc);
++	DL_RTC_MARK("[dl] rtc 4: after timer_intr\n");
+ }
+ 
+ static int
