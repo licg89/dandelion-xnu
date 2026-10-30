@@ -1,0 +1,115 @@
+diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
+index a2a6653..859a11e 100644
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -127,12 +127,47 @@
+ 	dsb	sy
+ .endmacro
+ 
++/*
++ * Paint a fixed-height marker bar at an arbitrary row, in a fixed colour.
++ *
++ * DANDELION_STAGE_* encodes the stage in the bar's *width* (num * 96 px), which
++ * runs out of screen at stage 7 and is awkward to measure in a photograph.  This
++ * one puts a known colour at a known row instead, so "which rows are lit" is the
++ * whole reading.
++ *
++ * Only x9-x16 are clobbered, and it cleans the cache lines it wrote because by
++ * the time these run the framebuffer mapping may be cacheable.
++ */
++.macro DANDELION_MARK_ROW row, color
++	movz	x9, #0x7ec5, lsl #16
++	mov	x10, #\row
++	mov	x11, #2944
++	mul	x10, x10, x11
++	add	x9, x9, x10
++	mov	x12, #8
++	mov	w13, #\color
++	mov	x14, #240
++1:
++	mov	x15, x14
++	mov	x16, x9
++2:
++	str	w13, [x16], #4
++	subs	x15, x15, #1
++	b.ne	2b
++	mov	x15, x14
++	mov	x16, x9
++3:
++	dc	cvac, x16
++	add	x16, x16, #64
++	subs	x15, x15, #16
++	b.gt	3b
++	add	x9, x9, x11
++	subs	x12, x12, #1
++	b.ne	1b
++	dsb	sy
++.endmacro
++
+ .macro DANDELION_STAGE_LATE num
+-	/* physical scratch word */
+-	movz	x9, #0x5fbe, lsl #16
+-	mov	w10, #\num
+-	str	w10, [x9]
+-	dc	cvac, x9
+ 	/* live marker: red bar near the bottom of the framebuffer */
+ 	movz	x9, #0x7ec5, lsl #16
+ 	mov	x10, #1520
+@@ -161,6 +196,17 @@
+ 	subs	x12, x12, #1
+ 	b.ne	1b
+ 	dsb	sy
++	/*
++	 * Physical scratch word for the shim's "kstage" print on the next boot.
++	 * Done last on purpose: 0x5fbe0000 is outside the V=P window that the
++	 * boot args describe, so if its block mapping is ever missing again the
++	 * bar above still gets painted and the stage stays readable.
++	 */
++	movz	x9, #0x5fbe, lsl #16
++	mov	w10, #\num
++	str	w10, [x9]
++	dc	cvac, x9
++	dsb	sy
+ .endmacro
+ 
+ /*
+@@ -713,6 +759,26 @@ Lkernelcache_base_found:
+ 	b.ne	4b
+ 	dsb		sy
+ 
++	/*
++	 * Dandelion: map the 2 MiB block that holds the stage scratch word.
++	 *
++	 * DANDELION_STAGE_* leaves the last stage number at physical
++	 * 0x5fbe0000 for the shim to print as "kstage" on the next boot.
++	 * That is 0x5fbe0000, i.e. L2 index 0x0fd, and the V=P map built from
++	 * the boot args only covers 0x4d004000..0x5d004000, so the very first
++	 * store after the MMU came on faulted and killed the kernel inside its
++	 * own debug code.  Map the enclosing block here; 0x5fa00000 is above
++	 * the kernel window, so nothing else can claim it.
++	 */
++	ubfx	x3, x23, #(ARM_TT_L2_SHIFT), #9		// L2 index of the kernel base
++	ldr	x1, [x2, x3, lsl #(TTE_SHIFT)]
++	and	x1, x1, #0xffff				// keep attributes and type bits
++	movz	x4, #0x5fa0, lsl #16			// 0x5fa00000
++	orr	x1, x1, x4
++	movz	x3, #(0xfd * 8)				// L2 index of 0x5fa00000
++	str	x1, [x2, x3]
++	dsb		sy
++
+ 	/*
+ 	 * Dandelion: map the eMMC controller at a fixed virtual address so the
+ 	 * kernel can start logging to it at the very first printf, long before
+@@ -870,9 +936,12 @@ common_start:
+ 
+ 	// Enable caches, MMU, ROP and JOP
+ 	DANDELION_STAGE_EARLY 4
++	DANDELION_MARK_ROW 320, 0xff00ffff		// cyan: about to write SCTLR_EL1_DEFAULT
+ 	MOV64   x0, SCTLR_EL1_DEFAULT
+ 	MSR_SCTLR_EL1_X0
++	DANDELION_MARK_ROW 340, 0xff00ff00		// green: SCTLR written, before isb
+ 	isb		sy
++	DANDELION_MARK_ROW 360, 0xffff00ff		// magenta: isb survived
+ 
+ 	DANDELION_STAGE_LATE 5
+ 
