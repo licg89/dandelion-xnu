@@ -184,10 +184,23 @@ size_t dandelion_make_adt(void *buffer, size_t capacity,
 	w_prop(&w, "dram-size", &mem_size, 8);
 	w_prop(&w, "darwinboot-memory-size", &darwinboot_memory_size, 8);
 
-	/* /chosen/memory-map: kernel range */
-	w_node(&w, 2, 0);
+	/* /chosen/memory-map: kernel range, plus the RAMDisk slot DarwinBoot fills */
+	w_node(&w, 3, 0);
 	w_text(&w, "name", "memory-map");
 	w_prop(&w, "Kernel-Dandelion", mem_range, sizeof(mem_range));
+	/*
+	 * RAMDisk: {base, size} in two 64-bit cells.  DarwinBoot overwrites this
+	 * property in place when UniXNU hands it an `initrd`, and XNU's
+	 * IOFindBSDRoot() looks for exactly this name to mdevadd() the region.
+	 * Both ends already exist in the shipped payload; the property is the only
+	 * thing that was missing, and two zero cells mean "no ramdisk".
+	 * See docs/ROOTFS-STEP1.md 2.2.
+	 */
+	{
+		static const uint64_t ramdisk_slot[2] = { 0, 0 };
+
+		w_prop(&w, "RAMDisk", ramdisk_slot, sizeof(ramdisk_slot));
+	}
 
 	/* /cpus node: 3 properties, 8 children */
 	w_node(&w, 3, 8);

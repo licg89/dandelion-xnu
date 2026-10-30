@@ -66,6 +66,11 @@ LAYOUT = [
     ("EFI/UniXNU/UniXNURamDiskDxe.efi", "UniXNURamDiskDxe.efi"),
     ("EFI/UniXNU/kernel.macho", "mach_kernel"),
     ("EFI/UniXNU/kernel.macho.adt", "kernel.macho.adt"),
+    # The initrd UniXNU.toml names.  DarwinBoot copies it into the kernel window
+    # and writes /chosen/memory-map/RAMDisk, which XNU's IOFindBSDRoot() turns
+    # into md0; see docs/ROOTFS-STEP1.md.  Four KiB of zeros is enough to prove
+    # the hand-over: mockfs never looks inside the device.
+    ("EFI/UniXNU/kernel.macho.rd", "kernel.macho.rd"),
 ]
 
 
