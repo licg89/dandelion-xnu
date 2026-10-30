@@ -955,7 +955,7 @@ dgic_timer_test_clear(struct dgic *g, unsigned int irq)
 static inline void
 dgic_ctlr_try_enable1(unsigned long gicd, unsigned int *before, unsigned int *after)
 {
-	volatile uint32_t *ctlr = (volatile uint32_t *)(gicd + DGICD_CTLR);
+	volatile unsigned int *ctlr = (volatile unsigned int *)(gicd + DGICD_CTLR);
 	unsigned int spin = 0;
 
 	*before = *ctlr;
