@@ -1,5 +1,5 @@
 diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
-index 9b36f99..2da4131 100644
+index 9b36f99..6b06693 100644
 --- a/osfmk/kern/printf.c
 +++ b/osfmk/kern/printf.c
 @@ -1254,8 +1254,27 @@ dandelion_trace_attach(void)
@@ -19,9 +19,9 @@ index 9b36f99..2da4131 100644
 + * ml_set_interrupts_enabled() returns the previous state, so nesting is safe: in
 + * interrupt context it reports FALSE and restoring leaves interrupts masked.
 + */
-+extern boolean_t ml_set_interrupts_enabled(boolean_t enable);
++extern unsigned int ml_set_interrupts_enabled(unsigned int enable);
 +
-+#define DL_WRITER_LOCK()    boolean_t _dl_intrs = ml_set_interrupts_enabled(FALSE)
++#define DL_WRITER_LOCK()    unsigned int _dl_intrs = ml_set_interrupts_enabled(0u)
 +#define DL_WRITER_UNLOCK()  ml_set_interrupts_enabled(_dl_intrs)
 +
  dandelion_trace_putc(char c)
