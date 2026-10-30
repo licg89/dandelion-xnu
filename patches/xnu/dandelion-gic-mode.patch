@@ -2,7 +2,7 @@ diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
 index 3ad743f..def362e 100644
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
-@@ -1,177 +1,329 @@
+@@ -1,177 +1,332 @@
  /*
   * Copyright (c) 2021 Apple Inc. All rights reserved.
 + *
@@ -359,26 +359,29 @@ index 3ad743f..def362e 100644
 +	isen = dgic_read32(redist, DGICR_ISENABLER0);
 +	printf("[dl] gic late: isenabler0=%x igroupr0=%x icfgr1=%x\n", isen,
 +	    dgic_read32(redist, DGICR_IGROUPR0), dgic_read32(redist, DGICR_ICFGR1));
-+
 +	/*
-+	 * Which group is the timer interrupt actually in?
++	 * The group question has to be asked in registers non-secure may read.
 +	 *
-+	 * hppir1 = 0x3ff with the PPI enabled and the timer armed means it is not
-+	 * queued on Group 1.  hppir0 answers what the register reads above cannot:
-+	 * if it shows 27, the interrupt is Group 0.  That would mean LK left the GIC
-+	 * secure / Group 0, and EL1 non-secure cannot move a PPI between groups -- so
-+	 * the fix is to take the timer as FIQ, not IRQ.
++	 * A first attempt read ICC_HPPIR0_EL1 and ICC_IGRPEN0_EL1 and the kernel
++	 * died on the spot: with GICD_CTLR.DS == 0, the Group 0 system registers are
++	 * undefined from EL1 non-secure, because Group 0 belongs to EL3.  The log
++	 * ended mid-probe, which is how this was found.
++	 *
++	 * So ask it here instead:
++	 *   GICR_ISPENDR0  Group 1 NS pending for this PE.  The timer is armed and
++	 *                  PPI 27 is enabled, so if this reads 0 the interrupt is
++	 *                  simply not a Group 1 interrupt.
++	 *   GICR_IACTIVER0 Group 1 NS active.
++	 *   ICC_IGRPEN1    the Group 1 NS enable at the CPU interface (legal to read).
 +	 */
-+	printf("[dl] gic late: hppir0=%llx igrpen1=%llx igrpen0=%llx\n",
-+	    (unsigned long long)__builtin_arm_rsr64("ICC_HPPIR0_EL1"),
-+	    (unsigned long long)__builtin_arm_rsr64("ICC_IGRPEN1_EL1"),
-+	    (unsigned long long)__builtin_arm_rsr64("ICC_IGRPEN0_EL1"));
++	printf("[dl] gic late: ispender0=%x iactiver0=%x igrpen1=%llx\n",
++	    dgic_read32(redist, 0x200), dgic_read32(redist, 0x300),
++	    (unsigned long long)__builtin_arm_rsr64("ICC_IGRPEN1_EL1"));
 +
 +	/*
-+	 * Try to turn Group 1 on at the distributor.  Without
-+	 * GICD_CTLR.EnableGrp1NS no Group 1 interrupt can ever be forwarded, which is
-+	 * exactly the state ctlr=0x10 above reports.  It is the one distributor bit
-+	 * non-secure is allowed to write, and the read-back says whether it stuck.
++	 * EnableGrp1NS is the one distributor bit non-secure is allowed to write,
++	 * and without it no Group 1 interrupt can be forwarded at all -- which is
++	 * what ctlr=0x10 above reported.  The read-back says whether it stuck.
 +	 */
 +	{
 +		uint32_t ctlr = dgic_read32(gicd, DGICD_CTLR);
