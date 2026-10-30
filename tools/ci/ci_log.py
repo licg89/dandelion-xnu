@@ -11,6 +11,7 @@ before bash sees them.  A file has no such problem.
 import argparse
 import io
 import json
+import re
 import subprocess
 import sys
 import urllib.request
@@ -59,10 +60,46 @@ def api(path, tok, raw=False):
         return response.read()
 
 
+def interesting(line):
+    """Classify a log line.  Returns 0 for noise, 1 for 'maybe', 2 for 'this is it'.
+
+    The first version matched a loose 'error' substring and stopped after 60
+    hits, which on a failing XNU build are all consumed by warnings text long
+    before the compiler's actual complaint.  Three pushes were spent on a patch
+    that failed with `pe_fiq.c:301:1: error: use of undeclared identifier`.  So
+    the strict patterns come first and are never truncated.
+    """
+    low = line.lower()
+    if re.search(r":\s*(fatal )?error:", low):
+        return 2
+    if "does not apply" in low or "patch failed" in low:
+        return 2
+    if "##[error]" in low or "*** [" in line or "error 1" in low:
+        return 2
+    if "undefined symbol" in low or "undeclared" in low or "no such file" in low:
+        return 2
+    if re.search(r"\bwarning:", low):
+        return 1
+    if "failed" in low:
+        return 1
+    return 0
+
+
 def main():
+    # Clang's message for the failure this tool exists to report contains
+    # U+FEFF, which a Windows console (code page 936) cannot encode: without
+    # this the tool dies while printing the very line that explains the build
+    # failure.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--run", type=int, default=None)
+    ap.add_argument("--job", type=int, default=None,
+                    help="job id (default: every job of the run)")
     args = ap.parse_args()
 
     tok = token()
@@ -80,8 +117,10 @@ def main():
 
     jobs = api("/repos/%s/actions/runs/%d/jobs" % (REPO, run_id), tok)["jobs"]
     for job in jobs:
+        if args.job and job["id"] != args.job:
+            continue
         print("  job %d %s: %s/%s" % (job["id"], job["name"], job["status"], job["conclusion"]))
-        if job["conclusion"] != "failure":
+        if job["conclusion"] != "failure" and not args.all:
             continue
         blob = api("/repos/%s/actions/jobs/%d/logs" % (REPO, job["id"]), tok, raw=True)
         try:
@@ -91,18 +130,28 @@ def main():
         except zipfile.BadZipFile:
             text = blob.decode("utf-8", "replace")
 
-        print("  --- interesting lines ---")
-        shown = 0
+        strict, loose = [], []
+        seen = set()
         for line in text.splitlines():
-            low = line.lower()
-            interesting = ("error:" in low or "error " in low and "0 error" not in low
-                           or "failed" in low or "does not apply" in low)
-            if args.all or interesting:
-                print("   " + line.strip()[:240])
-                shown += 1
-                if shown > 60 and not args.all:
-                    print("   ... (truncated)")
-                    break
+            # strip the runner's timestamp prefix
+            stripped = line.split("Z ", 1)[-1].strip()
+            if not stripped or stripped in seen:
+                continue
+            rank = interesting(stripped)
+            if rank == 2:
+                seen.add(stripped)
+                strict.append(stripped)
+            elif rank == 1 and args.all:
+                seen.add(stripped)
+                loose.append(stripped)
+
+        print("  --- compiler errors / failures (all of them) ---")
+        for line in strict or ["(none found: see %s)" % job["id"]]:
+            print("   " + line[:400])
+        if loose:
+            print("  --- warnings and other 'failed' lines (first 40) ---")
+            for line in loose[:40]:
+                print("   " + line[:300])
     return 0
 
 

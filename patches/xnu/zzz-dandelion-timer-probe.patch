@@ -1,0 +1,249 @@
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index ffa214d..ed20eee 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -920,9 +920,49 @@ bsd_init(void)
+ 		printf("[dl] regs hppir1=%llx(1023=spurious) rpr=%llx\n",
+ 		    (unsigned long long)_hppir1, (unsigned long long)_rpr);
+ 
+-		dandelion_trace_mark("[dl] timerprobe: before IOSleep(200)\n");
+-		IOSleep(200);
+-		dandelion_trace_mark("[dl] timerprobe: after IOSleep(200)\n");
++		dandelion_trace_mark("[dl] timerprobe: before busy-wait(200ms)\n");
++		/*
++		 * Busy-wait, not IOSleep().  IOSleep() parks the thread on a timed
++		 * wait, and with no timer interrupt that wait can never expire --
++		 * measured: the "after" line never printed and bsd_init stopped
++		 * here forever.  The counter counts regardless of interrupts, so
++		 * spinning on CNTPCT measures the same 200 ms and always returns.
++		 * The cap is only there so a dead counter cannot hang the boot
++		 * again; it is not expected to be reached.
++		 */
++		{
++			uint64_t _freq = __builtin_arm_rsr64("CNTFRQ_EL0");
++			uint64_t _pstart = __builtin_arm_rsr64("CNTPCT_EL0");
++			uint64_t _vstart = __builtin_arm_rsr64("CNTVCT_EL0");
++			uint64_t _elapsed = 0, _ticks;
++			unsigned long _spins = 0;
++
++			if (_freq == 0) {
++				_freq = 13000000ull;
++			}
++			_ticks = (_freq / 1000ull) * 200ull;
++			while (_spins < 500000000ul) {
++				_elapsed = __builtin_arm_rsr64("CNTPCT_EL0") - _pstart;
++				if (_elapsed >= _ticks) {
++					break;
++				}
++				_spins++;
++			}
++			/*
++			 * The two raw counters are printed side by side: their
++			 * difference is CNTVOFF.  If it is not 0, the virtual
++			 * counter the timebase reads and the physical counter the
++			 * timer compares are offset, which matters for every
++			 * deadline the kernel computes.
++			 */
++			printf("[dl] timerprobe: busy-wait spans=%lu elapsed=%llu "
++			    "ticks=%llu freq=%llu cntpct=%llx cntvct=%llx\n", _spins,
++			    (unsigned long long)_elapsed, (unsigned long long)_ticks,
++			    (unsigned long long)_freq,
++			    (unsigned long long)_pstart,
++			    (unsigned long long)_vstart);
++		}
++		dandelion_trace_mark("[dl] timerprobe: after busy-wait(200ms)\n");
+ 	}
+ #endif
+ 	while (TRUE) {
+diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
+index aeedc7d..01ccbf4 100644
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -684,25 +684,60 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
+ 	matching->setObject(gIOResourceMatchedKey, gIOBSDKey);
+ 
+ #if defined(DANDELION)
++	/*
++	 * Bring-up: this port has no timer interrupt yet (see pexpert/arm/pe_fiq.c),
++	 * so the 30 s timed wait cannot expire -- a thread blocked on a deadline
++	 * needs a tick to wake it, and there is none.  Poll the registry for a
++	 * bounded span of counter ticks instead, and report which way it went, so
++	 * the boot keeps moving and the log says whether an IOBSD resource exists
++	 * at all.
++	 */
++	{
++		uint64_t _freq = __builtin_arm_rsr64("CNTFRQ_EL0");
++		uint64_t _start = __builtin_arm_rsr64("CNTPCT_EL0");
++		uint64_t _limit;
++		unsigned int _polls = 0;
++
++		if (_freq == 0) {
++			_freq = 13000000ull;
++		}
++		_limit = (_freq / 1000ull) * 200ull;   /* 200 ms, not 30 s */
++		service = NULL;
++		for (_polls = 0; _polls < 1000000u; _polls++) {
++			service = IOService::copyMatchingService(matching);
++			if (service) {
++				break;
++			}
++			if ((__builtin_arm_rsr64("CNTPCT_EL0") - _start) >= _limit) {
++				break;
++			}
++		}
++		printf("[dl] IOFindBSDRoot: IOBSD resource %s (polls=%u)\n",
++		    service ? "matched" : "absent after 200 ms", _polls);
++		if (service) {
++			service->release();
++			service = NULL;
++		}
++	}
++#else
+ 	printf("[dl] IOFindBSDRoot: waiting for the IOBSD resource (30 s)\n");
+-#endif
+ 	if ((service = IOService::waitForMatchingService(matching, 30ULL * kSecondScale))) {
+ 		OSSafeReleaseNULL(service);
+-#if defined(DANDELION)
+ 		printf("[dl] IOFindBSDRoot: resource matched\n");
+-#endif
+ 	} else {
+ 		IOLog("!BSD\n");
+-#if defined(DANDELION)
+ 		printf("[dl] IOFindBSDRoot: wait timed out after 30 s\n");
+-#endif
+ 	}
++#endif
+ 	matching->release();
+ 	matching = NULL;
+ 
+ 	if (mountAttempts++) {
+ 		IOLog("mount(%d) failed\n", mountAttempts);
++#if !defined(DANDELION)
++		/* Under DANDELION this would block forever: no tick to expire it. */
+ 		IOSleep( 5 * 1000 );
++#endif
+ 	}
+ 
+ 	str = OSDataAllocation<char>( kMaxPathBuf + kMaxBootVar, OSAllocateMemory );
+diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+index c771097..3743bb2 100644
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -274,19 +274,108 @@ dandelion_gic_late_init(void)
+ 	    dgic_read32(redist, 0x200), dgic_read32(redist, 0x300),
+ 	    (unsigned long long)__builtin_arm_rsr64("ICC_IGRPEN1_EL1"));
+ 
++	printf("[dl] gic late: hppir1=%llx\n",
++	    (unsigned long long)__builtin_arm_rsr64("ICC_HPPIR1_EL1"));
++
+ 	/*
+-	 * EnableGrp1NS is the one distributor bit non-secure is allowed to write,
+-	 * and without it no Group 1 interrupt can be forwarded at all -- which is
+-	 * what ctlr=0x10 above reported.  The read-back says whether it stuck.
++	 * Experiment A: is EnableGrp1NS writable from EL1 non-secure, or was the
++	 * earlier "10 -> 10" a read taken while the write was still in flight?
++	 *
++	 * GICD_CTLR.RWP (bit 31) is the architectural answer to exactly that
++	 * question: the distributor sets it while a write to the register is
++	 * still being committed, and software must poll it until it clears
++	 * before it may believe a read-back.  The probe that produced "10 -> 10"
++	 * read back immediately, so a refused write and a stale read were never
++	 * told apart.  This waits it out, and reports how many polls it took.
+ 	 */
+ 	{
+-		uint32_t ctlr = dgic_read32(gicd, DGICD_CTLR);
+-		dgic_write32(gicd, DGICD_CTLR, ctlr | 1u);
+-		printf("[dl] gic late: gicd ctlr %x -> %x\n", ctlr,
+-		    dgic_read32(gicd, DGICD_CTLR));
++		uint32_t before = dgic_read32(gicd, DGICD_CTLR);
++		uint32_t after = before;
++		unsigned int spin = 0;
++
++		dgic_write32(gicd, DGICD_CTLR,
++		    before | DGICD_CTLR_ENABLE0 | DGICD_CTLR_ENABLE1);
++		for (spin = 0; spin < 1000000u; spin++) {
++			after = dgic_read32(gicd, DGICD_CTLR);
++			if ((after & DGICD_CTLR_RWP) == 0) {
++				break;
++			}
++		}
++		printf("[dl] gic late: ctlr rwp-waited %x -> %x (spin=%u rwp=%u)\n",
++		    before, after, spin, (after & DGICD_CTLR_RWP) ? 1u : 0u);
++	}
++
++	/*
++	 * Experiment B: arm CNTP for one tick and watch for the PPI, with no
++	 * kernel interrupt path involved.  dgic_timer_test() polls the counter
++	 * itself and acknowledges through ICC_IAR1, so it cannot block and it
++	 * leaves nothing active behind.  Its return value separates three worlds:
++	 *
++	 *   bit0 set            the CPU interface handed over INTID 30: the tick
++	 *                       works and everything downstream is unblocked
++	 *   bit1 set, bit0 clear the timer expired but nothing reached the CPU
++	 *                       interface: the interrupt is swallowed between the
++	 *                       timer and ICC_HPPIR1
++	 *   neither             the timer did not even expire
++	 */
++	{
++		unsigned long freq = __builtin_arm_rsr64("CNTFRQ_EL0");
++		uint32_t pend_before = dgic_read32(redist, DGICR_ISPENDR0);
++		int result = dgic_timer_test(&dandelion_gic, DANDELION_TIMER_IRQ,
++		    20000u);
++		uint32_t pend_after = dgic_read32(redist, DGICR_ISPENDR0);
++
++		printf("[dl] gic late: cntp test=%d (1=delivered 2=expired 3=both) "
++		    "ispender0 %x -> %x freq=%lu\n", result, pend_before,
++		    pend_after, freq);
++		/* dgic_timer_test() masks CNTP again; leave it armed for the kernel. */
++		__builtin_arm_wsr64("CNTP_TVAL_EL0", freq / 100u);
++		__builtin_arm_wsr64("CNTP_CTL_EL0", 1ul);
++		__builtin_arm_isb(ISB_SY);
++	}
++
++	/*
++	 * Experiment C: does the Group 1 NS path work at all?
++	 *
++	 * Sending a software generated interrupt to this PE asks the question
++	 * without the timer: an SGI is not gated by GICR_ICFGR, does not depend
++	 * on the counter, and its INTID is known.  ICC_IGRPEN1 is cleared first
++	 * so that a pending interrupt can never be delivered to the CPU during
++	 * the test (an unexpected IRQ at this point would run the kernel's
++	 * handler with a stack that is not expecting it); the pending bit is
++	 * still observable, because pending state does not depend on the group
++	 * enable.  Everything is restored afterwards.
++	 *
++	 *   ISPENDR0 bit9 set  the redistributor frame is this PE's and Group 1
++	 *                      NS interrupts can be pended -> the timer problem
++	 *                      is the PPI line, not the group enable
++	 *   bit9 still clear   nothing of Group 1 NS can be made pending here
++	 */
++	{
++		uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
++		unsigned int aff0 = (unsigned int)(mpidr & 0xffull);
++		unsigned int aff1 = (unsigned int)((mpidr >> 8) & 0xffull);
++		uint32_t before = dgic_read32(redist, DGICR_ISPENDR0);
++		uint32_t after = 0;
++		unsigned int spin;
++
++		__builtin_arm_wsr64("ICC_IGRPEN1_EL1", 0ul);
++		__builtin_arm_isb(ISB_SY);
++		dgic_send_sgi(&dandelion_gic, 9u, aff1, 1u << aff0);
++		for (spin = 0; spin < 100000u; spin++) {
++			after = dgic_read32(redist, DGICR_ISPENDR0);
++			if (after & (1u << 9)) {
++				break;
++			}
++		}
++		dgic_write32(redist, DGICR_ICPENDR0, 1u << 9);
++		__builtin_arm_wsr64("ICC_IGRPEN1_EL1", 1ul);
++		__builtin_arm_isb(ISB_SY);
++		printf("[dl] gic late: sgi self-test ispender0 %x -> %x "
++		    "(bit9=%u spin=%u mpidr=%llx)\n", before, after,
++		    (after & (1u << 9)) ? 1u : 0u, spin,
++		    (unsigned long long)mpidr);
+ 	}
+-	printf("[dl] gic late: hppir1=%llx\n",
+-	    (unsigned long long)__builtin_arm_rsr64("ICC_HPPIR1_EL1"));
+ 
+ 	/* 4. Make sure the CPU interface and the ack/eoi helpers are usable. */
+ 	if (!dandelion_gic_ready) {
