@@ -4,7 +4,47 @@
 
 ---
 
-## 0.0 2026-10-30 19:0x（比 §0 更新）：GIC late init 的读数自相矛盾
+## 0.-1 2026-10-30 21:3x（最新，读这一节就够了）：tick 通了，内核走到"没有根文件系统"
+
+**一句话：`GICD_CTLR` 该写的是 bit 1 不是 bit 0；写进去以后中断第一次被内核收到，
+`bsd_init` 越过自己的探针一路跑到根挂载失败。挡路的已经不是 GIC 了，是根文件系统。**
+
+提交：`690cb43`（内核，`patches/xnu/zzz-dandelion-timer-probe.patch`）+ 本文档所在提交。
+日志原文：`docs/logs/kernel-log-2026-10-30-tick.txt`（3457 行，`round.ps1 collect-log` 一次拿全）。
+
+### 这一轮的硬证据（每条都能在日志里指到行）
+
+| 读数 | 结论 |
+|---|---|
+| `[dl] gic late: ctlr rwp-waited 10 -> 12 (spin=0 rwp=0)` | **bit 1（NS 视图下的 EnableGrp1A = EnableGrp1NS 别名）写进去了**。之前的 `10 -> 10` 是写 bit 0 —— ARE_NS==1 时 bit 0 是 RES0，写它必然是 no-op。旧结论"分发器不归非安全态管"是错的 |
+| `[irq1] first irq seen` | **这颗内核有史以来第一次收到中断**，就出现在 bit 1 写成功之后 |
+| `[dl] gic late: sgi self-test ispender0 1000000 -> 1000200 (bit9=1 spin=0)` | Group 1 NS 的中断能在这颗 redistributor 里挂起 → 帧是对的、组别通 |
+| `[dl] gic late: cntp test=0 (1=delivered 2=expired 3=both) ispender0 1000000 -> 1000000` | 见下：`test=0` 不是"定时器没到期"，而是**到期后被内核的 IRQ handler 抢先收走**，探针再去 ack 时已经没有了。同一时刻的 `[irq1]` 就是它 |
+| `cntpct=91a3e7e4 cntvct=91a3e7e4` | **CNTVOFF == 0**：虚拟计数器和物理计数器同源，所以 CNTP/CNTV 互换不会把 deadline 算错（`zz-dandelion-cntp-timer.patch` 可以放心留着） |
+| `busy-wait spans=23053345 elapsed=2600000 ticks=2600000 freq=13000000` | CNTPCT 忙等精确等于 200 ms（2600000 = 13 MHz × 0.2 s），取代 IOSleep 的方案本身工作正常 |
+| `bsd_init: calling setconf` → `IOFindBSDRoot: IOBSD resource absent after 200 ms` → `Still waiting for root device` → `DANDELION: no root filesystem …` | `bsd_init` 现在**越过了自己的探针**，`setconf()` 返回，根挂载循环开始，走到"没有根文件系统"这句 |
+| `Waiting on <dict…Apple_HFS…>` 之后还能出现下一行 | 那条 `waitForService(60 s)` 的 deadline **到期返回了** —— 没有 tick 时它会永远挂着。这是 tick 在跑的第二条独立证据 |
+
+日志到"no root filesystem"就结束了：`vfs_mountroot()` 里还有下一个等待（每轮 ~60 s），
+我取日志时它还在里面。
+
+### 还有待确认的一件事（下一轮第一件事）
+
+tick 是否**持续**在跑，现在还只有上面两条间接证据。直接证明：在根挂载循环里
+`IOSleep(1000)` 并打印 CNTPCT，返回一次就是 tick 在跑、且能唤醒线程。
+
+### 顺带纠正的三条旧结论
+
+1. `docs/GIC-FORENSICS.md` 把 bit 1 定为 H1 并给了规范原文与 Linux/EDK2 的旁证 —— 实测确认。
+2. 之前"探针编译不过所以没测过"的真正原因是补丁体里混进一个 **U+FEFF**（clang 报
+   `use of undeclared identifier '\ufeff'`）。修在 `tools/ci/ci_log.py`（打印全部编译器
+   错误、且能打印这个字符）和新的 `tools/ci/check_series.py`（推送前本地跑整条补丁序列）。
+3. 面板上 `DANDELION: gic ctlr 0 -> 0` 是**导出的静态变量初值**，不是真实读数（
+   `non-apple-platform-expert-fallback.patch` 只打印变量）。别看它。
+
+---
+
+## 0.0 2026-10-30 19:0x（比 §0 旧）：GIC late init 的读数自相矛盾
 
 `[dl] gic late` 跑了，但**它自己的读数互相冲突**：
 

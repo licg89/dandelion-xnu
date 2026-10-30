@@ -110,8 +110,14 @@ switch ($Stage) {
   }
 
   "collect-log" {
+    # The stock image has lived in two places over this project's life: out\ on
+    # the old machine and ..\artifacts\ (the D:\aios\artifacts drop) today.
     $stock = Join-Path $out "boot_backup.img"
-    if (-not (Test-Path $stock)) { throw "missing $stock" }
+    if (-not (Test-Path $stock)) {
+      $stock = Join-Path (Split-Path -Parent $repo) "artifacts\boot_backup.img"
+    }
+    if (-not (Test-Path $stock)) { throw "missing boot_backup.img in out\ or ..\artifacts\" }
+    Say "stock boot: $stock"
     $d = Require-Fastboot
     Say "fastboot: $d"
     Say "flashing the stock boot image so Android comes up and the log can be read ..."
@@ -136,8 +142,9 @@ switch ($Stage) {
     Say "cutting and decoding the kernel log block ..."
     $py = "py"
     & $py -3.13 -c "d=open(r'$fi','rb').read(); open(r'$out\klog.bin','wb').write(d[15360000:15360000+512*512])"
-    & $py -3.13 (Join-Path $repo "tools\read_log_block.py") (Join-Path $out "klog.bin") --header --scan |
-      Out-File -Encoding utf8 (Join-Path $out "kernel-boot.log")
+    # --out, not a shell redirect: PowerShell would write UTF-16 and every later
+    # reader would have to strip the NUL bytes first (docs/LOG-CHANNEL.md pitfall 1).
+    & $py -3.13 (Join-Path $repo "tools\read_log_block.py") (Join-Path $out "klog.bin") --header --scan --out (Join-Path $out "kernel-boot.log")
 
     Say "decoding the firmware log block (LBA 30512) ..."
     & $py -3.13 (Join-Path $repo "tools\extract_log_block.py") $fi --lba 30512 --out (Join-Path $out "fw-boot.log")

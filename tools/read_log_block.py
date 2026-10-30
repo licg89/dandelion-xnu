@@ -107,6 +107,12 @@ def main():
                         help="ignore text_bytes and stop at the first blank "
                              "sector (used for the kernel log, whose header is "
                              "only refreshed periodically)")
+    parser.add_argument("--out", default=None,
+                        help="write the decoded text to this file as UTF-8.  Use "
+                             "this instead of a shell redirect: PowerShell's > "
+                             "writes UTF-16, which then has to be decoded again "
+                             "(docs/LOG-CHANNEL.md lists this as pitfall 1 and it "
+                             "was still hit on 2026-10-30)")
     args = parser.parse_args()
 
     with open(args.dump, "rb") as handle:
@@ -137,9 +143,18 @@ def main():
     if args.scan or not header["text_bytes"]:
         text = scanned_text(data, header)
     if args.raw:
-        print(text.decode("latin-1", "replace"))
+        decoded = text.decode("latin-1", "replace")
     else:
-        print(text.decode("utf-8", "replace"))
+        decoded = text.decode("utf-8", "replace")
+    if args.out:
+        # newline="" keeps the \n the kernel wrote; opening as UTF-8 keeps a
+        # text editor, a grep and a python one-liner all reading the same file.
+        with open(args.out, "w", encoding="utf-8", newline="") as handle:
+            handle.write(decoded)
+        print("read_log_block: %d bytes -> %s" % (len(decoded), args.out),
+              file=sys.stderr)
+    else:
+        print(decoded)
     return 0
 
 
