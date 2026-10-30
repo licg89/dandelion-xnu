@@ -1,5 +1,5 @@
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
-index 4df41ba..4239b27 100644
+index 4df41ba..10cf55b 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
 @@ -490,10 +490,24 @@ bsd_init(void)
@@ -28,7 +28,7 @@ index 4df41ba..4239b27 100644
  #else
  #define bsd_init_kprintf(x, ...)
  #endif
-@@ -857,6 +871,12 @@ bsd_init(void)
+@@ -857,6 +871,25 @@ bsd_init(void)
  	inittodr(0);
  
  	/* Mount the root file system. */
@@ -37,11 +37,24 @@ index 4df41ba..4239b27 100644
 +		extern void dandelion_trace_mark(const char *);
 +		dandelion_trace_mark("[dl] root mount: entering loop\n");
 +	}
++	/*
++	 * Bring-up probe: setconf() below calls IOFindBSDRoot(), which waits on
++	 * a 30 s deadline for the IOBSD resource.  A 200 ms IOSleep() is the
++	 * cheapest test of whether timer interrupts are delivered at all: if
++	 * "after" never prints, no deadline can ever expire and the 30 s wait
++	 * hangs forever.
++	 */
++	{
++		extern void dandelion_trace_mark(const char *);
++		dandelion_trace_mark("[dl] timerprobe: before IOSleep(200)\n");
++		IOSleep(200);
++		dandelion_trace_mark("[dl] timerprobe: after IOSleep(200)\n");
++	}
 +#endif
  	while (TRUE) {
  		int err;
  
-@@ -868,8 +888,39 @@ bsd_init(void)
+@@ -868,8 +901,39 @@ bsd_init(void)
  
  		bsd_init_kprintf("vfs_mountroot\n");
  		if (0 == (err = vfs_mountroot())) {
@@ -81,3 +94,48 @@ index 4df41ba..4239b27 100644
  		rootdevice[0] = '\0';
  #if CONFIG_NETBOOT
  		if (netboot) {
+diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
+index 5219fb0..944f48e 100644
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -683,10 +683,19 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
+ 	assert(matching);
+ 	matching->setObject(gIOResourceMatchedKey, gIOBSDKey);
+ 
++#if defined(DANDELION)
++	printf("[dl] IOFindBSDRoot: waiting for the IOBSD resource (30 s)\n");
++#endif
+ 	if ((service = IOService::waitForMatchingService(matching, 30ULL * kSecondScale))) {
+ 		OSSafeReleaseNULL(service);
++#if defined(DANDELION)
++		printf("[dl] IOFindBSDRoot: resource matched\n");
++#endif
+ 	} else {
+ 		IOLog("!BSD\n");
++#if defined(DANDELION)
++		printf("[dl] IOFindBSDRoot: wait timed out after 30 s\n");
++#endif
+ 	}
+ 	matching->release();
+ 	matching = NULL;
+@@ -904,6 +913,20 @@ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
+ #if XNU_TARGET_OS_OSX && defined(__arm64__)
+ 			// The disk isn't found - have the user pick from System Recovery.
+ 			(void)IOSetRecoveryBoot(BSD_BOOTFAIL_MEDIA_MISSING, NULL, true);
++#elif defined(DANDELION)
++			/*
++			 * The open-source XNU tree ships neither HFS+/APFS nor a
++			 * memory-disk driver, so no root device can ever appear on
++			 * this port.  Do not panic: stay in the wait loop so the
++			 * kernel keeps running and the framebuffer console (the only
++			 * console this board has) stays readable.
++			 */
++			static boolean_t no_root_logged = FALSE;
++			if (!no_root_logged) {
++				no_root_logged = TRUE;
++				IOLog("DANDELION: no root filesystem can be mounted on this port "
++				    "(open-source XNU has no HFS+/APFS); kernel stays up\n");
++			}
+ #elif XNU_TARGET_OS_IOS
+ 			panic("Failed to mount root device");
+ #endif
