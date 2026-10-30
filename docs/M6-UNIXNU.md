@@ -896,3 +896,110 @@ stage 号和 trace 缓冲区一起覆盖。另加三条探针，用来把这三�
 - 只有 900 ⇒ trace 仍然不通（映射或 cache 属性还有问题）；
 - 500/520 亮、540 不亮 ⇒ 卡在 `arm_slide_rebase_and_sign_image()`（这是处理 MH_FILESET /
   slide / PAC 的代码，非 Apple 构建下要重点看它是否被裁剪）。
+
+## 18. IMG_5803：内核日志第一次出现在面板上，然后停在 `pmap_bootstrap` 的熵检查
+
+### 18.1 读数
+
+| 证据 | 读数 |
+|---|---|
+| 面板 **y ≥ 860** | **第一次出现内核自己的白字日志**（`=== xnu: arm_init ===` 起） |
+| 行 500 白 / 520 绿 / 540 品红 | **全亮**：900→910 之间三条语句全部返回 |
+| 行 900..980 九级探针 | 全亮：`arm_init` 走到底 |
+| 行 1520 红条 | 满宽（stage 6），与上一轮一致 |
+
+上一轮的那个判断对了：`DANDELION_TRACE` 缓冲区（`0x5FC00000`）不在 V=P 窗口里，
+第一次 trace 就是 translation fault。把 `0x5F800000..0x60000000`（4 块）map 进来之后：
+
+- 面板文本区活了；
+- `arm_setup_pre_sign()`（`arm_set_kernel_tbi()`）和 `arm_slide_rebase_and_sign_image()`
+  在非 Apple 构建下都安全返回；
+- `arm_init` 一路走到 `arm_vm_init`。
+
+### 18.2 面板日志原文
+
+```
+=== xnu: arm_init ===
+arm_init: PE_init_platform(FALSE)
+arm_init: cpu topology
+arm_init: cpu_bootstrap
+arm_init: piclock_early_init
+arm_init: kernel_startup_bootstrap
+arm_init: timer_call_early_init
+arm_init: PE_init_debug
+arm_init: trace_init
+arm_init: percpu_bootstrap
+arm_vm_init: start
+vm: boot args
+vm: mem_size
+vm: pmap_bootstrap
+!!! PANIC: Expected 2KiB seed bytes from bootloader, but got 0x0
+Panic(...) Expected 64 seed bytes from bootloader, but got 0
+- __panic_randoms.c:64
+```
+
+（第一行 panic 的 "2KiB" 是面板字体把 `%lu` 的数字画花了，真值是 64，
+和 `osfmk/prng/prng_random.c:64` 的 `sizeof(seed)` 对上。）
+
+### 18.3 根因：`/chosen` 里没有 `random-seed`
+
+`bootseed_init_bootloader()`（`osfmk/prng/prng_random.c`）要求 64 字节，
+数据来自 `PE_get_random_seed()`（`pexpert/gen/pe_gen.c:141`），后者只做一件事：
+
+```c
+SecureDTLookupEntry(NULL, "/chosen", &entryP)
+SecureDTGetProperty(entryP, "random-seed", &dt_random_seed, &size)
+```
+
+取不到（或取到全零）就返回 0，`prng` 直接 panic。
+
+`bootshim/adt.c:120` 的 `dandelion_make_adt()` **确实**会写这个属性，
+而且 `handoff.c:375` 会先试 MT6762G 的 TRNG、失败再退回 `seed_from_cycles()`，
+两条路都不会给出全零。问题是：**内核拿到的那棵树不是这份 ADT**。
+这条链（LK → BootShim → UEFI → UniXNU → DarwinBoot）里，DarwinBoot 交给内核的
+是随 boot 镜像走的 DTB（也就是 `native-emmc-serial.patch` 找 `emmc-log` 节点、
+`tools/patch_adt_emmc_log.py` 去改的那一棵），不是 shim 在内存里现搭的 ADT。
+
+### 18.4 修法（提交 `af9fb11`，`patches/xnu/non-apple-random-seed.patch`）
+
+在 `PE_get_random_seed()` 末尾加一段 `__arm64__` 兜底：属性缺失或全零时，
+用 `CNTVCT_EL0`、`CNTFRQ_EL0`、`MIDR_EL1`、`MPIDR_EL1` 和目标缓冲区地址
+经 SplitMix64 混出 `min(request_size, 64)` 字节并返回。
+
+两个刻意的选择：
+
+1. **不读 `CNTPCT_EL0`**。`CNTHCTL_EL2.EL1PCTEN` 为 0 时 EL1 读物理计数器会
+   trap 到 EL2，而这条 boot 链从来没进过 EL2（面板上 `CurrentEL 1`），
+   那会换来一次没有 handler 的异常。虚拟计数器 `CNTVCT_EL0` 在 EL1 总是可读。
+2. **放在 `PE_get_random_seed()` 而不是 `prng_random.c`**。平台专家正是
+   "这块板子从哪里拿熵"该回答的地方，`prng` 的检查（不足 64 字节就 panic）
+   保持原样——以后 loader 真给了种子，这段兜底自然不会被走到。
+
+这是 bring-up 种子，不是密码学熵。两次开机不会得到同一串（计数器从加电起就在跑），
+但它不能替代真随机源；长期应由造设备树的那一方（loader）提供。
+
+### 18.5 日志通道现状
+
+| 通道 | 状态 |
+|---|---|
+| 面板 y ≥ 860（`dandelion_fb_putc`） | **可用**，内核 kprintf 直接上屏，本轮起是主通道 |
+| `flashinfo` sector 30000..30512（`DLXLOG01`） | 需要 kprintf 活着；现在应该开始有内容，但要 dump 才能读 |
+| `flashinfo` sector 30512..30640（`DDNLOG01`） | 固件日志块，同样要 dump |
+| `kstage` 暂存字 `0x5FBE0000` | 掉电即失，只对同一次开机有意义 |
+
+dump 的办法（在 Android 下，需要 root）：
+
+```
+adb shell su -c 'dd if=/dev/block/by-name/flashinfo of=/sdcard/flashinfo.img'
+adb pull /sdcard/flashinfo.img
+python tools/extract_log_block.py flashinfo.img     # DDNLOG01，固件的
+python tools/read_log_block.py flashinfo.img        # DLXLOG01，内核的
+```
+
+### 18.6 预期
+
+- `vm: pmap_bootstrap` 之后不再 panic，日志继续往下走 ⇒ 下一个失败点会自己印在面板上；
+- 若在别处又出现 `Expected ... seed bytes` ⇒ 兜底没生效（检查 `__arm64__` 条件与
+  `request_size`）；
+- 若这次连 `vm: pmap_bootstrap` 都没到 ⇒ 说明兜底里某条 `mrs` 出了异常，
+  按 §18.4 第 1 条排查。

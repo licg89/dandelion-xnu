@@ -1,54 +1,55 @@
 # 下一次开工从这里开始
 
-写完时间：2026-10-30 03:2x，**更新：2026-10-30 上午（见 §0）**。手机已刷回 Android，仓库已推送。
+写完时间：2026-10-30 03:2x，**更新：2026-10-30 晚（见 §0）**。手机已刷回 Android，仓库已推送。
 
 ---
 
-## 0. 2026-10-30 下午：stage 4 的红条就是 stage 号，凶手是我们自己的一条 `str`
+## 0. 2026-10-30 晚：内核跑完 `arm_init`，在 `pmap_bootstrap` 要 bootloader 熵
 
 **先读这一节，再读别的。**
 
-`IMG_5798/5799` 屏幕上"底部那条红条"不是装饰：`start.s` 的 `DANDELION_STAGE_<n>` 会在
-**framebuffer 行 1520** 画一条 **宽度 = n × 96 px** 的红条，同时把 n 写到物理 `0x5FBE0000`
-（shim 下次启动会印成 `kstage`）。用同图里 payload 橙条（720 px 全宽）标定，红条一直是
-**≈392 px = 4×96 ⇒ stage 4**。
+`IMG_5803` 是转折点：面板 **y ≥ 860** 第一次出现内核自己的日志（`dandelion_fb_putc`），
+说明上一轮把 trace 缓冲区（`0x5FC00000`）map 进来修对了。本轮读数：
 
-`IMG_5799` 还带来三条新标记（本轮加的，行 320 青 / 340 绿 / 360 品红）**全部点亮**，即：
+- 行 **500 白 / 520 绿 / 540 品红 全亮** ⇒ 900 与 910 之间那三条语句（第一条 `DANDELION_TRACE`、
+  `arm_setup_pre_sign()`、`arm_slide_rebase_and_sign_image()`）都返回了；
+- 行 **900..980 的九级探针全亮** ⇒ `arm_init` 走到底，进了 `arm_vm_init`；
+- 面板日志（原文，行 860 往下）：
 
 ```
-DANDELION_STAGE_EARLY 4      ← stage 4 的红条（就是它）
-DANDELION_MARK_ROW 320       ← 亮
-MOV64 x0, SCTLR_EL1_DEFAULT
-MSR_SCTLR_EL1_X0
-DANDELION_MARK_ROW 340       ← 亮：msr 执行完了
-isb   sy
-DANDELION_MARK_ROW 360       ← 亮：isb 也过了
-DANDELION_STAGE_LATE 5       ← 从来没亮过
+=== xnu: arm_init ===
+arm_init: PE_init_platform(FALSE)
+arm_init: cpu topology
+arm_init: cpu_bootstrap
+arm_init: piclock_early_init
+arm_init: kernel_startup_bootstrap
+arm_init: timer_call_early_init
+arm_init: PE_init_debug
+arm_init: trace_init
+arm_init: percpu_bootstrap
+arm_vm_init: start
+vm: boot args
+vm: mem_size
+vm: pmap_bootstrap
+!!! PANIC: Expected 64 seed bytes from bootloader, but got 0
+- __panic_randoms.c:64
 ```
 
-所以 **SCTLR 切换、MMU/cache 打开、切换后取指、往 framebuffer 写像素，全都正常**。
-死的是 stage 5 的第一条指令：`str w10, [x9]`，其中 x9 = `0x5FBE0000`。
+原因：`osfmk/prng/prng_random.c:64` 的 `bootseed_init_bootloader()` 要 64 字节种子，
+`PE_get_random_seed()`（`pexpert/gen/pe_gen.c`）去读设备树 `/chosen/random-seed`；
+我们交给内核的那棵设备树里没有这个属性（`bootshim/adt.c` 会写它，但**那份 ADT 不是内核
+实际拿到的那棵**，内核拿到的是随 boot 镜像走的 DTB）。
 
-原因：V=P 映射是按 boot args 里的 `memSize`（我们给 `0x10000000`）建的，只覆盖
-`0x4D004000..0x5D004000`（1 GiB 槽内 L2 索引 `0x068..0x0E7`），而 `0x5FBE0000` 是
-索引 **`0x0FD`**，没映射。stage 1..4 写它时 MMU 还关着，没问题；stage 5 是 **MMU 打开后
-第一次写这个地址** ⇒ translation fault，内核死在自己的调试代码里。
+本轮修复（`af9fb11`，`patches/xnu/non-apple-random-seed.patch`）：`PE_get_random_seed()`
+在属性缺失（或全零）时，用 `CNTVCT_EL0`、`CNTFRQ_EL0`、`MIDR_EL1`、`MPIDR_EL1` 和目标缓冲区
+地址混出 64 字节返回。**故意不读 `CNTPCT_EL0`**：`CNTHCTL_EL2.EL1PCTEN` 可能把它 trap 到
+我们从未进入的 EL2，那会变成一次没必要的异常。这是 bring-up 种子、不是密码学熵，
+注释里写明了以后应由 loader 提供。
 
-本轮修复（提交 `33f70c4`，`patches/xnu/xnu-probe-markers.patch`）：
+**下一个动作**：拍一张。看 `vm: pmap_bootstrap` 之后的第一行 ——
+panic 应该消失，下一个失败点会直接印在面板上（y ≥ 860 那片白字就是内核日志）。
 
-1. V=P 表里补 map `0x5FA00000..0x5FC00000`（L2 索引 `0x0FD`），属性照抄内核块模板；
-2. `DANDELION_STAGE_LATE` 改成**先画条、后写暂存字**，以后映射再错只丢 `kstage` 数字。
-
-**下一个动作**：拍一张。看两处：
-
-- 行 1520 红条：**480 px ⇒ stage 5**，**576 px ⇒ stage 6**（stage 6 之后就是 `ret` 回 `arm_init`）；
-- 若红条到了 576，再看 **y 900..980**（x 480..720，每条 6 行）的九级探针 —— 那是 `arm_init` 里
-  真正的位置。
-
-判读表在 [`M6-UNIXNU.md`](M6-UNIXNU.md) §14 与 §16。
-
-> 上午那一轮（`IMG_5797`"一根探针都没有 ⇒ 死在 arm_init 前两百行 / start.s"）的方向没错，
-> 但落点被 §16 修正到了具体三条指令：不是"没启动"，是启动后死在自己写的暂存字上。
+判读表与背景见 [`M6-UNIXNU.md`](M6-UNIXNU.md) §18。
 
 ---
 
