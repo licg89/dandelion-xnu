@@ -4,6 +4,57 @@
 
 ---
 
+## 0.0 2026-10-30 19:0x（比 §0 更新）：GIC late init 的读数自相矛盾
+
+`[dl] gic late` 跑了，但**它自己的读数互相冲突**：
+
+```
+[dl] gic late: gicd typer=7904f4 ctlr=10 (bit0=EnableGrp1NS)
+[dl] gic late: redist=fffffffa6d59a000 typer=0 waker=0
+[dl] gic late: igroupr0=0 (bit27)
+[dl] gic late: isenabler0=8000000 igroupr0=0 icfgr1=800000 hppir1=3ff
+[dl] gic late: done, timer INTID 27 enabled
+```
+
+| 读数 | 说明 |
+|---|---|
+| `isenabler0=0x8000000` | bit27 写进去了 → **redistributor 帧是对的**（SGI_base+0x100） |
+| `icfgr1=0x800000` | 电平触发，配置正确 |
+| `igroupr0=0` | 写 bit27 后仍读 0 → 组别写不进去 |
+| `ctlr=0x10` | ARE_NS 已设，**EnableGrp1NS（bit0）为 0** |
+| `typer=0` | 在 SGI_base 读 TYPER（应在 RD_base），所以无意义 —— 不是错误，是偏移 |
+| `hppir1=0x3ff` | Group 1 上没有 pending |
+
+**两个假设，互斥：**
+
+1. **PPI 27 是 Group 0（安全域）** —— LK 把 GIC 留在 secure 状态，EL1 非安全态改不了 PPI 组别。
+   若成立，中断其实在 Group 0 上排队，**正确做法是把定时器当 FIQ 收**，而不是继续修 Group 1。
+2. **分发器层面 Group 1 NS 没开**（`ctlr=0x10`）—— 若成立，写一次 `GICD_CTLR |= 1` 就能通，
+   这是非安全态**唯一被允许**写的分发器位。
+
+### 判定方法（已提交，`dcca362`）
+
+在 late init 里加了三件事：
+
+- 读 **`ICC_HPPIR0_EL1`** —— 如果它报 **27**，就是假设 1，方向转为 FIQ；
+- 读 `ICC_IGRPEN1/IGRPEN0`，把 CPU 接口状态记全；
+- **尝试写 `GICD_CTLR |= EnableGrp1NS` 并回读** —— 回读写不进去就说明分发器不归我们管。
+
+块被插在 `hppir1` 打印**之前**，所以那条 `hppir1` 现在反映的是「尝试开 Group1 之后」的状态。
+
+判读表：
+
+| 下一次日志 | 结论 | 下一步 |
+|---|---|---|
+| `hppir0=1b`（27） | 定时器在 Group 0 | 改成 FIQ 路径（`pe_fiq`），放弃 Group 1 |
+| `hppir0=3ff` + `gicd ctlr 10 -> 11` + `hppir1=1b` | Group 1 打开成功，tick 通了 | `bsd_init` 继续 → 进入根文件系统问题 |
+| `hppir0=3ff` + `gicd ctlr 10 -> 10` | 分发器不归非安全态管 | 只能走 FIQ / Group 0 路线 |
+| 打印停在 `gicd ctlr` 那行 | 写 GICD_CTLR 让总线卡死 | 回退这次写，保留只读部分 |
+
+顺带：`resources/UniXNU/mach_kernel` 在 `ca5d76c` 里已换成**含 GIC late init 的构建**
+（14,858,208 字节）——之前 `936477f` 构建失败、`68cdb45` 被取消，这个修复一直没进过内核。
+
+---
 ## 0. 2026-10-30 晚（最新）：日志通道打通；内核卡在"没有定时器 tick"
 
 **一句话：内核能跑到 `bsd_init` 的根挂载，但定时器中断从未到达过 CPU —— GIC 的重分发器没有使能
