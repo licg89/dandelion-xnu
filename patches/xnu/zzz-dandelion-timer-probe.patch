@@ -126,20 +126,622 @@ index aeedc7d..01ccbf4 100644
  
  	str = OSDataAllocation<char>( kMaxPathBuf + kMaxBootVar, OSAllocateMemory );
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
-index c771097..3743bb2 100644
+index c771097..690fab5 100644
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
-@@ -274,19 +274,108 @@ dandelion_gic_late_init(void)
- 	    dgic_read32(redist, 0x200), dgic_read32(redist, 0x300),
- 	    (unsigned long long)__builtin_arm_rsr64("ICC_IGRPEN1_EL1"));
- 
-+	printf("[dl] gic late: hppir1=%llx\n",
-+	    (unsigned long long)__builtin_arm_rsr64("ICC_HPPIR1_EL1"));
-+
- 	/*
+@@ -1,332 +1,421 @@
+-/*
+- * Copyright (c) 2021 Apple Inc. All rights reserved.
+- *
+- * Dandelion (Xiaomi Redmi 9A / MediaTek MT6762G) interrupt controller glue.
+- *
+- * Division of labour, decided by measurement on the device:
+- *
+- *   boot shim (MMU off)
+- *       Programs the distributor and this PE's redistributor through
+- *       pexpert/pexpert/arm64/dandelion_gic.h, with the MMU off.  Every access
+- *       there either takes effect or is silently dropped by the security
+- *       fabric, and the machine survives either way.
+- *
+- *   kernel (MMU on)
+- *       Programs only the system-register CPU interface (ICC_*), which is
+- *       per-CPU state and does not go through the interconnect.
+- *
+- * Why the kernel must not touch the distributor: doing so stalled the bus and
+- * the boot stopped right after 'arm_init: cpu_timabase_init', a dozen lines
+- * earlier than with the untouched GIC.  On this SoC the GIC implements both
+- * security states, so most distributor state belongs to EL3 in the first
+- * place - Linux receives its arch timer interrupt because the secure firmware
+- * has already arranged the groups, not because Linux set them up.
+- *
+- * Everything the kernel needs from the hardware - mode (GICv3), group
+- * (Group 1 / IRQ, because GICD_TYPER.SecurityExtn == 1) and the timer INTID -
+- * was measured with the shim's GIC inventory and is reported there.
+- */
+-
+-#include <stdint.h>
+-#include <arm64/proc_reg.h>
+-#include <kern/clock.h>
+-#include <machine/machine_routines.h>
+-#include <pexpert/device_tree.h>
+-#include <pexpert/pexpert.h>
+-#include <pexpert/arm64/board_config.h>
+-
+-/*
+- * Route the shared GIC bring-up steps into the console (and therefore into the
+- * eMMC log channel).  dandelion_gic.h defaults this to a no-op because the boot
+- * shim has no console; here we want every step, because one of the ICC_*
+- * accesses stops this machine dead with no output at all.
+- */
+-#define DGIC_TRACE(step)  kprintf("%s\n", step)
+-#include <pexpert/arm64/dandelion_gic.h>
+-
+-/*
+- * The late timer bring-up below reports through printf(), not kprintf():
+- * kprintf() is compiled out on this build (disable_serial_output is set
+- * because the debug= boot argument does not carry DB_KPRT), while printf()
+- * still reaches the panel and the eMMC log.
+- */
+-
+-
+-/* Exported for the late-boot diagnostics in IOPlatformExpert.cpp. */
+-uint32_t dandelion_gic_arch_rev;
+-uint32_t dandelion_gic_pidr2;
+-uint32_t dandelion_gic_typer;
+-uint64_t dandelion_gicr_typer_v;
+-uint32_t dandelion_gic_ctlr_pre;
+-uint32_t dandelion_gic_ctlr_post;
+-uint32_t dandelion_gic_igroupr_pre;
+-uint32_t dandelion_gic_igroupr_post;
+-
+-#if HAS_GIC_V3
+-
+-static struct dgic dandelion_gic;
+-static int dandelion_gic_ready;
+-static int dandelion_gic_group0;
+-
+-int
+-dandelion_gic_uses_group0(void)
+-{
+-	return dandelion_gic_group0;
+-}
+-
+-uint32_t
+-dandelion_gic_ack(void)
+-{
+-	if (!dandelion_gic_ready) {
+-		return DGIC_INTID_SPURIOUS;
+-	}
+-	return dgic_ack(&dandelion_gic);
+-}
+-
+-void
+-dandelion_gic_eoi(uint32_t intid)
+-{
+-	if (!dandelion_gic_ready) {
+-		return;
+-	}
+-	dgic_eoi(&dandelion_gic, intid);
+-}
+-
+-void
+-pe_init_fiq(void)
+-{
+-	int error;
+-
+-	/*
+-	 * One-time CPU interface setup for this PE.  No MMIO: see the file
+-	 * comment.  The shim has already done the distributor/redistributor
+-	 * work, including enabling the timer PPI on the boot CPU.
+-	 */
+-	if (!dandelion_gic_ready) {
+-		dandelion_gic.mode = DGIC_MODE_V3;
+-		dandelion_gic.group = DGIC_GROUP1;      /* SecurityExtn == 1 */
+-		dandelion_gic.redist = 0;
+-		dandelion_gic.gicc = 0;
+-
+-		kprintf("DANDELION: cpu interface init ...\n");
+-		error = dgic_cpuif_init(&dandelion_gic);
+-		kprintf("DANDELION: cpu interface init returned %d\n", error);
+-		if (error != DGIC_OK) {
+-			kprintf("DANDELION: cpu interface init failed (%d)\n",
+-			    error);
+-			return;
+-		}
+-
+-		dandelion_gic_group0 = 0;
+-		dandelion_gic_ready = 1;
+-		dandelion_gic_arch_rev = 3;
+-
+-		/*
+-		 * Give the decrementer a real deadline.  arm_init() enables CNTV
+-		 * (fiq_context_init) without ever writing TVAL, so the very first
+-		 * tick is an already-expired interrupt - the interrupt arrives
+-		 * before any handler is ready for it.  10 ms is the usual tick.
+-		 */
+-		{
+-			uint64_t freq = __builtin_arm_rsr64("CNTFRQ_EL0");
+-
+-			if (freq == 0) {
+-				freq = 13000000;
+-			}
+-			__builtin_arm_wsr64("CNTP_TVAL_EL0", freq / 100);
+-			__builtin_arm_wsr64("CNTP_CTL_EL0", 1);
+-		}
+-
+-		kprintf("DANDELION: icc ready (sre=%lx pmr=%lx ctlr=%lx), "
+-		    "timer INTID %u on Group1/IRQ\n",
+-		    dandelion_gic.icc_sre_el1, dandelion_gic.icc_pmr,
+-		    dandelion_gic.icc_ctlr, DANDELION_TIMER_IRQ);
+-		return;
+-	}
+-
+-	/* Secondary CPU: its own CPU interface, nothing shared. */
+-	error = dgic_cpuif_init(&dandelion_gic);
+-	if (error != DGIC_OK) {
+-		kprintf("DANDELION: cpu%u cpu interface init failed (%d)\n",
+-		    ml_get_cpu_number_local(), error);
+-		return;
+-	}
+-	kprintf("DANDELION: cpu%u icc up\n", ml_get_cpu_number_local());
+-}
+-
+-/*
+- * Late timer-PPI bring-up.
+- *
+- * Measured state this kernel boots with (IMG_5812):
+- *
+- *   DAIF        = 0x200   IRQs enabled
+- *   CNTV_CTL    = 0x5     ENABLE=1, IMASK=0, ISTATUS=1 (expired, asserting)
+- *   ICC_SRE/PMR/IGRPEN1   CPU interface open for Group 1
+- *   ICC_HPPIR1  = 0x3ff   nothing pending
+- *
+- * So the decrementer is firing and the CPU interface would accept the
+- * interrupt, but the redistributor never forwards the timer PPI: no tick
+- * ever arrives, every deadline sleep blocks forever (that is why
+- * bsd_init's 200 ms IOSleep never returns), and nothing time based works.
+- *
+- * Fix: program this PE's redistributor only.  GICD_CTLR and GICD_IGROUPR
+- * belong to EL3 on this SoC and writing them from non-secure kernel context
+- * stalls the bus (see the file comment), so the distributor is only read and
+- * its group-enable state reported.  The redistributor's group register
+- * (GICR_IGROUPR0) is per-PE and is safe to write.
+- */
+-int
+-dandelion_gic_late_init(void)
+-{
+-	/* /interrupt-controller@0c000000 in the device tree: GICD then GICR. */
+-#define DANDELION_GICD_PA   0x0c000000UL
+-#define DANDELION_GICD_SIZE 0x00040000UL
+-#define DANDELION_GICR_PA   0x0c100000UL
+-#define DANDELION_GICR_SIZE 0x00200000UL
+-
+-	unsigned long gicd, gicr, redist;
+-	uint32_t waker, group, icfgr, isen;
+-	int error;
+-
+-	/* Device memory only: the physmap is cacheable and must not carry MMIO. */
+-	gicd = ml_io_map(DANDELION_GICD_PA, DANDELION_GICD_SIZE);
+-	gicr = ml_io_map(DANDELION_GICR_PA, DANDELION_GICR_SIZE);
+-	if (gicd == 0 || gicr == 0) {
+-		printf("[dl] gic late: ml_io_map failed (gicd=%lx gicr=%lx)\n",
+-		    gicd, gicr);
+-		return -1;
+-	}
+-
+-	dandelion_gic.gicd = gicd;
+-	dandelion_gic.gicd_size = DANDELION_GICD_SIZE;
+-	dandelion_gic.gicr = gicr;
+-	dandelion_gic.gicr_size = DANDELION_GICR_SIZE;
+-	dandelion_gic.mode = DGIC_MODE_V3;
+-	dandelion_gic.group = DGIC_GROUP1;
+-	dandelion_gic.gicc = 0;
+-
+-	printf("[dl] gic late: gicd typer=%x ctlr=%x (bit0=EnableGrp1NS)\n",
+-	    dgic_read32(gicd, DGICD_TYPER), dgic_read32(gicd, DGICD_CTLR));
+-
+-	redist = dgic_find_redist(&dandelion_gic);
+-	if (redist == 0) {
+-		printf("[dl] gic late: no redistributor for this PE\n");
+-		return -2;
+-	}
+-	dandelion_gic.redist = redist;
+-
+-	waker = dgic_read32(redist, DGICR_WAKER);
+-	printf("[dl] gic late: redist=%lx typer=%llx waker=%x\n", redist,
+-	    (unsigned long long)dgic_read64(redist, DGICR_TYPER), waker);
+-
+-	/* 1. Wake this PE's redistributor if the firmware left it asleep. */
+-	if (waker & DGICR_WAKER_CHILDRENASLEEP) {
+-		dgic_write32(redist, DGICR_WAKER,
+-		    waker & ~DGICR_WAKER_PROCESSORSLEEP);
+-		for (unsigned int spin = 0; spin < 2000000u; spin++) {
+-			if ((dgic_read32(redist, DGICR_WAKER) &
+-			    DGICR_WAKER_CHILDRENASLEEP) == 0) {
+-				break;
+-			}
+-		}
+-		if (dgic_read32(redist, DGICR_WAKER) &
+-		    DGICR_WAKER_CHILDRENASLEEP) {
+-			printf("[dl] gic late: redistributor stayed asleep\n");
+-			return -3;
+-		}
+-		printf("[dl] gic late: redistributor woken\n");
+-	}
+-
+-	/* 2. Timer PPI -> Group 1, priority 0xa0, level sensitive. */
+-	group = dgic_read32(redist, DGICR_IGROUPR0);
+-	printf("[dl] gic late: igroupr0=%x (bit%u)\n", group, DANDELION_TIMER_IRQ);
+-	dgic_write32(redist, DGICR_IGROUPR0, group | (1u << DANDELION_TIMER_IRQ));
+-
+-	dgic_set_priority32(redist, DGICR_IPRIORITYR, DANDELION_TIMER_IRQ,
+-	    DGIC_PRIORITY_DEFAULT);
+-
+-	icfgr = dgic_read32(redist, DGICR_ICFGR1);
+-	icfgr &= ~(0x3u << (((DANDELION_TIMER_IRQ - 16u) % 16u) * 2u));
+-	icfgr |= (0x2u << (((DANDELION_TIMER_IRQ - 16u) % 16u) * 2u));  /* level */
+-	dgic_write32(redist, DGICR_ICFGR1, icfgr);
+-
+-	/* 3. Enable it, then read the state back. */
+-	dgic_write32(redist, DGICR_ISENABLER0, 1u << DANDELION_TIMER_IRQ);
+-	isen = dgic_read32(redist, DGICR_ISENABLER0);
+-	printf("[dl] gic late: isenabler0=%x igroupr0=%x icfgr1=%x\n", isen,
+-	    dgic_read32(redist, DGICR_IGROUPR0), dgic_read32(redist, DGICR_ICFGR1));
+-	/*
+-	 * The group question has to be asked in registers non-secure may read.
+-	 *
+-	 * A first attempt read ICC_HPPIR0_EL1 and ICC_IGRPEN0_EL1 and the kernel
+-	 * died on the spot: with GICD_CTLR.DS == 0, the Group 0 system registers are
+-	 * undefined from EL1 non-secure, because Group 0 belongs to EL3.  The log
+-	 * ended mid-probe, which is how this was found.
+-	 *
+-	 * So ask it here instead:
+-	 *   GICR_ISPENDR0  Group 1 NS pending for this PE.  The timer is armed and
+-	 *                  PPI 27 is enabled, so if this reads 0 the interrupt is
+-	 *                  simply not a Group 1 interrupt.
+-	 *   GICR_IACTIVER0 Group 1 NS active.
+-	 *   ICC_IGRPEN1    the Group 1 NS enable at the CPU interface (legal to read).
+-	 */
+-	printf("[dl] gic late: ispender0=%x iactiver0=%x igrpen1=%llx\n",
+-	    dgic_read32(redist, 0x200), dgic_read32(redist, 0x300),
+-	    (unsigned long long)__builtin_arm_rsr64("ICC_IGRPEN1_EL1"));
+-
+-	/*
 -	 * EnableGrp1NS is the one distributor bit non-secure is allowed to write,
 -	 * and without it no Group 1 interrupt can be forwarded at all -- which is
 -	 * what ctlr=0x10 above reported.  The read-back says whether it stuck.
+-	 */
+-	{
+-		uint32_t ctlr = dgic_read32(gicd, DGICD_CTLR);
+-		dgic_write32(gicd, DGICD_CTLR, ctlr | 1u);
+-		printf("[dl] gic late: gicd ctlr %x -> %x\n", ctlr,
+-		    dgic_read32(gicd, DGICD_CTLR));
+-	}
+-	printf("[dl] gic late: hppir1=%llx\n",
+-	    (unsigned long long)__builtin_arm_rsr64("ICC_HPPIR1_EL1"));
+-
+-	/* 4. Make sure the CPU interface and the ack/eoi helpers are usable. */
+-	if (!dandelion_gic_ready) {
+-		error = dgic_cpuif_init(&dandelion_gic);
+-		if (error != DGIC_OK) {
+-			printf("[dl] gic late: cpuif init failed (%d)\n", error);
+-			return -4;
+-		}
+-		dandelion_gic_ready = 1;
+-	}
+-	printf("[dl] gic late: done, timer INTID %u enabled\n", DANDELION_TIMER_IRQ);
+-	return 0;
+-}
+-#else
+-void
+-pe_init_fiq(void)
+-{
+-}
+-
+-int
+-dandelion_gic_uses_group0(void)
+-{
+-	return 0;
+-}
+-
+-uint32_t
+-dandelion_gic_ack(void)
+-{
+-	return DGIC_INTID_SPURIOUS;
+-}
+-
+-void
+-dandelion_gic_eoi(uint32_t intid)
+-{
+-	(void)intid;
+-}
+-
+-int
+-dandelion_gic_late_init(void)
+-{
+-	return -1;
+-}
+-#endif /* HAS_GIC_V3 */
++/*
++ * Copyright (c) 2021 Apple Inc. All rights reserved.
++ *
++ * Dandelion (Xiaomi Redmi 9A / MediaTek MT6762G) interrupt controller glue.
++ *
++ * Division of labour, decided by measurement on the device:
++ *
++ *   boot shim (MMU off)
++ *       Programs the distributor and this PE's redistributor through
++ *       pexpert/pexpert/arm64/dandelion_gic.h, with the MMU off.  Every access
++ *       there either takes effect or is silently dropped by the security
++ *       fabric, and the machine survives either way.
++ *
++ *   kernel (MMU on)
++ *       Programs only the system-register CPU interface (ICC_*), which is
++ *       per-CPU state and does not go through the interconnect.
++ *
++ * Why the kernel must not touch the distributor: doing so stalled the bus and
++ * the boot stopped right after 'arm_init: cpu_timabase_init', a dozen lines
++ * earlier than with the untouched GIC.  On this SoC the GIC implements both
++ * security states, so most distributor state belongs to EL3 in the first
++ * place - Linux receives its arch timer interrupt because the secure firmware
++ * has already arranged the groups, not because Linux set them up.
++ *
++ * Everything the kernel needs from the hardware - mode (GICv3), group
++ * (Group 1 / IRQ, because GICD_TYPER.SecurityExtn == 1) and the timer INTID -
++ * was measured with the shim's GIC inventory and is reported there.
++ */
++
++#include <stdint.h>
++#include <arm64/proc_reg.h>
++#include <kern/clock.h>
++#include <machine/machine_routines.h>
++#include <pexpert/device_tree.h>
++#include <pexpert/pexpert.h>
++#include <pexpert/arm64/board_config.h>
++
++/*
++ * Route the shared GIC bring-up steps into the console (and therefore into the
++ * eMMC log channel).  dandelion_gic.h defaults this to a no-op because the boot
++ * shim has no console; here we want every step, because one of the ICC_*
++ * accesses stops this machine dead with no output at all.
++ */
++#define DGIC_TRACE(step)  kprintf("%s\n", step)
++#include <pexpert/arm64/dandelion_gic.h>
++
++/*
++ * The late timer bring-up below reports through printf(), not kprintf():
++ * kprintf() is compiled out on this build (disable_serial_output is set
++ * because the debug= boot argument does not carry DB_KPRT), while printf()
++ * still reaches the panel and the eMMC log.
++ */
++
++
++/* Exported for the late-boot diagnostics in IOPlatformExpert.cpp. */
++uint32_t dandelion_gic_arch_rev;
++uint32_t dandelion_gic_pidr2;
++uint32_t dandelion_gic_typer;
++uint64_t dandelion_gicr_typer_v;
++uint32_t dandelion_gic_ctlr_pre;
++uint32_t dandelion_gic_ctlr_post;
++uint32_t dandelion_gic_igroupr_pre;
++uint32_t dandelion_gic_igroupr_post;
++
++#if HAS_GIC_V3
++
++static struct dgic dandelion_gic;
++static int dandelion_gic_ready;
++static int dandelion_gic_group0;
++
++int
++dandelion_gic_uses_group0(void)
++{
++	return dandelion_gic_group0;
++}
++
++uint32_t
++dandelion_gic_ack(void)
++{
++	if (!dandelion_gic_ready) {
++		return DGIC_INTID_SPURIOUS;
++	}
++	return dgic_ack(&dandelion_gic);
++}
++
++void
++dandelion_gic_eoi(uint32_t intid)
++{
++	if (!dandelion_gic_ready) {
++		return;
++	}
++	dgic_eoi(&dandelion_gic, intid);
++}
++
++void
++pe_init_fiq(void)
++{
++	int error;
++
++	/*
++	 * One-time CPU interface setup for this PE.  No MMIO: see the file
++	 * comment.  The shim has already done the distributor/redistributor
++	 * work, including enabling the timer PPI on the boot CPU.
++	 */
++	if (!dandelion_gic_ready) {
++		dandelion_gic.mode = DGIC_MODE_V3;
++		dandelion_gic.group = DGIC_GROUP1;      /* SecurityExtn == 1 */
++		dandelion_gic.redist = 0;
++		dandelion_gic.gicc = 0;
++
++		kprintf("DANDELION: cpu interface init ...\n");
++		error = dgic_cpuif_init(&dandelion_gic);
++		kprintf("DANDELION: cpu interface init returned %d\n", error);
++		if (error != DGIC_OK) {
++			kprintf("DANDELION: cpu interface init failed (%d)\n",
++			    error);
++			return;
++		}
++
++		dandelion_gic_group0 = 0;
++		dandelion_gic_ready = 1;
++		dandelion_gic_arch_rev = 3;
++
++		/*
++		 * Give the decrementer a real deadline.  arm_init() enables CNTV
++		 * (fiq_context_init) without ever writing TVAL, so the very first
++		 * tick is an already-expired interrupt - the interrupt arrives
++		 * before any handler is ready for it.  10 ms is the usual tick.
++		 */
++		{
++			uint64_t freq = __builtin_arm_rsr64("CNTFRQ_EL0");
++
++			if (freq == 0) {
++				freq = 13000000;
++			}
++			__builtin_arm_wsr64("CNTP_TVAL_EL0", freq / 100);
++			__builtin_arm_wsr64("CNTP_CTL_EL0", 1);
++		}
++
++		kprintf("DANDELION: icc ready (sre=%lx pmr=%lx ctlr=%lx), "
++		    "timer INTID %u on Group1/IRQ\n",
++		    dandelion_gic.icc_sre_el1, dandelion_gic.icc_pmr,
++		    dandelion_gic.icc_ctlr, DANDELION_TIMER_IRQ);
++		return;
++	}
++
++	/* Secondary CPU: its own CPU interface, nothing shared. */
++	error = dgic_cpuif_init(&dandelion_gic);
++	if (error != DGIC_OK) {
++		kprintf("DANDELION: cpu%u cpu interface init failed (%d)\n",
++		    ml_get_cpu_number_local(), error);
++		return;
++	}
++	kprintf("DANDELION: cpu%u icc up\n", ml_get_cpu_number_local());
++}
++
++/*
++ * Late timer-PPI bring-up.
++ *
++ * Measured state this kernel boots with (IMG_5812):
++ *
++ *   DAIF        = 0x200   IRQs enabled
++ *   CNTV_CTL    = 0x5     ENABLE=1, IMASK=0, ISTATUS=1 (expired, asserting)
++ *   ICC_SRE/PMR/IGRPEN1   CPU interface open for Group 1
++ *   ICC_HPPIR1  = 0x3ff   nothing pending
++ *
++ * So the decrementer is firing and the CPU interface would accept the
++ * interrupt, but the redistributor never forwards the timer PPI: no tick
++ * ever arrives, every deadline sleep blocks forever (that is why
++ * bsd_init's 200 ms IOSleep never returns), and nothing time based works.
++ *
++ * Fix: program this PE's redistributor only.  GICD_CTLR and GICD_IGROUPR
++ * belong to EL3 on this SoC and writing them from non-secure kernel context
++ * stalls the bus (see the file comment), so the distributor is only read and
++ * its group-enable state reported.  The redistributor's group register
++ * (GICR_IGROUPR0) is per-PE and is safe to write.
++ */
++int
++dandelion_gic_late_init(void)
++{
++	/* /interrupt-controller@0c000000 in the device tree: GICD then GICR. */
++#define DANDELION_GICD_PA   0x0c000000UL
++#define DANDELION_GICD_SIZE 0x00040000UL
++#define DANDELION_GICR_PA   0x0c100000UL
++#define DANDELION_GICR_SIZE 0x00200000UL
++
++	unsigned long gicd, gicr, redist;
++	uint32_t waker, group, icfgr, isen;
++	int error;
++
++	/* Device memory only: the physmap is cacheable and must not carry MMIO. */
++	gicd = ml_io_map(DANDELION_GICD_PA, DANDELION_GICD_SIZE);
++	gicr = ml_io_map(DANDELION_GICR_PA, DANDELION_GICR_SIZE);
++	if (gicd == 0 || gicr == 0) {
++		printf("[dl] gic late: ml_io_map failed (gicd=%lx gicr=%lx)\n",
++		    gicd, gicr);
++		return -1;
++	}
++
++	dandelion_gic.gicd = gicd;
++	dandelion_gic.gicd_size = DANDELION_GICD_SIZE;
++	dandelion_gic.gicr = gicr;
++	dandelion_gic.gicr_size = DANDELION_GICR_SIZE;
++	dandelion_gic.mode = DGIC_MODE_V3;
++	dandelion_gic.group = DGIC_GROUP1;
++	dandelion_gic.gicc = 0;
++
++	printf("[dl] gic late: gicd typer=%x ctlr=%x (bit0=EnableGrp1NS)\n",
++	    dgic_read32(gicd, DGICD_TYPER), dgic_read32(gicd, DGICD_CTLR));
++
++	redist = dgic_find_redist(&dandelion_gic);
++	if (redist == 0) {
++		printf("[dl] gic late: no redistributor for this PE\n");
++		return -2;
++	}
++	dandelion_gic.redist = redist;
++
++	waker = dgic_read32(redist, DGICR_WAKER);
++	printf("[dl] gic late: redist=%lx typer=%llx waker=%x\n", redist,
++	    (unsigned long long)dgic_read64(redist, DGICR_TYPER), waker);
++
++	/* 1. Wake this PE's redistributor if the firmware left it asleep. */
++	if (waker & DGICR_WAKER_CHILDRENASLEEP) {
++		dgic_write32(redist, DGICR_WAKER,
++		    waker & ~DGICR_WAKER_PROCESSORSLEEP);
++		for (unsigned int spin = 0; spin < 2000000u; spin++) {
++			if ((dgic_read32(redist, DGICR_WAKER) &
++			    DGICR_WAKER_CHILDRENASLEEP) == 0) {
++				break;
++			}
++		}
++		if (dgic_read32(redist, DGICR_WAKER) &
++		    DGICR_WAKER_CHILDRENASLEEP) {
++			printf("[dl] gic late: redistributor stayed asleep\n");
++			return -3;
++		}
++		printf("[dl] gic late: redistributor woken\n");
++	}
++
++	/* 2. Timer PPI -> Group 1, priority 0xa0, level sensitive. */
++	group = dgic_read32(redist, DGICR_IGROUPR0);
++	printf("[dl] gic late: igroupr0=%x (bit%u)\n", group, DANDELION_TIMER_IRQ);
++	dgic_write32(redist, DGICR_IGROUPR0, group | (1u << DANDELION_TIMER_IRQ));
++
++	dgic_set_priority32(redist, DGICR_IPRIORITYR, DANDELION_TIMER_IRQ,
++	    DGIC_PRIORITY_DEFAULT);
++
++	icfgr = dgic_read32(redist, DGICR_ICFGR1);
++	icfgr &= ~(0x3u << (((DANDELION_TIMER_IRQ - 16u) % 16u) * 2u));
++	icfgr |= (0x2u << (((DANDELION_TIMER_IRQ - 16u) % 16u) * 2u));  /* level */
++	dgic_write32(redist, DGICR_ICFGR1, icfgr);
++
++	/* 3. Enable it, then read the state back. */
++	dgic_write32(redist, DGICR_ISENABLER0, 1u << DANDELION_TIMER_IRQ);
++	isen = dgic_read32(redist, DGICR_ISENABLER0);
++	printf("[dl] gic late: isenabler0=%x igroupr0=%x icfgr1=%x\n", isen,
++	    dgic_read32(redist, DGICR_IGROUPR0), dgic_read32(redist, DGICR_ICFGR1));
++	/*
++	 * The group question has to be asked in registers non-secure may read.
++	 *
++	 * A first attempt read ICC_HPPIR0_EL1 and ICC_IGRPEN0_EL1 and the kernel
++	 * died on the spot: with GICD_CTLR.DS == 0, the Group 0 system registers are
++	 * undefined from EL1 non-secure, because Group 0 belongs to EL3.  The log
++	 * ended mid-probe, which is how this was found.
++	 *
++	 * So ask it here instead:
++	 *   GICR_ISPENDR0  Group 1 NS pending for this PE.  The timer is armed and
++	 *                  PPI 27 is enabled, so if this reads 0 the interrupt is
++	 *                  simply not a Group 1 interrupt.
++	 *   GICR_IACTIVER0 Group 1 NS active.
++	 *   ICC_IGRPEN1    the Group 1 NS enable at the CPU interface (legal to read).
++	 */
++	printf("[dl] gic late: ispender0=%x iactiver0=%x igrpen1=%llx\n",
++	    dgic_read32(redist, 0x200), dgic_read32(redist, 0x300),
++	    (unsigned long long)__builtin_arm_rsr64("ICC_IGRPEN1_EL1"));
++
++	printf("[dl] gic late: hppir1=%llx\n",
++	    (unsigned long long)__builtin_arm_rsr64("ICC_HPPIR1_EL1"));
++
++	/*
 +	 * Experiment A: is EnableGrp1NS writable from EL1 non-secure, or was the
 +	 * earlier "10 -> 10" a read taken while the write was still in flight?
 +	 *
@@ -149,12 +751,8 @@ index c771097..3743bb2 100644
 +	 * before it may believe a read-back.  The probe that produced "10 -> 10"
 +	 * read back immediately, so a refused write and a stale read were never
 +	 * told apart.  This waits it out, and reports how many polls it took.
- 	 */
- 	{
--		uint32_t ctlr = dgic_read32(gicd, DGICD_CTLR);
--		dgic_write32(gicd, DGICD_CTLR, ctlr | 1u);
--		printf("[dl] gic late: gicd ctlr %x -> %x\n", ctlr,
--		    dgic_read32(gicd, DGICD_CTLR));
++	 */
++	{
 +		uint32_t before = dgic_read32(gicd, DGICD_CTLR);
 +		uint32_t after = before;
 +		unsigned int spin = 0;
@@ -197,7 +795,7 @@ index c771097..3743bb2 100644
 +		/* dgic_timer_test() masks CNTP again; leave it armed for the kernel. */
 +		__builtin_arm_wsr64("CNTP_TVAL_EL0", freq / 100u);
 +		__builtin_arm_wsr64("CNTP_CTL_EL0", 1ul);
-+		__builtin_arm_isb(ISB_SY);
++		dgic_isb();
 +	}
 +
 +	/*
@@ -226,7 +824,7 @@ index c771097..3743bb2 100644
 +		unsigned int spin;
 +
 +		__builtin_arm_wsr64("ICC_IGRPEN1_EL1", 0ul);
-+		__builtin_arm_isb(ISB_SY);
++		dgic_isb();
 +		dgic_send_sgi(&dandelion_gic, 9u, aff1, 1u << aff0);
 +		for (spin = 0; spin < 100000u; spin++) {
 +			after = dgic_read32(redist, DGICR_ISPENDR0);
@@ -236,14 +834,52 @@ index c771097..3743bb2 100644
 +		}
 +		dgic_write32(redist, DGICR_ICPENDR0, 1u << 9);
 +		__builtin_arm_wsr64("ICC_IGRPEN1_EL1", 1ul);
-+		__builtin_arm_isb(ISB_SY);
++		dgic_isb();
 +		printf("[dl] gic late: sgi self-test ispender0 %x -> %x "
 +		    "(bit9=%u spin=%u mpidr=%llx)\n", before, after,
 +		    (after & (1u << 9)) ? 1u : 0u, spin,
 +		    (unsigned long long)mpidr);
- 	}
--	printf("[dl] gic late: hppir1=%llx\n",
--	    (unsigned long long)__builtin_arm_rsr64("ICC_HPPIR1_EL1"));
- 
- 	/* 4. Make sure the CPU interface and the ack/eoi helpers are usable. */
- 	if (!dandelion_gic_ready) {
++	}
++
++	/* 4. Make sure the CPU interface and the ack/eoi helpers are usable. */
++	if (!dandelion_gic_ready) {
++		error = dgic_cpuif_init(&dandelion_gic);
++		if (error != DGIC_OK) {
++			printf("[dl] gic late: cpuif init failed (%d)\n", error);
++			return -4;
++		}
++		dandelion_gic_ready = 1;
++	}
++	printf("[dl] gic late: done, timer INTID %u enabled\n", DANDELION_TIMER_IRQ);
++	return 0;
++}
++#else
++void
++pe_init_fiq(void)
++{
++}
++
++int
++dandelion_gic_uses_group0(void)
++{
++	return 0;
++}
++
++uint32_t
++dandelion_gic_ack(void)
++{
++	return DGIC_INTID_SPURIOUS;
++}
++
++void
++dandelion_gic_eoi(uint32_t intid)
++{
++	(void)intid;
++}
++
++int
++dandelion_gic_late_init(void)
++{
++	return -1;
++}
++#endif /* HAS_GIC_V3 */
