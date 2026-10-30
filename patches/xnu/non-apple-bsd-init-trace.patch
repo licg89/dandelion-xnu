@@ -1,8 +1,8 @@
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
-index 4df41ba..9df4c57 100644
+index 4df41ba..4239b27 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
-@@ -490,7 +490,15 @@ bsd_init(void)
+@@ -490,10 +490,24 @@ bsd_init(void)
  	platform_stall_panic_or_spin(PLATFORM_STALL_XNU_LOCATION_BSD_INIT);
  #endif
  
@@ -17,4 +17,67 @@ index 4df41ba..9df4c57 100644
 +#endif
  
  #if DEBUG_BSDINIT
- #define bsd_init_kprintf(x, ...) kprintf("bsd_init: " x, ## __VA_ARGS__)
+-#define bsd_init_kprintf(x, ...) kprintf("bsd_init: " x, ## __VA_ARGS__)
++/*
++ * Use printf(), not kprintf(): this kernel runs with
++ * disable_serial_output/disable_kprintf_output set (debug= boot-arg lacks
++ * DB_KPRT and this is a DEVELOPMENT build), so kprintf() is silently
++ * dropped, while printf() still reaches the console and the eMMC log.
++ */
++#define bsd_init_kprintf(x, ...) printf("bsd_init: " x, ## __VA_ARGS__)
+ #else
+ #define bsd_init_kprintf(x, ...)
+ #endif
+@@ -857,6 +871,12 @@ bsd_init(void)
+ 	inittodr(0);
+ 
+ 	/* Mount the root file system. */
++#if defined(DANDELION)
++	{
++		extern void dandelion_trace_mark(const char *);
++		dandelion_trace_mark("[dl] root mount: entering loop\n");
++	}
++#endif
+ 	while (TRUE) {
+ 		int err;
+ 
+@@ -868,8 +888,39 @@ bsd_init(void)
+ 
+ 		bsd_init_kprintf("vfs_mountroot\n");
+ 		if (0 == (err = vfs_mountroot())) {
++#if defined(DANDELION)
++			{
++				extern void dandelion_trace_mark(const char *);
++				dandelion_trace_mark("[dl] root mount: success\n");
++			}
++#endif
+ 			break;
+ 		}
++#if defined(DANDELION)
++		{
++			extern void dandelion_trace_mark(const char *);
++			char _buf[128];
++			static int _mount_fail_count;
++
++			_mount_fail_count++;
++			snprintf(_buf, sizeof(_buf),
++			    "[dl] root mount: fail errno=%d (attempt %d)\n",
++			    err, _mount_fail_count);
++			dandelion_trace_mark(_buf);
++
++			/*
++			 * Bring-up: we have no real root device.  Cap retries so
++			 * the panel shows the failure instead of an infinite
++			 * silent loop, and so the kernel can continue to the
++			 * next boot stage (which will panic with a useful
++			 * message rather than hang forever).
++			 */
++			if (_mount_fail_count >= 3) {
++				dandelion_trace_mark("[dl] root mount: giving up\n");
++				break;
++			}
++		}
++#endif
+ 		rootdevice[0] = '\0';
+ #if CONFIG_NETBOOT
+ 		if (netboot) {
