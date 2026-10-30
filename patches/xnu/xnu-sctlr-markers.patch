@@ -1,0 +1,64 @@
+diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
+index a2a6653..99bd9b7 100644
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -127,6 +127,46 @@
+ 	dsb	sy
+ .endmacro
+ 
++/*
++ * Paint a fixed-height marker bar at an arbitrary row, in a fixed colour.
++ *
++ * DANDELION_STAGE_* encodes the stage in the bar's *width* (num * 96 px), which
++ * runs out of screen at stage 7 and is awkward to measure in a photograph.  This
++ * one puts a known colour at a known row instead, so "which rows are lit" is the
++ * whole reading.
++ *
++ * Only x9-x16 are clobbered, and it cleans the cache lines it wrote because by
++ * the time these run the framebuffer mapping may be cacheable.
++ */
++.macro DANDELION_MARK_ROW row, color
++	movz	x9, #0x7ec5, lsl #16
++	mov	x10, #\row
++	mov	x11, #2944
++	mul	x10, x10, x11
++	add	x9, x9, x10
++	mov	x12, #8
++	mov	w13, #\color
++	mov	x14, #240
++1:
++	mov	x15, x14
++	mov	x16, x9
++2:
++	str	w13, [x16], #4
++	subs	x15, x15, #1
++	b.ne	2b
++	mov	x15, x14
++	mov	x16, x9
++3:
++	dc	cvac, x16
++	add	x16, x16, #64
++	subs	x15, x15, #16
++	b.gt	3b
++	add	x9, x9, x11
++	subs	x12, x12, #1
++	b.ne	1b
++	dsb	sy
++.endmacro
++
+ .macro DANDELION_STAGE_LATE num
+ 	/* physical scratch word */
+ 	movz	x9, #0x5fbe, lsl #16
+@@ -870,9 +910,12 @@ common_start:
+ 
+ 	// Enable caches, MMU, ROP and JOP
+ 	DANDELION_STAGE_EARLY 4
++	DANDELION_MARK_ROW 320, 0xff00ffff		// cyan: about to write SCTLR_EL1_DEFAULT
+ 	MOV64   x0, SCTLR_EL1_DEFAULT
+ 	MSR_SCTLR_EL1_X0
++	DANDELION_MARK_ROW 340, 0xff00ff00		// green: SCTLR written, before isb
+ 	isb		sy
++	DANDELION_MARK_ROW 360, 0xffff00ff		// magenta: isb survived
+ 
+ 	DANDELION_STAGE_LATE 5
+ 

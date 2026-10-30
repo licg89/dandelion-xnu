@@ -708,3 +708,63 @@ UniXNU → DarwinBoot → 跳转）在 `docs/logs/boot-log-2026-10-30-handoff.tx
 
 拍一张，只看 **y 900..990**（x 480..720）。第一根亮起来的是哪一格，就说明死在那一段之后、
 下一格之前；如果 **900 青都没有**，问题在 `start.s`（在那之前只有 bootstrap pmap 和跳转）。
+
+## 15. 找到真正的探针：行 1520 的红条就是 stage 号（2026-10-30 中午）
+
+### 15.1 一直被忽略的那条通道
+
+`osfmk/arm64/start.s` 里早就有 `DANDELION_STAGE_EARLY/LATE <n>`，它做两件事：
+
+1. 往物理地址 `0x5FBE0000` 写一个 stage 数字（`bootshim/handoff.c` 下一次启动会把它印成 `kstage`）；
+2. 在 **framebuffer 行 1520** 画一条 24 行高、**宽度 = n × 96 px** 的红条。
+
+IMG_5798 照片里"底部那条红条"就是它。实测宽度：panel x 约 0..378–407 px
+（用同照片里的 payload 橙条 720 px 全宽做标定）⇒ **stage 4**（4 × 96 = 384）。
+
+之前 `NEXT-SESSION.md` 让大家只看 y 990..1080，所以这条从第一张照片起就在屏幕上、
+却被当成了装饰。
+
+### 15.2 stage 4 意味着什么
+
+| stage | 位置 |
+|---|---|
+| 1 | `_start` 入口 |
+| 2 / 3 | start.s 前半：建 bootstrap 页表、给 MSDC0 的 2 MiB 块加 V=P 映射 |
+| **4** | **即将写 `SCTLR_EL1_DEFAULT`**（打开 I/D cache、MMU、SA/SA0、CSEH…） |
+| 5 | `SCTLR` 写完 + `isb` 之后（`LATE`，会清 cache） |
+| 6 | 即将 `ret` 回 `arm_init` |
+
+我们停在 4，说明内核**确实在跑 `start.s`**，死在：
+
+```asm
+        MOV64   x0, SCTLR_EL1_DEFAULT
+        MSR_SCTLR_EL1_X0          <-- 这里（或紧随的 isb）
+        isb     sy
+        DANDELION_STAGE_LATE 5
+```
+
+换句话说：不是"内核没启动"，而是**切换到 XNU 自己的 SCTLR 那一刻死掉**。
+
+### 15.3 本轮加的标记（`patches/xnu/xnu-sctlr-markers.patch`）
+
+`DANDELION_MARK_ROW <row>, <colour>`：固定行、固定色的 240×8 像素条，带 cache clean。
+放在 SCTLR 写的前后：
+
+| 行 | 颜色 | 含义 |
+|---|---|---|
+| 320 | 青 | 即将写 `SCTLR_EL1_DEFAULT` |
+| 340 | 绿 | `msr SCTLR_EL1` 已执行，`isb` 之前 |
+| 360 | 品红 | `isb` 之后还活着 |
+
+判读：
+
+- **只有 320** ⇒ 卡在 `msr SCTLR_EL1` 本身（非法位/保留位被实现告警，或 M 位切换瞬间的
+  取指权限问题）；
+- **320 + 340，没有 360** ⇒ 卡在 `isb`（cache 打开后取指属性不对，或被 WXN/权限挡住）；
+- **三条都有** ⇒ SCTLR 过了，问题在后面的 5/6（`ret` 回 `arm_init`）或 `arm_init`。
+
+### 15.4 另外：`kstage` 是可以用固件读出来的
+
+`bootshim/handoff.c:417` 已经会读 `0x5FBE0000` 并印 `kstage <hex>`。谁跑那份 shim，
+谁就能在下一次启动时直接给出数字（不用量条子宽度）。这一轮先不接这条线，
+但它比照片可靠——下一步值得把它挪进 `PayloadBootDxe`（一行读 + 一行打印）。
