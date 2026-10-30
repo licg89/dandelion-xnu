@@ -745,7 +745,7 @@ IMG_5798 照片里"底部那条红条"就是它。实测宽度：panel x 约 0..
 
 换句话说：不是"内核没启动"，而是**切换到 XNU 自己的 SCTLR 那一刻死掉**。
 
-### 15.3 本轮加的标记（`patches/xnu/xnu-sctlr-markers.patch`）
+### 15.3 本轮加的标记（`patches/xnu/xnu-probe-markers.patch`）
 
 `DANDELION_MARK_ROW <row>, <colour>`：固定行、固定色的 240×8 像素条，带 cache clean。
 放在 SCTLR 写的前后：
@@ -773,7 +773,7 @@ IMG_5798 照片里"底部那条红条"就是它。实测宽度：panel x 约 0..
 
 ### 16.1 读数
 
-`patches/xnu/xnu-early-boot-markers.patch` 在 SCTLR 切换前后放了三条约 240 panel px 宽的标记条。
+`patches/xnu/xnu-probe-markers.patch` 在 SCTLR 切换前后放了三条约 240 panel px 宽的标记条。
 照片像素坐标（`IMG_5799`，旋转后）：
 
 | 行 | 颜色 | 照片 y | 状态 |
@@ -831,3 +831,68 @@ stage 1..4 能写这个暂存字，是因为那时 **MMU 还关着**；stage 5 �
 
 诊断代码自己成了 bug。凡是在 **MMU 打开之后**还要访问的物理地址，必须先确认它在 V=P 窗口里，
 否则就像 framebuffer / MSDC0 一样，在 `start.s` 里先补一块映射。
+
+## 17. IMG_5800：探针 900 亮起 —— 但下一条语句又踩到同一类坑（2026-10-30 傍晚）
+
+### 17.1 读数
+
+| 证据 | 读数 |
+|---|---|
+| 行 1520 红条 | 宽度约等于满宽（照片 1086 px，payload 720 px 基准 1237 px ⇒ ≈0.85；start.s 只有 1..6 级，故为 **stage 6**） |
+| 行 900 青条 | **亮**（照片 x 1766..2312，正好是 panel x 480..720） |
+| 行 910/920/…/980 | 全都不亮 |
+
+⇒ `start.s` 走完了、`ret` 回到 `arm_init`、**探针 900（函数入口）画出来了**，然后死在下一条探针之前。
+
+### 17.2 900 与 910 之间只有三条语句
+
+```c
+DANDELION_PROBE(900, cyan);                    /* 亮 */
+DANDELION_TRACE("\n=== xnu: arm_init ===\n");  /* 写 0x5FC00000 */
+arm_setup_pre_sign();                          /* arm_set_kernel_tbi() */
+arm_slide_rebase_and_sign_image();
+DANDELION_PROBE(910, yellow);                  /* 不亮 */
+```
+
+`DANDELION_TRACE` 的缓冲区 `DANDELION_TRACE_PA = 0x5FC00000`、`SIZE = 0x40000`，
+即 `0x5FC00000..0x60000000`，L2 索引 **`0x0FE..0x0FF`** —— 和 stage 号（`0x0FD`）
+**紧挨着、同样不在 V=P 窗口里**。
+
+所以第一次 `DANDELION_TRACE` 就是一次 translation fault。这也同时解释了：
+
+- 为什么面板 y ≥ 860 的内核文本区一直是空的（`dandelion_fb_putc` 从未跑到）；
+- 为什么 `flashinfo` 的 eMMC 日志通道（sector 30000）一个字节都没有。
+
+### 17.3 修法（提交 `8fd822b`）
+
+上一轮只 map 了 `0x5FA00000` 一块；这次扩成 **`0x5F800000..0x60000000`（索引 `0x0FC..0x0FF`，4 块）**，
+stage 号和 trace 缓冲区一起覆盖。另加三条探针，用来把这三条语句区分开：
+
+| 行 | 颜色 | 含义 |
+|---|---|---|
+| 500 | 白 | 第一条 `DANDELION_TRACE` 返回了 |
+| 520 | 绿 | `arm_setup_pre_sign()` 返回了 |
+| 540 | 品红 | `arm_slide_rebase_and_sign_image()` 返回了 |
+
+### 17.4 关于"看日志"
+
+这台板子**没有 UART、没有 USB device 模式**，能持久的日志只有 `flashinfo` 里那两块：
+
+| 位置 | 内容 | 头 |
+|---|---|---|
+| sector 30000..30512 | 内核 kprintf 的 eMMC 通道 | `DLXLOG01` |
+| sector 30512..30640 | 固件自己的日志块 | `DDNLOG01` |
+
+两条都需要 dump 整分区（Android 下 `su -c dd if=/dev/block/by-name/flashinfo`），
+再用 `tools/read_log_block.py` / `tools/extract_log_block.py` 解——**前提是 kprintf 活着**。
+
+而这次修的正是这个前提：`DANDELION_TRACE` 之后，内核文本会直接画在面板
+**y 860 起**的区域（`dandelion_fb_putc`，白字黑底），也就是说下一张照片上
+面板里就会直接出现内核日志文本，不必等 dump。
+
+### 17.5 预期
+
+- 行 500 亮 ⇒ trace 通了；此时 y 860+ 应该出现 `=== xnu: arm_init ===` 等文本；
+- 只有 900 ⇒ trace 仍然不通（映射或 cache 属性还有问题）；
+- 500/520 亮、540 不亮 ⇒ 卡在 `arm_slide_rebase_and_sign_image()`（这是处理 MH_FILESET /
+  slide / PAC 的代码，非 Apple 构建下要重点看它是否被裁剪）。

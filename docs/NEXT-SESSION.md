@@ -34,7 +34,7 @@ DANDELION_STAGE_LATE 5       ← 从来没亮过
 索引 **`0x0FD`**，没映射。stage 1..4 写它时 MMU 还关着，没问题；stage 5 是 **MMU 打开后
 第一次写这个地址** ⇒ translation fault，内核死在自己的调试代码里。
 
-本轮修复（提交 `33f70c4`，`patches/xnu/xnu-early-boot-markers.patch`）：
+本轮修复（提交 `33f70c4`，`patches/xnu/xnu-probe-markers.patch`）：
 
 1. V=P 表里补 map `0x5FA00000..0x5FC00000`（L2 索引 `0x0FD`），属性照抄内核块模板；
 2. `DANDELION_STAGE_LATE` 改成**先画条、后写暂存字**，以后映射再错只丢 `kstage` 数字。
