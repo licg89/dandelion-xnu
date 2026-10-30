@@ -1,0 +1,126 @@
+diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
+index 254e126..c2a0da9 100644
+--- a/osfmk/kern/printf.c
++++ b/osfmk/kern/printf.c
+@@ -962,6 +962,12 @@ vprintf(const char *fmt, va_list ap)
+ #define DANDELION_FB_PA         0x7ec50000UL
+ #define DANDELION_FB_STRIDE     2944
+ #define DANDELION_FB_VISW       720
++/*
++ * Width of the text area.  The bring-up probe bars are painted from x=480 to
++ * the right edge and do not spare the text, so anything that reaches past
++ * them is invisible -- including the tail of a panic message.  Wrap early.
++ */
++#define DANDELION_FB_TEXTW      480
+ #define DANDELION_FB_Y0         860
+ #define DANDELION_FB_X0         8
+ /*
+@@ -1157,7 +1163,7 @@ dandelion_fb_putc(char c)
+ 	if (c < 0x20 || c > 0x7e) {
+ 		c = '?';
+ 	}
+-	if (dandelion_fb_x + 8 > DANDELION_FB_VISW) {
++	if (dandelion_fb_x + 8 > DANDELION_FB_TEXTW) {
+ 		dandelion_fb_newline();
+ 	}
+ 	if (dandelion_fb_y + 16 > DANDELION_FB_YMAX) {
+diff --git a/osfmk/kern/startup.c b/osfmk/kern/startup.c
+index d0ca558..a048687 100644
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -438,6 +438,17 @@ kernel_startup_initialize_upto(startup_subsystem_id_t upto)
+ 		}
+ 		startup_phase = cur->subsystem - 1;
+ 		kernel_startup_log(cur->subsystem);
++#if defined(DANDELION)
++		if (cur->subsystem >= STARTUP_SUB_ZALLOC) {
++			char dl_buf[96];
++
++			snprintf(dl_buf, sizeof(dl_buf),
++			    "[dl] run sub=%d rank=%d fn=0x%lx\n",
++			    cur->subsystem, cur->rank,
++			    (unsigned long)(uintptr_t)cur->func);
++			dandelion_trace_mark(dl_buf);
++		}
++#endif
+ 		cur->func(cur->arg);
+ 		startup_entry_cur = ++cur;
+ 	}
+diff --git a/osfmk/vm/vm_kern.c b/osfmk/vm/vm_kern.c
+index 2927d4b..37268b0 100644
+--- a/osfmk/vm/vm_kern.c
++++ b/osfmk/vm/vm_kern.c
+@@ -1067,6 +1067,19 @@ kmem_suballoc(
+ 	assert(page_aligned(size));
+ 	assert(parent->pmap == kernel_pmap);
+ 
++#if defined(DANDELION)
++	{
++		extern void dandelion_trace_mark(const char *);
++		char buf[192];
++
++		snprintf(buf, sizeof(buf),
++		    "[dl] suballoc ask=0x%llx size=0x%llx fl=0x%x ra=0x%lx\n",
++		    (uint64_t)*addr, (uint64_t)size, (unsigned)vm_flags,
++		    (unsigned long)(uintptr_t)__builtin_return_address(0));
++		dandelion_trace_mark(buf);
++	}
++#endif
++
+ 	vm_map_kernel_flags_set_vmflags(&vmk_flags, vm_flags, tag);
+ 
+ 	if (parent == kernel_map) {
+diff --git a/osfmk/vm/vm_map.c b/osfmk/vm/vm_map.c
+index e5a6f9f..68702c7 100644
+--- a/osfmk/vm/vm_map.c
++++ b/osfmk/vm/vm_map.c
+@@ -7952,6 +7952,36 @@ __options_decl(vm_map_delete_state_t, uint32_t, {
+ 	VMDS_KERNEL_KMEMPTR     = 0x0020
+ });
+ 
++#if defined(DANDELION)
++/*
++ * Bring-up diagnosis.  A deletion from a kernel-pmap map that finds a gap
++ * panics with nothing but the range, which says what went wrong but not
++ * whose address space arithmetic produced it.  Report every such deletion
++ * with its caller so the panic can be attributed.
++ */
++extern void dandelion_trace_mark(const char *);
++
++__attribute__((noinline))
++static void
++dandelion_vm_map_delete_trace(
++	vm_map_t                map,
++	vm_map_offset_t         start,
++	vm_map_offset_t         end,
++	void                   *ra)
++{
++	char buf[192];
++
++	snprintf(buf, sizeof(buf),
++	    "[dl] del ra=0x%lx map=0x%lx pm=0x%lx min=0x%llx max=0x%llx "
++	    "s=0x%llx e=0x%llx\n",
++	    (unsigned long)(uintptr_t)ra, (unsigned long)(uintptr_t)map,
++	    (unsigned long)(uintptr_t)vm_map_pmap(map),
++	    (uint64_t)vm_map_min(map), (uint64_t)vm_map_max(map),
++	    (uint64_t)start, (uint64_t)end);
++	dandelion_trace_mark(buf);
++}
++#endif /* DANDELION */
++
+ /*
+  *	vm_map_delete:	[ internal use only ]
+  *
+@@ -7991,6 +8021,12 @@ vm_map_delete(
+ 	uint32_t                size_idx, slot_idx;
+ 	struct mach_vm_range    slot;
+ 
++#if defined(DANDELION)
++	if (vm_map_pmap(map) == kernel_pmap) {
++		dandelion_vm_map_delete_trace(map, start, end,
++		    __builtin_return_address(0));
++	}
++#endif
+ 	if (vm_map_pmap(map) == kernel_pmap) {
+ 		state |= VMDS_KERNEL_PMAP;
+ 		range_id = kmem_addr_get_range(start, end - start);
