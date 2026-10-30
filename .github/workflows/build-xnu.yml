@@ -36,12 +36,12 @@ env:
 
 jobs:
   build:
-    # macos-14 is being retired (brownouts from 2026-10, removed 2026-11-02), and a
-    # brownout cancels jobs while they sit in the queue:
-    #   "This job failed because of a scheduled macOS 14 runner image brownout."
-    # macos-15 is the current arm64 image and carries the same Xcode toolchain for
-    # this build; see https://github.com/actions/runner-images/issues/13518.
-    runs-on: macos-15
+    # macos-14 is retired on 2026-11-02 and is in a brownout schedule until then,
+    # which cancels queued jobs with "This job failed because of a scheduled macOS 14
+    # runner image brownout".  It stays until the macos-15 path can build this tree:
+    # that image carries only Xcode 16.x/26.x (clang 17+), which rejects xnu-8796's
+    # uio_stackbuf_t arrays and its DriverKit IIG glue.  See docs/CI-RUNNERS.md.
+    runs-on: macos-14
     timeout-minutes: 240
 
     env:
