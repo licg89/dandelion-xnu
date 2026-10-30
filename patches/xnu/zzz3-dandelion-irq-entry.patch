@@ -1,0 +1,94 @@
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index 9e64376..f78079f 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1869,6 +1869,57 @@ sleh_irq(arm_saved_state_t *state)
+ 	 */
+ 	{
+ 		uint32_t intid = dandelion_gic_ack();
++		int dl_skip_dispatch = 0;
++
++		/*
++		 * This file uses kprintf()/snprintf() but never printf(), so it does
++		 * not pull in a declaration of it; the diagnostics below must use
++		 * printf() because kprintf() is compiled out on this build.
++		 */
++		extern int printf(const char *fmt, ...);
++
++		/*
++		 * IRQ-entry bisect.
++		 *
++		 * Two boots in a row (4ac085d, 5879680) stopped at the first
++		 * interrupt: the ring shows "[irq1] first irq seen" and then the
++		 * kernel never writes again -- the *very next* printf in the probe
++		 * ("gic step C2", three statements later) never appeared.  So the
++		 * failure is in here, between acknowledging and returning to the
++		 * interrupted code, not in the probe that provoked it.
++		 *
++		 * printf(), not kprintf(): kprintf is compiled out on this build
++		 * (docs/LOG-CHANNEL.md), which is also why the old decider line
++		 * never appeared in any log.
++		 *
++		 * The first interrupt is answered with the minimum the architecture
++		 * requires and nothing else: report it, mask the timer if that is
++		 * what it was (the PPI is level-triggered, so leaving it asserted
++		 * would re-pend immediately and storm), EOI, return.  Surviving that
++		 * means the entry/EOI path is sound and rtclock_intr() is the
++		 * suspect; not surviving means the suspect is the entry path.
++		 */
++		{
++			static unsigned int dl_irq_count;
++
++			dl_irq_count++;
++			if (dl_irq_count <= 4u || (dl_irq_count % 1000u) == 0u) {
++				printf("[dl] irq %u: intid=%u hppir1=%llx\n",
++				    dl_irq_count, (unsigned)intid,
++				    (unsigned long long)__builtin_arm_rsr64("ICC_HPPIR1_EL1"));
++			}
++			if (dl_irq_count == 1u) {
++				if (intid == DANDELION_TIMER_IRQ) {
++					__builtin_arm_wsr64("CNTP_CTL_EL0", 0ul);
++					printf("[dl] irq 1: first interrupt was the timer; "
++					    "CNTP masked, rtclock_intr() skipped\n");
++				} else {
++					printf("[dl] irq 1: first interrupt was not the "
++					    "timer; EOI only, rtclock_intr() skipped\n");
++				}
++				dl_skip_dispatch = 1;
++			}
++		}
+ 
+ 		/*
+ 		 * First-interrupt decider (see docs/research/irq-entry-audit.md).
+@@ -1897,20 +1948,22 @@ sleh_irq(arm_saved_state_t *state)
+ 				 * would also kill the only tick the scheduler has.
+ 				 */
+ 
+-				kprintf("DANDELION irq1: hppir1=%llu intid=%u cntv_ctl=%llu "
++				printf("DANDELION irq1: hppir1=%llu intid=%u cntv_ctl=%llu "
+ 				    "cntv_tval=%llu cntp_ctl=%llu\n",
+ 				    hppir1, (unsigned)intid, cntv_ctl, cntv_tval, cntp_ctl);
+ 			}
+ 		}
+ 
+-		if (intid == DANDELION_TIMER_IRQ) {
+-			cdp->cpu_decrementer = -1; /* Large */
+-			rtclock_intr(TRUE);
+-		} else if (intid < GIC_SPURIOUS_IRQ && cdp->interrupt_handler) {
+-			cdp->interrupt_handler(cdp->interrupt_target,
+-			    cdp->interrupt_refCon,
+-			    cdp->interrupt_nub,
+-			    cdp->interrupt_source);
++		if (!dl_skip_dispatch) {
++			if (intid == DANDELION_TIMER_IRQ) {
++				cdp->cpu_decrementer = -1; /* Large */
++				rtclock_intr(TRUE);
++			} else if (intid < GIC_SPURIOUS_IRQ && cdp->interrupt_handler) {
++				cdp->interrupt_handler(cdp->interrupt_target,
++				    cdp->interrupt_refCon,
++				    cdp->interrupt_nub,
++				    cdp->interrupt_source);
++			}
+ 		}
+ 		dandelion_gic_eoi(intid);
+ 	}
