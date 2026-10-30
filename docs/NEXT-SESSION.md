@@ -4,6 +4,64 @@
 
 ---
 
+## 0.-3 2026-10-30 23:5x（最新）：定时器中断**确实送达**，INTID 30；剩下的故障是 `rtclock_intr()`
+
+**一句话：GIC/定时器那条链已经彻底通了 —— 内核收到了 INTID 30 的定时器中断。
+之前三轮"内核哑掉"不是硬件问题，是我自己在中断处理程序里调了 `printf()`，
+而这个内核会因此 panic。现在把这条诊断换成内存环形缓冲后，中断进来了，
+下一位挡路者是 `rtclock_intr()`。**
+
+提交：`9a52545`（`patches/xnu/zzz3-dandelion-irq-entry.patch`）。
+日志：`docs/logs/kernel-log-2026-10-30-irq.txt`。
+
+### 关键日志（原文）
+
+```
+[dl] gic step A: ctlr write
+[dl] gic late: ctlr rwp-waited 10 -> 12 (spin=0 rwp=0)
+[dl] gic step B: cntp
+[dl] irq 1 intid=30 hppir1=3ff
+[dl] irq1: timer; CNTP masked, rtclock_intr() skipped
+[irq1] first irq seen
+[dl] gic late: cntp test=0 (1=delivered 2=expired 3=both) ispender0 1000000 -> 1000000 freq=13000000
+[dl] gic step C: sgi
+[dl] gic step C1: igrpen1 off
+[dl] irq 2 intid=30 hppir1=3ff          <- 到这里就停了
+```
+
+| 读数 | 结论 |
+|---|---|
+| `ctlr rwp-waited 10 -> 12` | `GICD_CTLR` bit 1 写进去了（NS 视图下的 Group 1 使能） |
+| **`irq 1 intid=30`** | **定时器中断真的到达 CPU 接口并被 ack**：INTID 30 = EL1 非安全物理定时器 PPI，与 Android `/proc/interrupts` 的 `GICv3 30 Level arch_timer` 一致 |
+| `irq1: timer; CNTP masked, rtclock_intr() skipped` | 第一个中断只做了 mask+EOI+返回，内核活着走完了实验 B、C 的入口 |
+| `irq 2 intid=30` 之后没有输出 | **第二个中断走的是 `rtclock_intr(TRUE)` 那条路，机器停在那里** |
+
+### 前三轮"静默死亡"的真正原因（重要，别再踩）
+
+```
+!!! PANIC: Console I/O from interrupt-disabled context @%s:%d
+panic(cpu 0 caller ...): ... @serial_console.c:168
+```
+
+IRQ 处理程序运行在 `DAIF.I=1` 下，而这个内核**禁止在中断屏蔽上下文做 console I/O**。
+我为了诊断在 handler 里加的 `printf()` 正好触发了这个 panic —— 而 panic 前那行
+（本该解释一切的 `[dl] irq …`）永远打不出来，于是表现为"最后一行之后什么都没有"。
+正确通道是 `dandelion_trace_mark()`（写内存环形缓冲，由 eMMC 日志通道事后落盘）。
+**在中断上下文里绝不能用 `printf`/`IOLog`/`kprintf`。**
+
+### 下一步（按顺序）
+
+1. **`rtclock_intr()` 为什么死**。现在第一个中断故意跳过它，第二个中断就走它并停住。
+   它内部会处理 `timer_call` 队列、`thread_wakeup`、以及重装 decrementer。
+   先在它前后各放一个 `dandelion_trace_mark()`（**不能 printf**）定位到具体子步骤；
+   如果它在 `ml_set_decrementer` 之后需要 `ml_delay` 之类会 block 的东西，那就是下一层原因。
+2. 拿到 tick 之后：把 `zzz3` 里的 bisect 去掉（第一个中断也走 `rtclock_intr`），
+   然后按 `docs/ROOTFS-STEP1.md` 走根文件系统那半步（`options MOCKFS` 已经进了
+   `config/MASTER.arm64.dandelion`，`patches/xnu/zzz2-*.patch` 已经让 mockfs 编得过，
+   本轮 CI 证明了这一点）。
+
+---
+
 ## 0.-2 2026-10-30 22:xx：第三轮内核在探针中途哑掉，加步进标记；同时把根文件系统那半步做掉
 
 ### 异常：`4ac085d` 那次启动只打到 SGI 自检就再也没有输出
