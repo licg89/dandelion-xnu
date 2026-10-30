@@ -1,0 +1,66 @@
+diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
+index 9b36f99..2da4131 100644
+--- a/osfmk/kern/printf.c
++++ b/osfmk/kern/printf.c
+@@ -1254,8 +1254,27 @@ dandelion_trace_attach(void)
+ }
+ 
+ void
++/*
++ * Serialising the console writers (DANDELION).
++ *
++ * Every one of these writers is called from both thread and interrupt context:
++ * the kernel's own printf(), the checkpoints, and - since the tick works - the
++ * markers in sleh_irq()/rtclock_intr().  They all share mutable state (a 512-byte
++ * sector buffer, a ring cursor, the framebuffer cursor), so a timer interrupt
++ * arriving in the middle of a line interleaves the two writers, corrupts the
++ * buffer index, and stops all output.  That is exactly what the 01:3x boot did.
++ *
++ * ml_set_interrupts_enabled() returns the previous state, so nesting is safe: in
++ * interrupt context it reports FALSE and restoring leaves interrupts masked.
++ */
++extern boolean_t ml_set_interrupts_enabled(boolean_t enable);
++
++#define DL_WRITER_LOCK()    boolean_t _dl_intrs = ml_set_interrupts_enabled(FALSE)
++#define DL_WRITER_UNLOCK()  ml_set_interrupts_enabled(_dl_intrs)
++
+ dandelion_trace_putc(char c)
+ {
++	DL_WRITER_LOCK();
+ 	volatile unsigned char *base = dandelion_trace_base;
+ 	volatile unsigned int *hdr;
+ 	unsigned int off = dandelion_trace_len;
+@@ -1295,6 +1314,7 @@ dandelion_trace_putc(char c)
+ 
+ 	__asm__ volatile("dc cvac, %0" :: "r"((unsigned long)(base + DANDELION_TRACE_HDR + off) & ~63UL) : "memory");
+ 	__asm__ volatile("dsb sy" ::: "memory");
++	DL_WRITER_UNLOCK();
+ }
+ 
+ void
+@@ -1782,13 +1802,17 @@ dl_emmc_flush_sector(void)
+ void
+ dandelion_emmc_putc(char c)
+ {
++	DL_WRITER_LOCK();
++
+ 	if (!dl_emmc_ready) {
+ 		if (dl_emmc_ring_len < sizeof(dl_emmc_ring)) {
+ 			dl_emmc_ring[dl_emmc_ring_len++] = (unsigned char)c;
+ 		}
++		DL_WRITER_UNLOCK();
+ 		return;
+ 	}
+ 	if (dl_emmc_failed) {
++		DL_WRITER_UNLOCK();
+ 		return;
+ 	}
+ 
+@@ -1805,6 +1829,7 @@ dandelion_emmc_putc(char c)
+ 		 * kernel that dies is the last line it managed to print. */
+ 		dl_emmc_flush_sector();
+ 	}
++	DL_WRITER_UNLOCK();
+ }
+ 
+ /*
