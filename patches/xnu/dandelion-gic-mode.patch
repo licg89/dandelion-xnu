@@ -2,7 +2,7 @@ diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
 index 3ad743f..def362e 100644
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
-@@ -1,177 +1,332 @@
+@@ -1,177 +1,353 @@
  /*
   * Copyright (c) 2021 Apple Inc. All rights reserved.
 + *
@@ -430,6 +430,27 @@ index 3ad743f..def362e 100644
 -	__builtin_arm_wsr64("ICC_IGRPEN0_EL1", 1);
 -	__builtin_arm_isb(ISB_SY);
 +	printf("[dl] gic late: done, timer INTID %u enabled\n", DANDELION_TIMER_IRQ);
++﻿
++	/*
++	 * Two answers, in order of how much they tell us.
++	 *
++	 * 1. Is EnableGrp1NS writable from here?  The earlier "10 -> 10" was taken
++	 *    without waiting for GICD_CTLR.RWP, so it could be a read of the old
++	 *    value.  This waits the write out.
++	 * 2. Does the GIC deliver our timer at all?  dgic_timer_test arms CNTP, polls
++	 *    for the interrupt and acks + EOIs it if one arrives.
++	 */
++	{
++		unsigned int ctlr_before, ctlr_after;
++		int timer = -1;
++
++		dgic_ctlr_try_enable1(gicd, &ctlr_before, &ctlr_after);
++		printf("[dl] gic late: ctlr vol %x -> %x (rwp waited)\n",
++		    ctlr_before, ctlr_after);
++		printf("[dl] gic late: ispender0=%x\n", dgic_read32(redist, 0x200));
++		timer = dgic_timer_test(&dandelion_gic, DANDELION_TIMER_IRQ, 20000u);
++		printf("[dl] gic late: dgic_timer_test -> %d (0 means acked)\n", timer);
++	}
 +	return 0;
  }
  #else

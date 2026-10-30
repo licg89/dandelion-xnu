@@ -942,4 +942,27 @@ dgic_timer_test_clear(struct dgic *g, unsigned int irq)
 	}
 }
 
+
+/*
+ * Is GICD_CTLR actually writable from non-secure, or was the read-back stale?
+ *
+ * The late init reported "gicd ctlr 10 -> 10".  That can mean non-secure may not set
+ * EnableGrp1NS, or it can mean the read-back was taken while the write was still in
+ * flight -- GICD_CTLR.RWP (bit 31) says exactly that, and the protocol is to poll it
+ * until it clears.  This does the write through a volatile pointer and waits RWP out
+ * before reading back, so the second number answers the question.
+ */
+static inline void
+dgic_ctlr_try_enable1(uintptr_t gicd, unsigned int *before, unsigned int *after)
+{
+	volatile uint32_t *ctlr = (volatile uint32_t *)(gicd + DGICD_CTLR);
+	unsigned int spin = 0;
+
+	*before = *ctlr;
+	*ctlr = *before | DGICD_CTLR_ENABLE0;
+	dgic_dsb();
+	do {
+		*after = *ctlr;
+	} while ((*after & DGICD_CTLR_RWP) != 0 && ++spin < 1000000u);
+}
 #endif /* _PEXPERT_ARM64_DANDELION_GIC_H */
