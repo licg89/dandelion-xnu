@@ -1,0 +1,68 @@
+diff --git a/pexpert/gen/pe_gen.c b/pexpert/gen/pe_gen.c
+index e1d1571..39ca82d 100644
+--- a/pexpert/gen/pe_gen.c
++++ b/pexpert/gen/pe_gen.c
+@@ -137,6 +137,33 @@ PE_init_printf(boolean_t vm_initialized)
+ 	}
+ }
+ 
++#if defined(__arm64__)
++/*
++ * Dandelion: the device tree the kernel is handed has no "random-seed" under
++ * /chosen, because there is no iBoot on this board to put one there and the
++ * boot chain that does build the property (bootshim/adt.c) is not the one
++ * feeding this device tree.  osfmk/prng/prng_random.c treats a missing or
++ * all-zero seed as fatal, so PE_get_random_seed() has to answer with
++ * something: derive 64 bytes from the state that differs between boots --
++ * the virtual counter, its frequency, the identifying registers and
++ * the address of the destination buffer (which moves with the kernel slide).
++ *
++ * This is a bring-up seed, not cryptographic entropy.  It is still better
++ * than a constant: the counters are free-running from power-on, so two boots
++ * do not produce the same stream.  Once the loader is the one that builds
++ * the device tree, the seed should come from it instead, and this fallback
++ * will simply not be reached.
++ */
++static uint64_t
++dandelion_seed_word(uint64_t x)
++{
++	x += 0x9e3779b97f4a7c15ULL;
++	x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
++	x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
++	return x ^ (x >> 31);
++}
++#endif /* defined(__arm64__) */
++
+ uint32_t
+ PE_get_random_seed(unsigned char *dst_random_seed, uint32_t request_size)
+ {
+@@ -174,6 +201,29 @@ PE_get_random_seed(unsigned char *dst_random_seed, uint32_t request_size)
+ 		}
+ 	}
+ 
++#if defined(__arm64__)
++	if (size == 0 && request_size >= 8) {
++		uint64_t vct, frq, midr, mpidr, state;
++
++		__asm__ volatile("mrs %0, cntvct_el0" : "=r"(vct));
++		__asm__ volatile("mrs %0, cntfrq_el0" : "=r"(frq));
++		__asm__ volatile("mrs %0, midr_el1" : "=r"(midr));
++		__asm__ volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
++
++		state = vct ^ (frq << 17) ^ (midr << 29) ^
++		    (mpidr << 41) ^ (uint64_t)(uintptr_t)dst_random_seed;
++
++		size = request_size > 64 ? 64 : request_size;
++		for (uint32_t i = 0; i < size; i += 8) {
++			uint64_t word = dandelion_seed_word(state + i);
++
++			for (uint32_t j = 0; j < 8 && i + j < size; j++) {
++				dst_random_seed[i + j] = (unsigned char)(word >> (8 * j));
++			}
++		}
++	}
++#endif /* defined(__arm64__) */
++
+ 	return size;
+ }
+ 
