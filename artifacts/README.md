@@ -8,19 +8,35 @@ checkout 完整复现。构建与打包的完整环境见
 | 文件 | 大小 | 说明 |
 |---|---|---|
 | `SILICIUM_UEFI.fd` | 2,097,152 B（= `FD_SIZE` 0x200000） | 当前构建产物 |
-| `boot-uefi-handoff.img` | 16,099,328 B | **当前上机版**：`flashinfo` = **15.875 MiB FAT 卷**（`\UniXNU.efi`、`\EFI\UniXNU\` 全套、**`kernel.macho` 14.2 MiB**）+ 日志块挪到 +15872 KiB；`UniXNU.efi` 同时以 FFS 文件进固件卷；启动项第一条是 `type = "xnu"` |
+| `boot-uefi-redband.img` | 16,099,328 B | **当前上机版**（构建 `86957fa`）：`PayloadBootDxe` 入口第一句就把面板上的横条画成**红色**（“固件跑到了这一句”是像素，不是日志），并打一行每次构建都会变的 `build` 时间戳；`flashinfo` = **15.875 MiB FAT 卷**（`\UniXNU.efi`、`\EFI\UniXNU\` 全套、**`kernel.macho` 14.2 MiB**）+ 日志块；启动项第一条是 `type = "xnu"` |
 | `panel-preview.png` | 720×1600 | `tools/render_panel_preview.py` 渲染的仪表区，**不用刷机就能看布局** |
 
-> 更早的几版（`boot-uefi-inh.img`、`boot-uefi-pv.img`、`boot-uefi-state.img`、
-> `boot-uefi-power.img` …）不再跟着仓库一起变大：它们仍在 git 历史里，需要时
-> `git log -- artifacts/` 取。仓库里只保留当前版本。
+> 更早的几版（`boot-uefi-handoff.img`、`boot-uefi-inh.img`、`boot-uefi-pv.img`、
+> `boot-uefi-state.img`、`boot-uefi-power.img` …）不再跟着仓库一起变大：它们仍在
+> git 历史里，需要时 `git log -- artifacts/` 取。仓库里只保留当前版本。
 
 sha256（**每次重建都会变**，只有和同一次构建的产物对得上才有意义）：
 
 ```
-8b5dd7a84366fa02098dd33a9f2198c2ec5ca658fd82d4534aaeb40bce57c651  SILICIUM_UEFI.fd
-e5a00dcc16ce45847b7136142deb99195a4c73bf4a21aaa3854c0d823f39c054  boot-uefi-handoff.img
+13a7cceb3677f1a9fcb54ea8f82b14fea2c5d6d9208e30120cb66f50399d4af4  SILICIUM_UEFI.fd
+1a7e15dc64dcc5e8e9cc6b4fb8c924c03096d7afaf78ec827dd7cc935c89e129  boot-uefi-redband.img
 ```
+
+## 这一版是什么（2026-10-30 03:0x，第十五版）—— 红条 + 构建时间戳
+
+这一版**不改任何逻辑**，只解决一个元问题：**怎么证明跑的是哪次构建**。
+
+- `PayloadBootDxe` 入口第一句就把面板横条画成**红色**：固件跑到这一句是**像素**，不是日志
+  （DEBUG 要等后面 flush 才落盘，复位的屏幕又不清，所以"停在旧画面"和"新固件卡住"以前分不开）；
+- 每个 payload 启动都会打一行 `build <date> <time>`，与这次构建的时间对比就知道刷进去的是不是新固件；
+- 顺带修了日志提取器（`tools/extract_log_block.py` 现在必须给 `--lba`，且优先取最高块）——
+  `flashinfo` 里有两个合法的日志块（30512 新、32512 旧布局残留），只看"找到的第一个"会读到旧块，
+  之前因此浪费了三轮刷机、还得过一个错误结论（[M6-UNIXNU.md](../docs/M6-UNIXNU.md) §13）。
+
+**当前唯一未解问题**：内核的 eMMC 日志通道没初始化（`flashinfo` sector 30000 没有 `DLXLOG01`），
+而交接记录、`MSDC 0x114 == 0x20170426`、`CKSTB` 都已确认满足 ⇒ 内核在更早的地方停了。
+下一步是刷这一版、看内核自带的**像素探针阶梯**（x 480..720，y 990/1000/1020/1040/1060/1080），
+判读表在 [`docs/NEXT-SESSION.md`](../docs/NEXT-SESSION.md) §3。
 
 ## 这一版是什么（2026-10-29 21:2x，第十四版）——eMMC 读写全开，日志落盘
 
