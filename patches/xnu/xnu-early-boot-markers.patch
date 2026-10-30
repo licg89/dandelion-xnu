@@ -1,5 +1,23 @@
+diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
+index aa161a1..93a687d 100644
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -367,10 +367,13 @@ arm_init(
+ 
+ 	DANDELION_PROBE(900, 0xff00ffffU);      /* cyan: arm_init entered */
+ 	DANDELION_TRACE("\n=== xnu: arm_init ===\n");
++	DANDELION_PROBE(500, 0xffffffffU);      /* white: first DANDELION_TRACE returned */
+ 
+ 	arm_setup_pre_sign();
++	DANDELION_PROBE(520, 0xff00ff00U);      /* green: arm_setup_pre_sign done */
+ 
+ 	arm_slide_rebase_and_sign_image();
++	DANDELION_PROBE(540, 0xffff00ffU);      /* magenta: slide/rebase/sign done */
+ 	DANDELION_PROBE(910, 0xffffff00U);      /* yellow: pre-sign + slide done */
+ 
+ 	/* If kernel integrity is supported, use a constant copy of the boot args. */
 diff --git a/osfmk/arm64/start.s b/osfmk/arm64/start.s
-index a2a6653..859a11e 100644
+index a2a6653..739a1d2 100644
 --- a/osfmk/arm64/start.s
 +++ b/osfmk/arm64/start.s
 @@ -127,12 +127,47 @@
@@ -73,34 +91,49 @@ index a2a6653..859a11e 100644
  .endmacro
  
  /*
-@@ -713,6 +759,26 @@ Lkernelcache_base_found:
+@@ -713,6 +759,41 @@ Lkernelcache_base_found:
  	b.ne	4b
  	dsb		sy
  
 +	/*
-+	 * Dandelion: map the 2 MiB block that holds the stage scratch word.
++	 * Dandelion: map the 8 MiB above the V=P window.
 +	 *
-+	 * DANDELION_STAGE_* leaves the last stage number at physical
-+	 * 0x5fbe0000 for the shim to print as "kstage" on the next boot.
-+	 * That is 0x5fbe0000, i.e. L2 index 0x0fd, and the V=P map built from
-+	 * the boot args only covers 0x4d004000..0x5d004000, so the very first
-+	 * store after the MMU came on faulted and killed the kernel inside its
-+	 * own debug code.  Map the enclosing block here; 0x5fa00000 is above
-+	 * the kernel window, so nothing else can claim it.
++	 * Two debug channels live up there and both are only ever touched with the
++	 * MMU already on:
++	 *
++	 *   0x5fbe0000  the stage word for the shim's "kstage" print
++	 *   0x5fc00000  the dandelion trace buffer (0x40000 bytes, so 0x5fc00000
++	 *               ..0x60000000)
++	 *
++	 * The V=P map built from the boot args covers 0x4d004000..0x5d004000 (L2
++	 * indices 0x068..0x0e7 in this 1 GiB slot); everything above index 0x0e7
++	 * faults.  That is what killed the kernel inside its own debug code twice:
++	 * first the stage word (stage 5), then the trace buffer (the first
++	 * DANDELION_TRACE in arm_init, right after probe 900).  Map blocks
++	 * 0x5f800000..0x60000000, i.e. indices 0x0fc..0x0ff, using the same
++	 * attributes as the kernel block.  Nothing else can claim these addresses
++	 * because the kernel window stops at 0x5d004000.
 +	 */
 +	ubfx	x3, x23, #(ARM_TT_L2_SHIFT), #9		// L2 index of the kernel base
 +	ldr	x1, [x2, x3, lsl #(TTE_SHIFT)]
 +	and	x1, x1, #0xffff				// keep attributes and type bits
-+	movz	x4, #0x5fa0, lsl #16			// 0x5fa00000
++	movz	x4, #0x5f80, lsl #16			// 0x5f800000
 +	orr	x1, x1, x4
-+	movz	x3, #(0xfd * 8)				// L2 index of 0x5fa00000
++	movz	x3, #(0xfc * 8)				// L2 index of 0x5f800000
++	mov	x5, #4					// blocks 0x5f800000..0x60000000
++	mov	x6, #(1 << ARM_TT_L2_SHIFT)
++7:
 +	str	x1, [x2, x3]
++	add	x1, x1, x6
++	add	x3, x3, #8
++	subs	x5, x5, #1
++	b.ne	7b
 +	dsb		sy
 +
  	/*
  	 * Dandelion: map the eMMC controller at a fixed virtual address so the
  	 * kernel can start logging to it at the very first printf, long before
-@@ -870,9 +936,12 @@ common_start:
+@@ -870,9 +951,12 @@ common_start:
  
  	// Enable caches, MMU, ROP and JOP
  	DANDELION_STAGE_EARLY 4
