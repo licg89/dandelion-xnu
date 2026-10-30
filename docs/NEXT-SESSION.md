@@ -4,7 +4,72 @@
 
 ---
 
-## 0.-3 2026-10-30 23:5x（最新）：定时器中断**确实送达**，INTID 30；剩下的故障是 `rtclock_intr()`
+## 0.-4 2026-10-31 01:3x（最新）：tick 稳定 100 Hz 已证实；探针跑完了；剩下的是"第一个 tick 之后线程不再被调度"
+
+**一句话：定时器这条链彻底通了 —— 中断稳定 10 ms 一次、`rtclock_intr()` 每次都完整跑完、
+GIC 探针也跑到了最后一行。新的挡路点不再是中断，而是内核在收到真实 tick 之后
+不再把 `bsd_init` 线程调度回来。**
+
+提交：`f9c917e`（`patches/xnu/zzz-dandelion-timer-probe.patch` + `zzz3`/`zzz4`）。
+日志：`docs/logs/kernel-log-2026-10-31-tick100hz.txt`。
+
+### 决定性读数（原文，逐行可查）
+
+```
+[dl] irq 1 intid=30 gap=2444428839 cntp_ctl=5 tval=ffec1873
+[dl] rtc 1: enter
+[dl] rtc 2: abstime ok
+[dl] rtc 3: before timer_intr
+[dl] rtc 4: after timer_intr
+[dl] gic late: done, timer INTID 30 enabled        <- 探针跑完了
+[dl] regs daif=200 ctl=2 tval=6e41d4f8 sre=1 pmr=f0 igrp1=1
+[dl] irq 50  intid=30 gap=130013 cntp_ctl=5
+[dl] irq 100 intid=30 gap=130012 cntp_ctl=5
+[dl] irq 150 intid=30 gap=130013 cntp_ctl=5
+```
+
+| 读数 | 结论 |
+|---|---|
+| `gap=130012`，`CNTFRQ=13000000` | **10.0009 ms**，即稳定 **100 Hz tick**；decrementer 每次都被正确重装 |
+| `cntp_ctl=5` | ENABLE=1、ISTATUS=1（到期并在拉线），与 10 ms tick 一致 |
+| `rtc 1..4` 每次都有 | `rtclock_intr()` 内部（含 `timer_intr()`）**每次都完整跑完**，不是它挂 |
+| 风暴熔断从未触发 | 不是中断风暴（间距从不小于 1000 ticks） |
+| `done, timer INTID 30 enabled` / `regs …` | 探针**跑完了**，中断开着的情况下也没有 panic |
+
+### 排除掉的三条（今晚逐一证伪，别再走回头路）
+
+1. **不是 GIC 不转发** —— INTID 30 一次次到达并被 ack。
+2. **不是 `rtclock_intr` 崩** —— 四个标记每次都齐。
+3. **不是中断风暴** —— 间距稳定 130012。
+
+### 新的挡路点：第一个 tick 之后 `bsd_init` 线程不再被调度
+
+探针最后一行之后（`[dl] regs …`），本该接着是 `timerprobe: before busy-wait`，但没有；
+而中断还在以 10 ms 节奏进（`irq 150`）。也就是说 CPU 在跑中断/别的线程，而
+`bsd_init` 那条线程没有被调度回来。最可能是第一次真实 tick 触发了抢占，
+之后线程没有被放回运行队列（或 `timer_call` 的 deadline 计算与我们的 CNTP 切换不一致）。
+
+**下一步（按顺序）**：
+1. 在 `thread_block`/`thread_continue`、`timer_call_*` 与 idle 路径上放环形缓冲标记
+   （中断上下文一律用 `dandelion_trace_mark`，绝不能用 printf —— 见下条），看线程去了哪个队列。
+2. 对照 `zz-dandelion-cntp-timer.patch`：`ml_set_decrementer` 已改 CNTP，
+   但 `mach_absolute_time()` 走 CNTVCT。实测 `CNTVOFF==0`，理论上一致；
+   仍需确认 `timer_call` 里 `setPop`/`ml_get_timebase` 用的是同一个计数器。
+3. 一旦线程能被正常调度，`bsd_init` 会走到根挂载那半步（`docs/ROOTFS-STEP1.md`）。
+
+### 今晚踩过并记录的坑（都在仓库里有对应改动）
+
+| 坑 | 证据 | 处理 |
+|---|---|---|
+| 中断上下文里 `printf()` → `panic("Console I/O from interrupt-disabled context")`，且这行 panic 本身打不出来，看起来像"静默死亡" | `serial_console.c:168` | 中断上下文只用 `dandelion_trace_mark`（`zzz3`） |
+| 探针里清 `ICC_IGRPEN1` 在 tick 已开的情况下会把内核搞停 | 58c66cc 探针停在 step C1 | 删掉 SGI 实验（`f9c917e`） |
+| 补丁体里混入 U+FEFF → `use of undeclared identifier '\ufeff'` | CI run 41052633260 | `tools/ci/check_series.py` 推送前拦截 |
+| `kfree_type(mockfs_fsnode_t, …)` 静态断言失败 | CI run 41068310201 | `zzz2` 改为 `kfree_type(struct mockfs_fsnode, …)`，mockfs 首次编过 |
+| `waitfetch.py` 轮询未认证 → `KeyError: 'workflow_runs'` | 今晚一次实测 | 带 token |
+
+---
+
+## 0.-3 2026-10-30 23:5x：定时器中断**确实送达**，INTID 30；剩下的故障是 `rtclock_intr()`
 
 **一句话：GIC/定时器那条链已经彻底通了 —— 内核收到了 INTID 30 的定时器中断。
 之前三轮"内核哑掉"不是硬件问题，是我自己在中断处理程序里调了 `printf()`，
