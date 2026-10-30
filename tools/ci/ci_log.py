@@ -30,12 +30,33 @@ def token():
 
 
 def api(path, tok, raw=False):
+    url = "https://api.github.com" + path
     request = urllib.request.Request(
-        "https://api.github.com" + path,
+        url,
         headers={"Authorization": "token " + tok, "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(request, timeout=60) as response:
-        payload = response.read()
-    return payload if raw else json.loads(payload)
+
+    if not raw:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return json.loads(response.read())
+
+    # The logs endpoint answers 302 to blob storage, and blob storage rejects the
+    # Authorization header ("Server failed to authenticate the request").  So follow
+    # the redirect by hand and fetch the target with no headers at all; the URL is
+    # pre-signed and carries its own credentials.
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = urllib.request.build_opener(NoRedirect)
+    try:
+        with opener.open(request, timeout=60) as response:
+            return response.read()
+    except urllib.error.HTTPError as error:
+        location = error.headers.get("Location")
+        if not location:
+            raise
+    with urllib.request.urlopen(location, timeout=180) as response:
+        return response.read()
 
 
 def main():
