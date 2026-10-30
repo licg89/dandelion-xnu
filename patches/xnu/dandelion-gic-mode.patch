@@ -1,8 +1,8 @@
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
-index 3ad743f..b4cad4e 100644
+index 3ad743f..1f72b7f 100644
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
-@@ -1,177 +1,172 @@
+@@ -1,177 +1,303 @@
  /*
   * Copyright (c) 2021 Apple Inc. All rights reserved.
 + *
@@ -50,14 +50,16 @@ index 3ad743f..b4cad4e 100644
 + */
 +#define DGIC_TRACE(step)  kprintf("%s\n", step)
 +#include <pexpert/arm64/dandelion_gic.h>
- 
--#if HAS_GIC_V3
--#define GICR_WAKE_TIMEOUT_NS (1000000000ULL) // timeout for redistributor wakeup (default 1s)
--MACHINE_TIMEOUT(gicr_wake_timeout_ns, "gicr-wake-timeout", GICR_WAKE_TIMEOUT_NS, MACHINE_TIMEOUT_UNIT_NSEC, NULL);
- 
--static vm_offset_t gicd_base;
--static vm_offset_t gicr_base;
--static vm_offset_t gicr_size;
++
++/*
++ * This file reports through printf(), not kprintf(): kprintf() is compiled
++ * out on this build (disable_serial_output is set because the debug= boot
++ * argument does not carry DB_KPRT), while printf() still reaches the panel
++ * and the eMMC log.
++ */
++extern int printf(const char *fmt, ...);
++
++
 +/* Exported for the late-boot diagnostics in IOPlatformExpert.cpp. */
 +uint32_t dandelion_gic_arch_rev;
 +uint32_t dandelion_gic_pidr2;
@@ -68,36 +70,48 @@ index 3ad743f..b4cad4e 100644
 +uint32_t dandelion_gic_igroupr_pre;
 +uint32_t dandelion_gic_igroupr_post;
  
--static uint32_t
--_gic_read32(vm_offset_t addr)
--{
--	return *((volatile uint32_t *) addr);
--}
-+#if HAS_GIC_V3
+ #if HAS_GIC_V3
+-#define GICR_WAKE_TIMEOUT_NS (1000000000ULL) // timeout for redistributor wakeup (default 1s)
+-MACHINE_TIMEOUT(gicr_wake_timeout_ns, "gicr-wake-timeout", GICR_WAKE_TIMEOUT_NS, MACHINE_TIMEOUT_UNIT_NSEC, NULL);
  
--static uint64_t
--_gic_read64(vm_offset_t addr)
+-static vm_offset_t gicd_base;
+-static vm_offset_t gicr_base;
+-static vm_offset_t gicr_size;
 +static struct dgic dandelion_gic;
 +static int dandelion_gic_ready;
 +static int dandelion_gic_group0;
-+
+ 
+-static uint32_t
+-_gic_read32(vm_offset_t addr)
 +int
 +dandelion_gic_uses_group0(void)
  {
--	return *((volatile uint64_t *) addr);
+-	return *((volatile uint32_t *) addr);
 +	return dandelion_gic_group0;
  }
  
--static void
--_gic_write32(vm_offset_t addr, uint32_t value)
+-static uint64_t
+-_gic_read64(vm_offset_t addr)
 +uint32_t
 +dandelion_gic_ack(void)
  {
--	*((volatile uint32_t *) addr) = value;
+-	return *((volatile uint64_t *) addr);
 +	if (!dandelion_gic_ready) {
 +		return DGIC_INTID_SPURIOUS;
 +	}
 +	return dgic_ack(&dandelion_gic);
+ }
+ 
+-static void
+-_gic_write32(vm_offset_t addr, uint32_t value)
++void
++dandelion_gic_eoi(uint32_t intid)
+ {
+-	*((volatile uint32_t *) addr) = value;
++	if (!dandelion_gic_ready) {
++		return;
++	}
++	dgic_eoi(&dandelion_gic, intid);
  }
  
 -#define gicd_read32(offset) (_gic_read32(gicd_base + (offset)))
@@ -109,7 +123,7 @@ index 3ad743f..b4cad4e 100644
 -static vm_offset_t
 -find_gicr_pe_base()
 +void
-+dandelion_gic_eoi(uint32_t intid)
++pe_init_fiq(void)
  {
 -	// We only care about aff1 and aff0
 -	uint32_t phys_id = __builtin_arm_rsr64("MPIDR_EL1") & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK);
@@ -118,26 +132,104 @@ index 3ad743f..b4cad4e 100644
 -		vm_offset_t gicr_pe_base = gicr_base + offset;
 -		uint64_t gicr_typer = gicr_read64(GICR_TYPER);
 -		uint32_t aff_value = (uint32_t) (gicr_typer >> GICR_TYPER_AFFINITY_VALUE_SHIFT) & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK);
--
++	int error;
+ 
 -		if (phys_id == aff_value) {
 -			return gicr_pe_base;
--		}
--
++	/*
++	 * One-time CPU interface setup for this PE.  No MMIO: see the file
++	 * comment.  The shim has already done the distributor/redistributor
++	 * work, including enabling the timer PPI on the boot CPU.
++	 */
++	if (!dandelion_gic_ready) {
++		dandelion_gic.mode = DGIC_MODE_V3;
++		dandelion_gic.group = DGIC_GROUP1;      /* SecurityExtn == 1 */
++		dandelion_gic.redist = 0;
++		dandelion_gic.gicc = 0;
++
++		kprintf("DANDELION: cpu interface init ...\n");
++		error = dgic_cpuif_init(&dandelion_gic);
++		kprintf("DANDELION: cpu interface init returned %d\n", error);
++		if (error != DGIC_OK) {
++			kprintf("DANDELION: cpu interface init failed (%d)\n",
++			    error);
++			return;
+ 		}
+ 
 -		if (gicr_typer & GICR_TYPER_LAST) {
 -			break;
--		}
-+	if (!dandelion_gic_ready) {
++		dandelion_gic_group0 = 0;
++		dandelion_gic_ready = 1;
++		dandelion_gic_arch_rev = 3;
++
++		/*
++		 * Give the decrementer a real deadline.  arm_init() enables CNTV
++		 * (fiq_context_init) without ever writing TVAL, so the very first
++		 * tick is an already-expired interrupt - the interrupt arrives
++		 * before any handler is ready for it.  10 ms is the usual tick.
++		 */
++		{
++			uint64_t freq = __builtin_arm_rsr64("CNTFRQ_EL0");
++
++			if (freq == 0) {
++				freq = 13000000;
++			}
++			__builtin_arm_wsr64("CNTV_TVAL_EL0", freq / 100);
++			__builtin_arm_wsr64("CNTV_CTL_EL0", 1);
+ 		}
++
++		kprintf("DANDELION: icc ready (sre=%lx pmr=%lx ctlr=%lx), "
++		    "timer INTID %u on Group1/IRQ\n",
++		    dandelion_gic.icc_sre_el1, dandelion_gic.icc_pmr,
++		    dandelion_gic.icc_ctlr, DANDELION_TIMER_IRQ);
 +		return;
  	}
--
+ 
 -	panic("%s: cannot find GICR base for core %u", __func__, ml_get_cpu_number(phys_id));
-+	dgic_eoi(&dandelion_gic, intid);
++	/* Secondary CPU: its own CPU interface, nothing shared. */
++	error = dgic_cpuif_init(&dandelion_gic);
++	if (error != DGIC_OK) {
++		kprintf("DANDELION: cpu%u cpu interface init failed (%d)\n",
++		    ml_get_cpu_number_local(), error);
++		return;
++	}
++	kprintf("DANDELION: cpu%u icc up\n", ml_get_cpu_number_local());
  }
  
- void
+-void
 -pe_init_fiq()
-+pe_init_fiq(void)
++/*
++ * Late timer-PPI bring-up.
++ *
++ * Measured state this kernel boots with (IMG_5812):
++ *
++ *   DAIF        = 0x200   IRQs enabled
++ *   CNTV_CTL    = 0x5     ENABLE=1, IMASK=0, ISTATUS=1 (expired, asserting)
++ *   ICC_SRE/PMR/IGRPEN1   CPU interface open for Group 1
++ *   ICC_HPPIR1  = 0x3ff   nothing pending
++ *
++ * So the decrementer is firing and the CPU interface would accept the
++ * interrupt, but the redistributor never forwards the timer PPI: no tick
++ * ever arrives, every deadline sleep blocks forever (that is why
++ * bsd_init's 200 ms IOSleep never returns), and nothing time based works.
++ *
++ * Fix: program this PE's redistributor only.  GICD_CTLR and GICD_IGROUPR
++ * belong to EL3 on this SoC and writing them from non-secure kernel context
++ * stalls the bus (see the file comment), so the distributor is only read and
++ * its group-enable state reported.  The redistributor's group register
++ * (GICR_IGROUPR0) is per-PE and is safe to write.
++ */
++int
++dandelion_gic_late_init(void)
  {
++	/* /interrupt-controller@0c000000 in the device tree: GICD then GICR. */
++#define DANDELION_GICD_PA   0x0c000000UL
++#define DANDELION_GICD_SIZE 0x00040000UL
++#define DANDELION_GICR_PA   0x0c100000UL
++#define DANDELION_GICR_SIZE 0x00200000UL
++
++	unsigned long gicd, gicr, redist;
++	uint32_t waker, group, icfgr, isen;
  	int error;
 -	DTEntry entry;
 -
@@ -163,9 +255,9 @@ index 3ad743f..b4cad4e 100644
 -		if (prop_size < 4 * sizeof(uint64_t)) {
 -			panic("%s: incorrect reg property size in GIC DT node; expecting 32 bytes but got %u bytes", __func__, prop_size);
 -		}
- 
--		vm_offset_t soc_base_phys = pe_arm_get_soc_base_phys();
 -
+-		vm_offset_t soc_base_phys = pe_arm_get_soc_base_phys();
+ 
 -		uint64_t const gicd_base_prop = ((uint64_t const *) prop)[0];
 -		uint64_t const gicd_size_prop = ((uint64_t const *) prop)[1];
 -		uint64_t const gicr_base_prop = ((uint64_t const *) prop)[2];
@@ -173,60 +265,63 @@ index 3ad743f..b4cad4e 100644
 -
 -		// Find GICD base address
 -		gicd_base = ml_io_map(soc_base_phys + gicd_base_prop, gicd_size_prop);
--
++	/* Device memory only: the physmap is cacheable and must not carry MMIO. */
++	gicd = ml_io_map(DANDELION_GICD_PA, DANDELION_GICD_SIZE);
++	gicr = ml_io_map(DANDELION_GICR_PA, DANDELION_GICR_SIZE);
++	if (gicd == 0 || gicr == 0) {
++		printf("[dl] gic late: ml_io_map failed (gicd=%lx gicr=%lx)\n",
++		    gicd, gicr);
++		return -1;
++	}
+ 
 -		if (!gicd_base) {
 -			panic("%s: cannot map GICD region", __func__);
-+	/*
-+	 * One-time CPU interface setup for this PE.  No MMIO: see the file
-+	 * comment.  The shim has already done the distributor/redistributor
-+	 * work, including enabling the timer PPI on the boot CPU.
-+	 */
-+	if (!dandelion_gic_ready) {
-+		dandelion_gic.mode = DGIC_MODE_V3;
-+		dandelion_gic.group = DGIC_GROUP1;      /* SecurityExtn == 1 */
-+		dandelion_gic.redist = 0;
-+		dandelion_gic.gicc = 0;
++	dandelion_gic.gicd = gicd;
++	dandelion_gic.gicd_size = DANDELION_GICD_SIZE;
++	dandelion_gic.gicr = gicr;
++	dandelion_gic.gicr_size = DANDELION_GICR_SIZE;
++	dandelion_gic.mode = DGIC_MODE_V3;
++	dandelion_gic.group = DGIC_GROUP1;
++	dandelion_gic.gicc = 0;
 +
-+		kprintf("DANDELION: cpu interface init ...\n");
-+		error = dgic_cpuif_init(&dandelion_gic);
-+		kprintf("DANDELION: cpu interface init returned %d\n", error);
-+		if (error != DGIC_OK) {
-+			kprintf("DANDELION: cpu interface init failed (%d)\n",
-+			    error);
-+			return;
++	printf("[dl] gic late: gicd typer=%x ctlr=%x (bit0=EnableGrp1NS)\n",
++	    dgic_read32(gicd, DGICD_TYPER), dgic_read32(gicd, DGICD_CTLR));
++
++	redist = dgic_find_redist(&dandelion_gic);
++	if (redist == 0) {
++		printf("[dl] gic late: no redistributor for this PE\n");
++		return -2;
++	}
++	dandelion_gic.redist = redist;
++
++	waker = dgic_read32(redist, DGICR_WAKER);
++	printf("[dl] gic late: redist=%lx typer=%llx waker=%x\n", redist,
++	    (unsigned long long)dgic_read64(redist, DGICR_TYPER), waker);
++
++	/* 1. Wake this PE's redistributor if the firmware left it asleep. */
++	if (waker & DGICR_WAKER_CHILDRENASLEEP) {
++		dgic_write32(redist, DGICR_WAKER,
++		    waker & ~DGICR_WAKER_PROCESSORSLEEP);
++		for (unsigned int spin = 0; spin < 2000000u; spin++) {
++			if ((dgic_read32(redist, DGICR_WAKER) &
++			    DGICR_WAKER_CHILDRENASLEEP) == 0) {
++				break;
++			}
  		}
- 
+-
 -		// Find GICR base address
 -		gicr_base = ml_io_map(soc_base_phys + gicr_base_prop, gicr_size_prop);
 -
 -		if (!gicr_base) {
 -			panic("%s: cannot map GICR region", __func__);
-+		dandelion_gic_group0 = 0;
-+		dandelion_gic_ready = 1;
-+		dandelion_gic_arch_rev = 3;
-+
-+		/*
-+		 * Give the decrementer a real deadline.  arm_init() enables CNTV
-+		 * (fiq_context_init) without ever writing TVAL, so the very first
-+		 * tick is an already-expired interrupt - the interrupt arrives
-+		 * before any handler is ready for it.  10 ms is the usual tick.
-+		 */
-+		{
-+			uint64_t freq = __builtin_arm_rsr64("CNTFRQ_EL0");
-+
-+			if (freq == 0) {
-+				freq = 13000000;
-+			}
-+			__builtin_arm_wsr64("CNTV_TVAL_EL0", freq / 100);
-+			__builtin_arm_wsr64("CNTV_CTL_EL0", 1);
++		if (dgic_read32(redist, DGICR_WAKER) &
++		    DGICR_WAKER_CHILDRENASLEEP) {
++			printf("[dl] gic late: redistributor stayed asleep\n");
++			return -3;
  		}
- 
+-
 -		gicr_size = gicr_size_prop;
-+		kprintf("DANDELION: icc ready (sre=%lx pmr=%lx ctlr=%lx), "
-+		    "timer INTID %u on Group1/IRQ\n",
-+		    dandelion_gic.icc_sre_el1, dandelion_gic.icc_pmr,
-+		    dandelion_gic.icc_ctlr, DANDELION_TIMER_IRQ);
-+		return;
++		printf("[dl] gic late: redistributor woken\n");
  	}
  
 -	// Find the redistributor for this processor
@@ -247,13 +342,35 @@ index 3ad743f..b4cad4e 100644
 -				panic("%s: core %u timed out waiting for redistributor to wake up",
 -				    __func__, ml_get_cpu_number_local());
 -			}
--		}
-+	/* Secondary CPU: its own CPU interface, nothing shared. */
-+	error = dgic_cpuif_init(&dandelion_gic);
-+	if (error != DGIC_OK) {
-+		kprintf("DANDELION: cpu%u cpu interface init failed (%d)\n",
-+		    ml_get_cpu_number_local(), error);
-+		return;
++	/* 2. Timer PPI -> Group 1, priority 0xa0, level sensitive. */
++	group = dgic_read32(redist, DGICR_IGROUPR0);
++	printf("[dl] gic late: igroupr0=%x (bit%u)\n", group, DANDELION_TIMER_IRQ);
++	dgic_write32(redist, DGICR_IGROUPR0, group | (1u << DANDELION_TIMER_IRQ));
++
++	dgic_set_priority32(redist, DGICR_IPRIORITYR, DANDELION_TIMER_IRQ,
++	    DGIC_PRIORITY_DEFAULT);
++
++	icfgr = dgic_read32(redist, DGICR_ICFGR1);
++	icfgr &= ~(0x3u << (((DANDELION_TIMER_IRQ - 16u) % 16u) * 2u));
++	icfgr |= (0x2u << (((DANDELION_TIMER_IRQ - 16u) % 16u) * 2u));  /* level */
++	dgic_write32(redist, DGICR_ICFGR1, icfgr);
++
++	/* 3. Enable it, then read the state back. */
++	dgic_write32(redist, DGICR_ISENABLER0, 1u << DANDELION_TIMER_IRQ);
++	isen = dgic_read32(redist, DGICR_ISENABLER0);
++	printf("[dl] gic late: isenabler0=%x igroupr0=%x icfgr1=%x\n", isen,
++	    dgic_read32(redist, DGICR_IGROUPR0), dgic_read32(redist, DGICR_ICFGR1));
++	printf("[dl] gic late: hppir1=%llx\n",
++	    (unsigned long long)__builtin_arm_rsr64("ICC_HPPIR1_EL1"));
++
++	/* 4. Make sure the CPU interface and the ack/eoi helpers are usable. */
++	if (!dandelion_gic_ready) {
++		error = dgic_cpuif_init(&dandelion_gic);
++		if (error != DGIC_OK) {
++			printf("[dl] gic late: cpuif init failed (%d)\n", error);
++			return -4;
+ 		}
++		dandelion_gic_ready = 1;
  	}
 -
 -	// Configure timers and legacy FIQ to be group 0
@@ -283,7 +400,8 @@ index 3ad743f..b4cad4e 100644
 -	gicd_write32(GICD_CTLR, gicd_ctlr);
 -	__builtin_arm_wsr64("ICC_IGRPEN0_EL1", 1);
 -	__builtin_arm_isb(ISB_SY);
-+	kprintf("DANDELION: cpu%u icc up\n", ml_get_cpu_number_local());
++	printf("[dl] gic late: done, timer INTID %u enabled\n", DANDELION_TIMER_IRQ);
++	return 0;
  }
  #else
  void
@@ -306,8 +424,14 @@ index 3ad743f..b4cad4e 100644
 +
 +void
 +dandelion_gic_eoi(uint32_t intid)
- {
++{
 +	(void)intid;
++}
++
++int
++dandelion_gic_late_init(void)
+ {
++	return -1;
  }
 -#endif
 +#endif /* HAS_GIC_V3 */

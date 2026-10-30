@@ -1,5 +1,5 @@
 diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
-index 4df41ba..90f74b5 100644
+index 4df41ba..40e54b3 100644
 --- a/bsd/kern/bsd_init.c
 +++ b/bsd/kern/bsd_init.c
 @@ -490,10 +490,24 @@ bsd_init(void)
@@ -28,7 +28,7 @@ index 4df41ba..90f74b5 100644
  #else
  #define bsd_init_kprintf(x, ...)
  #endif
-@@ -857,6 +871,53 @@ bsd_init(void)
+@@ -857,6 +871,60 @@ bsd_init(void)
  	inittodr(0);
  
  	/* Mount the root file system. */
@@ -53,8 +53,15 @@ index 4df41ba..90f74b5 100644
 +	 */
 +	{
 +		extern void dandelion_trace_mark(const char *);
++		extern int dandelion_gic_late_init(void);
 +		uint64_t _daif, _ctl, _tval, _sre, _pmr = 0xdead, _igrp1 = 0xdead;
 +		uint64_t _hppir1 = 0xdead, _rpr = 0xdead;
++
++		/*
++		 * The redistributor never forwards the timer PPI on this port (see
++		 * pe_fiq.c): enable it here, where everything else is already up.
++		 */
++		dandelion_gic_late_init();
 +
 +		__builtin_arm_isb(ISB_SY);
 +		_daif = __builtin_arm_rsr64("DAIF");
@@ -82,7 +89,7 @@ index 4df41ba..90f74b5 100644
  	while (TRUE) {
  		int err;
  
-@@ -868,8 +929,39 @@ bsd_init(void)
+@@ -868,8 +936,39 @@ bsd_init(void)
  
  		bsd_init_kprintf("vfs_mountroot\n");
  		if (0 == (err = vfs_mountroot())) {
