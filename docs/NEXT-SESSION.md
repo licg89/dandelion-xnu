@@ -4,22 +4,51 @@
 
 ---
 
-## 0. 2026-10-30 上午：探针阶梯已前移到 `arm_init`
+## 0. 2026-10-30 下午：stage 4 的红条就是 stage 号，凶手是我们自己的一条 `str`
 
-`IMG_5797` 的读数（刷 `boot-uefi-redband.img`）：**y 990..1080 一根探针条都没有**，
-连 `1000`（蓝，画在 `arm_vm_init()` 调用**之前**）都没有 ⇒ 内核死在 **`arm_init` 前两百行或
-`start.s`**；同时交接块里 `video base 0x0 … bpp 0`，DarwinBoot 没把显示信息交给内核。
+**先读这一节，再读别的。**
 
-因此本轮（提交 `7f14bcf` + 后续文档）：
+`IMG_5798/5799` 屏幕上"底部那条红条"不是装饰：`start.s` 的 `DANDELION_STAGE_<n>` 会在
+**framebuffer 行 1520** 画一条 **宽度 = n × 96 px** 的红条，同时把 n 写到物理 `0x5FBE0000`
+（shim 下次启动会印成 `kstage`）。用同图里 payload 橙条（720 px 全宽）标定，红条一直是
+**≈392 px = 4×96 ⇒ stage 4**。
 
-- `patches/xnu/xnu-early-probe-ladder.patch`：新增 **900/910/920/930/940/950/960/970/980**
-  九级探针，并把探针条从 1 行加粗到 **6 行**（1 行拍照看不见）；
-- `tools/mk_unixnu_esp.py`：纯 Python 生成 `flashinfo` 的 FAT 卷（**不再需要 WSL**），
-  带 `--check` 独立逐字节校验；
-- 内核已按 `7f14bcf` 重编并写进手机：`fastboot flash flashinfo out/unixnu-esp.img`。
+`IMG_5799` 还带来三条新标记（本轮加的，行 320 青 / 340 绿 / 360 品红）**全部点亮**，即：
 
-**下一个动作**：拍一张，只看 **y 900..990**（x 480..720）。完整表与判读见
-[`M6-UNIXNU.md`](M6-UNIXNU.md) §14。
+```
+DANDELION_STAGE_EARLY 4      ← stage 4 的红条（就是它）
+DANDELION_MARK_ROW 320       ← 亮
+MOV64 x0, SCTLR_EL1_DEFAULT
+MSR_SCTLR_EL1_X0
+DANDELION_MARK_ROW 340       ← 亮：msr 执行完了
+isb   sy
+DANDELION_MARK_ROW 360       ← 亮：isb 也过了
+DANDELION_STAGE_LATE 5       ← 从来没亮过
+```
+
+所以 **SCTLR 切换、MMU/cache 打开、切换后取指、往 framebuffer 写像素，全都正常**。
+死的是 stage 5 的第一条指令：`str w10, [x9]`，其中 x9 = `0x5FBE0000`。
+
+原因：V=P 映射是按 boot args 里的 `memSize`（我们给 `0x10000000`）建的，只覆盖
+`0x4D004000..0x5D004000`（1 GiB 槽内 L2 索引 `0x068..0x0E7`），而 `0x5FBE0000` 是
+索引 **`0x0FD`**，没映射。stage 1..4 写它时 MMU 还关着，没问题；stage 5 是 **MMU 打开后
+第一次写这个地址** ⇒ translation fault，内核死在自己的调试代码里。
+
+本轮修复（提交 `33f70c4`，`patches/xnu/xnu-early-boot-markers.patch`）：
+
+1. V=P 表里补 map `0x5FA00000..0x5FC00000`（L2 索引 `0x0FD`），属性照抄内核块模板；
+2. `DANDELION_STAGE_LATE` 改成**先画条、后写暂存字**，以后映射再错只丢 `kstage` 数字。
+
+**下一个动作**：拍一张。看两处：
+
+- 行 1520 红条：**480 px ⇒ stage 5**，**576 px ⇒ stage 6**（stage 6 之后就是 `ret` 回 `arm_init`）；
+- 若红条到了 576，再看 **y 900..980**（x 480..720，每条 6 行）的九级探针 —— 那是 `arm_init` 里
+  真正的位置。
+
+判读表在 [`M6-UNIXNU.md`](M6-UNIXNU.md) §14 与 §16。
+
+> 上午那一轮（`IMG_5797`"一根探针都没有 ⇒ 死在 arm_init 前两百行 / start.s"）的方向没错，
+> 但落点被 §16 修正到了具体三条指令：不是"没启动"，是启动后死在自己写的暂存字上。
 
 ---
 
