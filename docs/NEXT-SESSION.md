@@ -4,52 +4,42 @@
 
 ---
 
-## 0. 2026-10-30 晚：内核跑完 `arm_init`，在 `pmap_bootstrap` 要 bootloader 熵
+## 0. 2026-10-30 深夜：`arm_vm_init` 的页表全建好了，最后被自己的 `phystokv()` 拦下
 
 **先读这一节，再读别的。**
 
-`IMG_5803` 是转折点：面板 **y ≥ 860** 第一次出现内核自己的日志（`dandelion_fb_putc`），
-说明上一轮把 trace 缓冲区（`0x5FC00000`）map 进来修对了。本轮读数：
-
-- 行 **500 白 / 520 绿 / 540 品红 全亮** ⇒ 900 与 910 之间那三条语句（第一条 `DANDELION_TRACE`、
-  `arm_setup_pre_sign()`、`arm_slide_rebase_and_sign_image()`）都返回了；
-- 行 **900..980 的九级探针全亮** ⇒ `arm_init` 走到底，进了 `arm_vm_init`；
-- 面板日志（原文，行 860 往下）：
+`IMG_5805` 读了整整 26 行新日志：`arm_init` 后半段（rtclock / kernel_startup_bootstrap /
+timer_call_early_init / cpu_init / processor_bootstrap）全过，`arm_vm_init` 里
+`boot_tte`、`bootstrap sanity`、`avail_start`、`invalid_tte`、`cpu_tte`、
+`init_ptpages(virt)`、`el0 mappings`、`seg headers`、`page_size`、`pmap_slide`、
+`prot init/done`、`low globals done`、`tbi done`、`physmap_init`、`ttb alternate`、
+`keep identity map` 一路到最后一关，然后：
 
 ```
-=== xnu: arm_init ===
-arm_init: PE_init_platform(FALSE)
-arm_init: cpu topology
-arm_init: cpu_bootstrap
-arm_init: piclock_early_init
-arm_init: kernel_startup_bootstrap
-arm_init: timer_call_early_init
-arm_init: PE_init_debug
-arm_init: trace_init
-arm_init: percpu_bootstrap
-arm_vm_init: start
-vm: boot args
-vm: mem_size
-vm: pmap_bootstrap
-!!! PANIC: Expected 64 seed bytes from bootloader, but got 0
-- __panic_randoms.c:64
+!!! PANIC: %s: illegal PA: 0x%llx; phys base 0x%llx, size 0x%llx
+panic(cpu 0 caller 0xfffffff007991fe4): phystokv: illegal PA: 0x5fc00000;
+phys base 0x4d004000, size 0x10000000 @arm_vm_init.c:396
 ```
 
-原因：`osfmk/prng/prng_random.c:64` 的 `bootseed_init_bootloader()` 要 64 字节种子，
-`PE_get_random_seed()`（`pexpert/gen/pe_gen.c`）去读设备树 `/chosen/random-seed`；
-我们交给内核的那棵设备树里没有这个属性（`bootshim/adt.c` 会写它，但**那份 ADT 不是内核
-实际拿到的那棵**，内核拿到的是随 boot 镜像走的 DTB）。
+凶手还是我们自己的调试代码：`arm_vm_init.c:2218` 的 `DANDELION_TRACE_ATTACH()`
+会 `phystokv(0x5FC00000)`，而 trace 环故意放在内存窗口
+（`0x4D004000..0x5D004000`）**外面**，`phystokv()` 对窗口外的 PA 直接 panic。
+这次根本不需要搬指针：`arm_vm_init()` 保留了 bootstrap 的 V=P 映射
+（`DANDELION_KEEP_IDENTITY_MAP`），环和 framebuffer 都还能按物理地址访问——
+panic 文本本身就是这么画到面板上的。
 
-本轮修复（`af9fb11`，`patches/xnu/non-apple-random-seed.patch`）：`PE_get_random_seed()`
-在属性缺失（或全零）时，用 `CNTVCT_EL0`、`CNTFRQ_EL0`、`MIDR_EL1`、`MPIDR_EL1` 和目标缓冲区
-地址混出 64 字节返回。**故意不读 `CNTPCT_EL0`**：`CNTHCTL_EL2.EL1PCTEN` 可能把它 trap 到
-我们从未进入的 EL2，那会变成一次没必要的异常。这是 bring-up 种子、不是密码学熵，
-注释里写明了以后应由 loader 提供。
+本轮修复（`bd2c26b`，`patches/xnu/xnu-trace-attach.patch`）：把
+`dandelion_trace_attach()` 改成彻底的空操作，指针留在 `DANDELION_TRACE_PA`，
+并在注释里写明「将来若去掉 `DANDELION_KEEP_IDENTITY_MAP`，必须先把环搬进窗口」。
 
-**下一个动作**：拍一张。看 `vm: pmap_bootstrap` 之后的第一行 ——
-panic 应该消失，下一个失败点会直接印在面板上（y ≥ 860 那片白字就是内核日志）。
+**下一个动作**：拍一张。看 `vm: keep identity map` 之后是否继续出现
+`arm_vm_init: kva_active`。若又出现 `illegal PA`，先算该地址是否落在
+`gPhysBase..gPhysBase+real_phys_size` 内。
 
-判读表与背景见 [`M6-UNIXNU.md`](M6-UNIXNU.md) §18。
+另外记一条将来要改的：`real_phys_size = 0x10000000`，内核对 2/3 GB 内存只认 256 MiB，
+以后要扩内存得动 `darwinboot-memory-size`（ADT，属固件侧）。
+
+判读与背景见 [`M6-UNIXNU.md`](M6-UNIXNU.md) §19。
 
 ---
 

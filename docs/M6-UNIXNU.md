@@ -1003,3 +1003,115 @@ python tools/read_log_block.py flashinfo.img        # DLXLOG01，内核的
   `request_size`）；
 - 若这次连 `vm: pmap_bootstrap` 都没到 ⇒ 说明兜底里某条 `mrs` 出了异常，
   按 §18.4 第 1 条排查。
+
+## 19. IMG_5805：`arm_vm_init` 的页表全部建好，最后一步却用 `phystokv()` 去查窗口外的 trace 环
+
+### 19.1 读数（面板日志，y 860 起）
+
+```
+arm_init: cpu topology
+arm_init: cpu_bootstrap
+arm_init: rtclock_early_init
+[step] inner canary: entry
+> tunables
+> timeouts
+> locks
+Booting XNU (dandelion) in 1 s
+[step] phase store: before/after
+[step] inner canary: ok / about to return -1 debug=0x144
+arm_init: kernel_startup_bootstrap
+arm_init: timer_call_early_init
+arm_init: cpu_init
+arm_init: processor_bootstrap
+arm_init: arm_vm_init ...
+arm_vm_init: enter
+vm: boot args
+vm: mem_size
+vm: physmap_base
+vm: physmap_slide
+vm: memory bounds
+vm: boot_tte
+vm: bootstrap sanity
+vm: avail_start
+vm: invalid_tte
+vm: cpu_tte
+vm: init_ptpages(virt)
+vm: el0 mappings
+vm: seg headers
+vm: page_size
+vm: pmap_slide
+vm: prot init
+vm: prot done
+vm: low globals done
+vm: tbi done
+vm: physmap_init
+vm: ttb alternate
+vm: keep identity map
+!!! PANIC: %s: illegal PA: 0x%llx; phys base 0x%llx, size 0x%llx
+panic(cpu 0 caller 0xfffffff007991fe4): phystokv: illegal PA: 0x5fc00000;
+phys base 0x4d004000, size 0x10000000 @arm_vm_init.c:396
+```
+
+`DANDELION_PROBE(980)`（spring green，`kva_active` 之后）也亮了。也就是说
+`pmap_bootstrap`、内核页表、prot/TBI、physmap 全部建完，`arm_vm_init` 只剩最后的收尾。
+
+### 19.2 根因：又是我们自己的代码，这次是 `phystokv()` 的范围检查
+
+`arm_vm_init.c:2218` 一行：
+
+```c
+flush_mmu_tlb();
+kva_active = TRUE;
+DANDELION_PROBE(980, ...);
+DANDELION_TRACE_ATTACH();          /* -> dandelion_trace_attach() */
+```
+
+`dandelion_trace_attach()` 当时在把 trace 环的指针重指向
+`phystokv(DANDELION_TRACE_PA)`，而
+
+```c
+vm_map_address_t phystokv(pmap_paddr_t pa)   /* osfmk/arm64/arm_vm_init.c:386 */
+{
+	...
+	if (__improbable((pa < gPhysBase) || ((pa - gPhysBase) >= real_phys_size))) {
+		panic("%s: illegal PA: 0x%llx; phys base 0x%llx, size 0x%llx", ...);
+	}
+```
+
+trace 环在 `0x5FC00000`，窗口是 `0x4D004000..0x5D004000`（`real_phys_size`
+就是 loader 给的 `memSize = 0x10000000`），所以 `pa - gPhysBase = 0x12BFC000`
+远大于 `0x10000000` ⇒ panic。
+
+环放在窗口外是**故意的**（不会被 VM 分配出去）；而 `phystokv()` 对它
+**永远不可能成功**。这次也不需要它成功：`arm_vm_init()` 为了 bring-up
+保留了 bootstrap 的 V=P 映射（`DANDELION_KEEP_IDENTITY_MAP`，日志里的
+`vm: keep identity map`），所以环在物理地址上一直可写——panic 文本本身
+就是在这个状态下通过 `DANDELION_FB_PA` 画到面板上的，正好自证。
+
+### 19.3 修法（提交 `bd2c26b`，`patches/xnu/xnu-trace-attach.patch`）
+
+`dandelion_trace_attach()` 改成真正的空操作：指针留在 `DANDELION_TRACE_PA`，
+不调用 `phystokv()`。注释同时改成事实描述，并写明**如果将来去掉
+`DANDELION_KEEP_IDENTITY_MAP`，必须先把环搬进窗口（或显式映射）**，
+否则就得重写这里。
+
+`xnu-trace-attach.patch` 排在 `xnu-early-probe-ladder.patch` 之后，
+因为它的上下文里已经有 `dandelion_probe_bar()` 的代码。
+
+### 19.4 顺带记下的事实
+
+| 事实 | 值 | 影响 |
+|---|---|---|
+| `real_phys_size` | `0x10000000`（= 窗口） | 内核目前只管理 256 MiB；以后要更多内存得改 `darwinboot-memory-size`（ADT 里，属固件侧） |
+| `gPhysBase` | `0x4D004000` | 与 DarwinBoot 日志一致 |
+| panic 调用者 | `0xfffffff007991fe4` | 内核镜像内，`phystokv` 的 panic 分支 |
+| `DANDELION_KEEP_IDENTITY_MAP` | 1 | 面板与 trace 环都靠它；这是 bring-up 脚手架，不是最终形态 |
+
+### 19.5 预期
+
+- `vm: keep identity map` 之后继续出现 `arm_vm_init: kva_active` 等日志 ⇒ 通过了这一关；
+- `phystokv(cpu_ttep)` / `phystokv(invalid_ttep)` 用的是内核自己从窗口里分配的页表页，
+  不应该再触发同一个 panic；
+- 若在别处又出现 `illegal PA`，先算一下那个地址是否落在
+  `gPhysBase..gPhysBase+real_phys_size` 里——这是本轮之后排查任何
+  `phystokv` 类 panic 的第一条。
