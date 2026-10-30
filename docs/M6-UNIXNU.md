@@ -1115,3 +1115,106 @@ trace 环在 `0x5FC00000`，窗口是 `0x4D004000..0x5D004000`（`real_phys_size
 - 若在别处又出现 `illegal PA`，先算一下那个地址是否落在
   `gPhysBase..gPhysBase+real_phys_size` 里——这是本轮之后排查任何
   `phystokv` 类 panic 的第一条。
+
+---
+
+## 20. IMG_5807–5812：从 `zone_init` 的 gap panic 一路走到"没有定时器 tick"
+
+### 20.1 先修掉的（已解决）
+
+1. **`zone_init` 的 `vm_map_delete` gap**（IMG_5807）：
+   - 调用者是 `zone_init()` → `zone_kmem_suballoc()`（pgz 子映射，`size=0x79000`，
+     `VM_FLAGS_FIXED|VM_FLAGS_OVERWRITE`）→ `vm_map_enter()` → `vm_map_delete()`；
+   - 根因：`non-apple-heap-base.patch` 把 `KERNEL_PMAP_HEAP_RANGE_START` 下移 64 GiB，
+     `zone_restricted_va_max()` 跟着下移，`zone_map_range.min_address` 落到 kernel_map
+     第一个空闲 VA **之下** → `kmem_scramble_ranges()` 对 24 GiB 的 zones claim 走
+     `kmem_readjust_ranges()`，把它插进 low-globals 与内核镜像之间约 100 MiB 的小洞 →
+     范围与内核镜像的永久映射重叠 → 建临时 entry 时被 `ANYWHERE` 悄悄挪到别处 →
+     `zone_init()` 用固定地址删除，删到空洞上；
+   - 修法（`58f3cea`）：删掉该补丁、恢复 `LOW_GLOBAL_BASE_ADDRESS`；并在
+     `kmem_range_init()` 加断言：claim 范围与临时 entry 不一致时立刻 panic 并打印 claim 名。
+2. 修完这一条，内核直接跑过 `zone_init` / `arm_vm_init` / IOKit / BSD 初始化。
+
+### 20.2 日志通道终于读通了（本轮最大的工具收获）
+
+见 [`LOG-CHANNEL.md`](LOG-CHANNEL.md)。一次启动解出 **3412 行 / 154 KiB**，
+覆盖 `=== xnu: arm_init ===` 到卡死点的全部内容。拍照只值 45 行，这条通道才是主渠道。
+
+### 20.3 `kprintf()` 为什么一个字都不出来
+
+同 〔LOG-CHANNEL §5〕：`debug=0x144` 不含 `DB_KPRT(0x8)`，且是 DEVELOPMENT 构建，
+`disable_serial_output` 与 `disable_kprintf_output` 都为 true，`kprintf()` 被整体丢弃；
+`printf()` 走另一条路所以还在。历史日志里只有 `printf()` 与 `dandelion_trace_mark()` 的行，
+就是这个原因。把 `bsd_init_kprintf` 改用 `printf()`（`99ef3d3`）之后，
+`bsd_init: calling X` 一次性全部出现。
+
+### 20.4 卡点：`setconf()` → `IOFindBSDRoot()`
+
+IMG_5810 的面板最后几条：
+
+```
+bsd_init: calling net_init_run
+bsd_init: calling inittodr
+[dl] root mount: entering loop
+bsd_init: calling setconf        <- 最后一行
+```
+
+`IOFindBSDRoot()` 第一件事是 `IOService::waitForMatchingService(matching, 30ULL * kSecondScale)`。
+它带 30 秒超时——**但如果超时机制本身不工作，这个等待永远不会返回**。
+
+### 20.5 决定性实验：`IOSleep(200)` 也回不来
+
+在挂载循环前加 `IOSleep(200)`（`389f95e`）。IMG_5811：打出
+`[dl] timerprobe: before IOSleep(200)` 之后**再无输出** → 定时器中断从未到达。
+
+### 20.6 只读寄存器快照把范围缩到 GIC 重分发器（IMG_5812）
+
+```
+[dl] regs daif=200 ctl=5 tval=fff8d43e sre=1 pmr=f0 igrp1=1
+[dl] regs hppir1=3ff(1023=spurious) rpr=ff
+```
+
+| 寄存器 | 值 | 含义 |
+|---|---|---|
+| `DAIF` | `0x200` | 只有 D 位，**IRQ 是开着的**，不是屏蔽问题 |
+| `CNTV_CTL` | `0x5` | ENABLE=1、IMASK=0、**ISTATUS=1**：递减计数器已到期并在拉中断线 |
+| `CNTV_TVAL` | `0xfff8d43e` | 负值，约 36 ms 前到期（13 MHz） |
+| `ICC_SRE` / `PMR` / `IGRPEN1` | `1` / `0xf0` / `1` | CPU 接口对 Group 1 是开着的 |
+| `ICC_HPPIR1` | `0x3ff` = 1023 | **GIC 里没有任何 pending 中断** |
+| `ICC_RPR` | `0xff` | 空闲，没有正在处理的高优先级 |
+
+**结论：定时器在拉线、CPU 也允许中断，但重分发器没有把 PPI 27 转上来。**
+也就是说，交接过来的固件没有做 `dgic_enable_ppi(27)`（只有 line A 的
+`bootshim/gic_probe.c` 做过）。因此所有 deadline 睡眠（包括 30 秒超时）永久阻塞。
+
+### 20.7 修法：只动 GICR，绝不碰 GICD
+
+`pexpert/arm/pe_fiq.c` 新增 `dandelion_gic_late_init()`（`936477f`；`68cdb45` 修掉重复的
+`printf` 声明）：
+
+- `ml_io_map` 映射 GICD `0x0c000000`(+`0x40000`) 与 GICR `0x0c100000`(+`0x200000`)
+  （地址取自 DTB `/interrupt-controller@0c000000` 的 `reg`）；
+- **只读** GICD 的 TYPER/CTLR 并打印；**绝不写** `GICD_CTLR` / `GICD_IGROUPR`——
+  这台 SoC 上它们属于 EL3，非安全态写会让总线卡死（`pe_fiq.c` 顶部注释有历史依据）；
+- 唤醒本 PE 的 redistributor（`GICR_WAKER`）；
+- PPI 27：`GICR_IGROUPR0` 置 Group 1、`GICR_IPRIORITYR` 设 `0xa0`、
+  `GICR_ICFGR1` 设电平触发、`GICR_ISENABLER0` 使能；
+- 回读 `ISENABLER0` / `IGROUPR0` / `ICFGR1` / `ICC_HPPIR1` 并打印；
+- 调用点放在 `bsd_init` 的探针处：此时其它子系统都已就绪，若某一步 MMIO 卡死，
+  最后一条打印就是行号。
+
+### 20.8 判断表
+
+看 `[dl] gic late: hppir1=...`：
+
+- `0x1b`（27）→ PPI 使能成功；`IOSleep` 应立即返回，`bsd_init` 继续；
+- `0x3ff`（1023）→ 写没生效：检查 GICR 基址/stride（DTB 是 `0x0c100000` 长 `0x200000`）
+  或 redistributor 仍 asleep；
+- 打印停在某条 `gic late:` → 那一步 MMIO 卡死，按该行定位。
+
+### 20.9 下一关预告
+
+tick 通了以后根挂载会真正超时：应出现
+`bsd_init: calling vfs_mountroot`、`[dl] root mount: fail errno=...`（最多 3 次后继续），
+随后是 `VFS_ROOT` 的 panic——那才是"没有根文件系统"的正题。开源 XNU 没有 HFS+/APFS，
+需要决定挂内存盘/网络根，还是先让内核停在可用状态。

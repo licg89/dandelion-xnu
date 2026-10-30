@@ -1,5 +1,13 @@
 # artifacts/ — 可刷机的 UEFI 镜像
 
+> **2026-10-30 晚更新（先读这条）**
+>
+> - 内核的 eMMC 日志通道**已经验证可用**：`flashinfo` sector 30000 的 `DLXLOG01`
+>   一次解出 3412 行 / 154 KiB。取日志的完整循环见 [`docs/LOG-CHANNEL.md`](../docs/LOG-CHANNEL.md)。
+> - 下文"当前唯一未解问题：内核的 eMMC 日志通道没初始化"是**历史记录**，已不成立。
+> - 当前实际卡点：GIC 重分发器没有使能定时器 PPI 27，内核没有任何 tick；
+>   修法与判断表见 [`docs/NEXT-SESSION.md`](../docs/NEXT-SESSION.md) §0。
+
 这里的文件是**这一版真正刷进手机的东西**，特意放进 git，好让一次刷机可以从一个
 checkout 完整复现。构建与打包的完整环境见
 [`docs/UEFI-BUILD-AND-PACKAGING.md`](../docs/UEFI-BUILD-AND-PACKAGING.md)，

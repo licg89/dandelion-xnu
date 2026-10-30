@@ -4,7 +4,62 @@
 
 ---
 
-## 0. 2026-10-30 深夜：`arm_vm_init` 的页表全建好了，最后被自己的 `phystokv()` 拦下
+## 0. 2026-10-30 晚（最新）：日志通道打通；内核卡在"没有定时器 tick"
+
+**一句话：内核能跑到 `bsd_init` 的根挂载，但定时器中断从未到达过 CPU —— GIC 的重分发器没有使能
+PPI 27。这是"所有超时永不到期、`IOSleep` 永不返回"的唯一根因。**
+
+### 这一轮新确认的事实
+
+| 事实 | 证据 |
+|---|---|
+| 内核日志通道确实在写 | `flashinfo` sector 30000 有 `DLXLOG01`，解出 **3412 行 / 154 KiB**（步骤见 [`LOG-CHANNEL.md`](LOG-CHANNEL.md)） |
+| `kprintf()` 在本构建里被整体丢弃 | `debug=0x144` 缺 `DB_KPRT(0x8)` + DEVELOPMENT → `disable_serial_output`/`disable_kprintf_output` 均 true；`printf()` 正常 |
+| `bsd_init` 停在 `setconf()` | 面板逐条 `bsd_init: calling X`，最后一条是 `calling setconf`，没有 `vfs_mountroot` |
+| 定时器 tick 从未发生 | `[dl] timerprobe: before IOSleep(200)` 之后再无输出 |
+| 不是 IRQ 被屏蔽 | `DAIF=0x200`（只有 D 位） |
+| 不是 CPU 接口没开 | `ICC_SRE=1`、`PMR=0xf0`、`IGRPEN1=1` |
+| 定时器确实到期并在拉线 | `CNTV_CTL=0x5`（ENABLE=1、ISTATUS=1），`CNTV_TVAL` 为负 |
+| 但 GIC 里没有 pending | `ICC_HPPIR1=0x3ff`（1023） |
+| 结论 | **重分发器没有使能 PPI 27**；交接的固件没做这一步 |
+
+### 已实现的修法（`936477f`，`68cdb45` 修掉重复声明）
+
+`pexpert/arm/pe_fiq.c` 新增 `dandelion_gic_late_init()`：
+
+- `ml_io_map` 映射 GICD `0x0c000000`(+`0x40000`) 与 GICR `0x0c100000`(+`0x200000`)；
+- **只读** GICD 并打印 TYPER/CTLR；**绝不写** `GICD_CTLR`/`GICD_IGROUPR`（EL3 拥有，非安全态写会让总线卡死）；
+- 唤醒本 PE 的 redistributor；
+- PPI 27 → Group 1、优先级 `0xa0`、电平触发、`GICR_ISENABLER0` 使能；
+- 回读 `ISENABLER0`/`IGROUPR0`/`ICFGR1`/`ICC_HPPIR1` 并打印；
+- 调用点在 `bsd_init` 的探针处（其它子系统都已就绪，卡死也能定位）。
+
+### 换机器后的第一步
+
+1. `git pull`，确认 CI 对 `68cdb45` 构建成功（之前 `936477f` 因为重复 `printf` 声明失败，已修）；
+2. 按 [`LOG-CHANNEL.md`](LOG-CHANNEL.md) 的循环刷 `flashinfo` → 启动 → 进 Android 取日志；
+3. 看 `[dl] gic late:` 之后的 `hppir1`：
+   - `0x1b`（27）→ PPI 使能成功，`IOSleep` 应返回，`bsd_init` 继续；下一个卡点按日志定位；
+   - `0x3ff`（1023）→ 写没生效：查 GICR 基址/stride 或 redistributor 是否仍 asleep；
+   - 打印停在某条 `gic late:` → 那一步 MMIO 卡死，按该行排查；
+4. tick 通了之后：应出现 `bsd_init: calling vfs_mountroot`、`[dl] root mount: fail errno=...`
+   （最多 3 次后继续），随后是 `VFS_ROOT` 的 panic——那才是"没有根文件系统"的正题
+   （开源 XNU 无 HFS+/APFS，需要决定挂内存盘/网络根，或先让内核停在可用状态）。
+
+### 现场状态（交接清单）
+
+| 项目 | 值 |
+|---|---|
+| 当前 `boot` 分区 | `artifacts/boot-uefi-redband.img`（我们的链） |
+| 原厂 Android boot | `out/boot_backup.img`（取日志时临时刷它，取完刷回） |
+| 当前 ESP | `out/unixnu-esp.img`（内核来自最新构建） |
+| 旧探针镜像 | 已移到 `out/archive/`（**没删**），`out/` 只剩 `boot_backup.img` 与 `unixnu-esp.img` |
+| `Resources/UniXNU/mach_kernel` | 最新构建，随仓库提交（下一台机器不用再等 CI） |
+| 取内核脚本 | `tools/ci/waitfetch.py`（`fetch_kernel.ps1` 会挂住，改用这个） |
+
+---
+
+## 0.1  2026-10-30 深夜：`arm_vm_init` 的页表全建好了，最后被自己的 `phystokv()` 拦下
 
 **先读这一节，再读别的。**
 
