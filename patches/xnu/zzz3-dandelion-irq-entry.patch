@@ -1,8 +1,8 @@
 diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
-index 9e64376..125b60c 100644
+index 9e64376..457eebd 100644
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
-@@ -1871,46 +1871,69 @@ sleh_irq(arm_saved_state_t *state)
+@@ -1871,46 +1871,103 @@ sleh_irq(arm_saved_state_t *state)
  		uint32_t intid = dandelion_gic_ack();
  
  		/*
@@ -23,20 +23,70 @@ index 9e64376..125b60c 100644
 +		 * what fired, EOI, return, no rtclock_intr() -- so that one boot
 +		 * separates "the entry/EOI path works" from "rtclock_intr() is the
 +		 * problem".
-+		 */
-+		{
+ 		 */
+ 		{
+-			static int decider_done;
 +			static unsigned int dl_irq_count;
-+
++			static uint64_t dl_last_cntpct;
++			static int dl_storm_handled;
+ 
+-			if (!decider_done) {
+-				uint64_t hppir1 = __builtin_arm_rsr64("ICC_HPPIR1_EL1");
+-				uint64_t cntv_ctl = __builtin_arm_rsr64("CNTV_CTL_EL0");
+-				uint64_t cntv_tval = __builtin_arm_rsr64("CNTV_TVAL_EL0");
+-				uint64_t cntp_ctl = __builtin_arm_rsr64("CNTP_CTL_EL0");
 +			dl_irq_count++;
-+			if (dl_irq_count <= 6u || (dl_irq_count % 100u) == 0u) {
-+				char _buf[96];
-+				extern void dandelion_trace_mark(const char *);
++			{
++				uint64_t _now = __builtin_arm_rsr64("CNTPCT_EL0");
+ 
+-				decider_done = 1;
+-				{
++				/*
++				 * Rate, not just count: 13 000 000 ticks is one second, so a
++				 * gap printed next to each interrupt says whether this is a
++				 * working tick (gaps of ~130 000 = 10 ms) or a level-triggered
++				 * storm (gaps near 0, and the interrupted code never runs).
++				 */
++				if (dl_irq_count <= 10u || (dl_irq_count % 50u) == 0u) {
++					char _buf[128];
+ 					extern void dandelion_trace_mark(const char *);
+-					dandelion_trace_mark("[irq1] first irq seen\n");
 +
-+				snprintf(_buf, sizeof(_buf),
-+				    "[dl] irq %u intid=%u hppir1=%llx\n", dl_irq_count,
-+				    (unsigned)intid,
-+				    (unsigned long long)__builtin_arm_rsr64("ICC_HPPIR1_EL1"));
-+				dandelion_trace_mark(_buf);
++					snprintf(_buf, sizeof(_buf),
++					    "[dl] irq %u intid=%u gap=%llu cntp_ctl=%llx tval=%llx\n",
++					    dl_irq_count, (unsigned)intid,
++					    (unsigned long long)(_now - dl_last_cntpct),
++					    (unsigned long long)__builtin_arm_rsr64("CNTP_CTL_EL0"),
++					    (unsigned long long)__builtin_arm_rsr64("CNTP_TVAL_EL0"));
++					dandelion_trace_mark(_buf);
+ 				}
++
+ 				/*
+-				 * The timers are deliberately left alone: the shim now
+-				 * disables INTID 30 before the handoff, so the level
+-				 * storm that forced the mask is gone, and masking CNTV
+-				 * would also kill the only tick the scheduler has.
++				 * Storm breaker.  A level-triggered PPI that nobody re-arms comes
++				 * straight back, and the machine then spends all its time in this
++				 * handler -- which looks exactly like a hang with no output.
++				 * If two interrupts arrive within 1000 ticks (77 us) of each
++				 * other, stop the timer instead of spinning, say so once, and let
++				 * the interrupted code continue.  The boot then either finishes
++				 * or fails visibly.
+ 				 */
++				if (dl_irq_count > 1u && (_now - dl_last_cntpct) < 1000ull &&
++				    !dl_storm_handled) {
++					extern void dandelion_trace_mark(const char *);
+ 
+-				kprintf("DANDELION irq1: hppir1=%llu intid=%u cntv_ctl=%llu "
+-				    "cntv_tval=%llu cntp_ctl=%llu\n",
+-				    hppir1, (unsigned)intid, cntv_ctl, cntv_tval, cntp_ctl);
++					dl_storm_handled = 1;
++					__builtin_arm_wsr64("CNTP_CTL_EL0", 0ul);
++					dandelion_trace_mark("[dl] irq storm: gap < 1000 ticks; "
++					    "CNTP masked to let the interrupted code run\n");
++				}
++				dl_last_cntpct = _now;
 +			}
 +			/*
 +			 * Nothing is skipped any more: the previous boot proved that
@@ -51,32 +101,14 @@ index 9e64376..125b60c 100644
 +		 * Kept for continuity with earlier logs: one ring marker the first
 +		 * time an interrupt is entered at all.  Everything else that used to be
 +		 * here moved into the block above, where it does no console I/O.
- 		 */
- 		{
- 			static int decider_done;
- 
- 			if (!decider_done) {
--				uint64_t hppir1 = __builtin_arm_rsr64("ICC_HPPIR1_EL1");
--				uint64_t cntv_ctl = __builtin_arm_rsr64("CNTV_CTL_EL0");
--				uint64_t cntv_tval = __builtin_arm_rsr64("CNTV_TVAL_EL0");
--				uint64_t cntp_ctl = __builtin_arm_rsr64("CNTP_CTL_EL0");
++		 */
++		{
++			static int decider_done;
++
++			if (!decider_done) {
 +				extern void dandelion_trace_mark(const char *);
- 
- 				decider_done = 1;
--				{
--					extern void dandelion_trace_mark(const char *);
--					dandelion_trace_mark("[irq1] first irq seen\n");
--				}
--				/*
--				 * The timers are deliberately left alone: the shim now
--				 * disables INTID 30 before the handoff, so the level
--				 * storm that forced the mask is gone, and masking CNTV
--				 * would also kill the only tick the scheduler has.
--				 */
--
--				kprintf("DANDELION irq1: hppir1=%llu intid=%u cntv_ctl=%llu "
--				    "cntv_tval=%llu cntp_ctl=%llu\n",
--				    hppir1, (unsigned)intid, cntv_ctl, cntv_tval, cntp_ctl);
++
++				decider_done = 1;
 +				dandelion_trace_mark("[irq1] first irq seen\n");
  			}
  		}
