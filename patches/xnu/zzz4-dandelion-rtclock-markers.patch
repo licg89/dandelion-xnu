@@ -1,8 +1,8 @@
 diff --git a/osfmk/arm/rtclock.c b/osfmk/arm/rtclock.c
-index 5989b48..a36b6cf 100644
+index 5989b48..0cbcf6e 100644
 --- a/osfmk/arm/rtclock.c
 +++ b/osfmk/arm/rtclock.c
-@@ -319,6 +319,31 @@ clock_timebase_info(mach_timebase_info_t info)
+@@ -319,6 +319,38 @@ clock_timebase_info(mach_timebase_info_t info)
  /*
   * Real-time clock device interrupt.
   */
@@ -20,30 +20,38 @@ index 5989b48..a36b6cf 100644
 + * context (that panic is what made three earlier boots look silent).
 + */
 +#if defined(DANDELION)
++/*
++ * Report every step of the first three interrupts.  A once-only marker showed
++ * that the first rtclock_intr() completes; what matters now is the second call,
++ * which is where the machine stops, so the markers are per call number.
++ */
++static int dl_rtc_call;
++#define DL_RTC_CALL()   (dl_rtc_call++)
 +#define DL_RTC_MARK(s) do {                                             \
-+		static int _dl_once;                                            \
-+		if (_dl_once++ == 0) {                                          \
++		if (dl_rtc_call <= 3) {                                         \
 +			extern void dandelion_trace_mark(const char *);           \
 +			dandelion_trace_mark(s);                                \
 +		}                                                               \
 +} while (0)
 +#else
-+#define DL_RTC_MARK(s) do { } while (0)
++#define DL_RTC_CALL()   do { } while (0)
++#define DL_RTC_MARK(s)  do { } while (0)
 +#endif
 +
  void
  rtclock_intr(__unused unsigned int is_user_context)
  {
-@@ -328,6 +353,8 @@ rtclock_intr(__unused unsigned int is_user_context)
+@@ -328,6 +360,9 @@ rtclock_intr(__unused unsigned int is_user_context)
  	unsigned int             user_mode;
  	uintptr_t                pc;
  
++	DL_RTC_CALL();
 +	DL_RTC_MARK("[dl] rtc 1: enter\n");
 +
  	cdp = getCpuDatap();
  
  	cdp->cpu_stat.timer_cnt++;
-@@ -336,6 +363,7 @@ rtclock_intr(__unused unsigned int is_user_context)
+@@ -336,6 +371,7 @@ rtclock_intr(__unused unsigned int is_user_context)
  	assert(!ml_get_interrupts_enabled());
  
  	abstime = mach_absolute_time();
@@ -51,7 +59,7 @@ index 5989b48..a36b6cf 100644
  
  	if (cdp->cpu_idle_pop != 0x0ULL) {
  		if ((cdp->rtcPop - abstime) < cdp->cpu_idle_latency) {
-@@ -365,8 +393,10 @@ rtclock_intr(__unused unsigned int is_user_context)
+@@ -365,8 +401,10 @@ rtclock_intr(__unused unsigned int is_user_context)
  		    user_mode ? pc : VM_KERNEL_UNSLIDE(pc), user_mode);
  	}
  

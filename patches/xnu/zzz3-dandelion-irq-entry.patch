@@ -1,5 +1,5 @@
 diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
-index 9e64376..b4b2e7e 100644
+index 9e64376..125b60c 100644
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
 @@ -1871,46 +1871,69 @@ sleh_irq(arm_saved_state_t *state)
@@ -28,7 +28,7 @@ index 9e64376..b4b2e7e 100644
 +			static unsigned int dl_irq_count;
 +
 +			dl_irq_count++;
-+			if (dl_irq_count <= 2u || (dl_irq_count % 1000u) == 0u) {
++			if (dl_irq_count <= 6u || (dl_irq_count % 100u) == 0u) {
 +				char _buf[96];
 +				extern void dandelion_trace_mark(const char *);
 +
