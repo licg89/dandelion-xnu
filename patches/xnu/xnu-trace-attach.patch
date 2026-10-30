@@ -1,0 +1,68 @@
+diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
+index 254e126..2f3ec3b 100644
+--- a/osfmk/kern/printf.c
++++ b/osfmk/kern/printf.c
+@@ -925,17 +925,17 @@ vprintf(const char *fmt, va_list ap)
+  * startup.c additionally append plain checkpoints with dandelion_trace_mark()
+  * so progress is visible even where nothing prints.
+  *
+- * The buffer sits near the top of the window, far above topOfKernelData and
+- * therefore not handed out by the VM during early boot.  It cannot sit at
+- * the very top: the bootstrap V=P mapping that start.s builds stops at the
+- * last whole 2 MiB block below gPhysBase + memSize (0x5fe00000 for this
+- * 384 MiB window), and everything above that is unmapped until arm_vm_init()
+- * installs the physmap.
++ * The buffer sits above the memory window the loader hands over -- far above
++ * topOfKernelData, so the VM never hands it out -- and the bootstrap V=P map
++ * is what makes it reachable: start.s maps the block that contains it
++ * (0x5f800000..0x60000000) and arm_vm_init() keeps that map installed in
++ * TTBR0 for bring-up (DANDELION_KEEP_IDENTITY_MAP), so the physical address
++ * stays usable for the whole boot.
+  *
+- * Until then the window is reachable through that identity map, so the
+- * physical address works as-is.  arm_vm_init() calls dandelion_trace_attach()
+- * right after the switch, which repoints the buffer at the physmap; the few
+- * lines in between are the only blind spot.
++ * That also means there is nothing to repoint here: dandelion_trace_attach()
++ * is a no-op, and it must not call phystokv() -- the ring is outside
++ * [gPhysBase, gPhysBase + real_phys_size), which is precisely what panicked
++ * the kernel right after "vm: keep identity map" in IMG_5805.
+  *
+  * The mappings are cacheable, so every character is cleaned to the point of
+  * coherency: the interesting part of the trace is whatever was written last,
+@@ -1228,19 +1228,23 @@ void
+ dandelion_trace_attach(void)
+ {
+ 	/*
+-	 * The physmap is not a flat gPhysBase-relative window: arm_vm_init()
+-	 * lays its segments out through ptov_table with per-segment block
+-	 * alignment, so ask the kernel where the page landed rather than
+-	 * computing it.
+-	 */
+-	dandelion_trace_base =
+-	    (volatile unsigned char *)phystokv(DANDELION_TRACE_PA);
+-
+-	/*
+-	 * arm_vm_init() keeps the bootstrap V=P map in TTBR0 for bring-up
+-	 * (DANDELION_KEEP_IDENTITY_MAP), so the panel is still reachable at its
+-	 * physical address and the trace keeps painting.
++	 * Nothing to do.
++	 *
++	 * arm_vm_init() keeps the bootstrap V=P map installed in TTBR0 for
++	 * bring-up (DANDELION_KEEP_IDENTITY_MAP), so the ring stays reachable
++	 * at the physical address it was given, and the panel keeps painting
++	 * through the framebuffer's physical address as well.
++	 *
++	 * phystokv() must not be used here: the ring deliberately sits above
++	 * the memory window the loader handed over (0x4d004000..0x5d004000 on
++	 * this board), and phystokv() panics on any PA outside
++	 * [gPhysBase, gPhysBase + real_phys_size).  That is exactly how
++	 * IMG_5805 died, one trace line after "vm: keep identity map".
++	 *
++	 * If the identity map is ever dropped, the ring has to move inside the
++	 * window (or be mapped explicitly) before this can repoint it.
+ 	 */
++	dandelion_trace_base = (volatile unsigned char *)DANDELION_TRACE_PA;
+ }
+ 
+ void
