@@ -1,0 +1,42 @@
+diff --git a/bsd/miscfs/mockfs/mockfs_vfsops.c b/bsd/miscfs/mockfs/mockfs_vfsops.c
+index 325bb06..d4e07e0 100644
+--- a/bsd/miscfs/mockfs/mockfs_vfsops.c
++++ b/bsd/miscfs/mockfs/mockfs_vfsops.c
+@@ -71,6 +71,37 @@ mockfs_mountroot(mount_t mp, vnode_t rvp, __unused vfs_context_t ctx)
+ 	mockfs_mount_t mockfs_mount_data = NULL;
+ 	dk_memdev_info_t memdev_info;
+ 
++#if defined(DANDELION)
++	/*
++	 * DANDELION: give the backing device a size before the fnodes below are
++	 * created.
++	 *
++	 * The file node's size is copied from the spec vnode it fronts
++	 * (mockfs_fsnode.c: mp->mnt_devvp->v_specinfo->si_devsize), and in this tree
++	 * nothing ever writes that field except spec_open(), which the mountroot
++	 * path never calls -- mockfs only ioctl()s the device.  A zero-length file
++	 * node does not stop mockfs from mounting or VFS_ROOT from succeeding, so
++	 * the failure it causes is late and confusing: load_init_program() can read
++	 * no bytes of /sbin/launchd and exec dies with EBADMACHO.
++	 *
++	 * So do exactly what spec_open() would have done -- block size times block
++	 * count.  memdev answers both ioctls (bsd/dev/memdev.c), and on a device
++	 * that does not, the field simply stays 0 as before.
++	 */
++	{
++		u_int32_t _blksize = 0;
++		u_int64_t _blkcnt = 0;
++
++		if (!VNOP_IOCTL(rvp, DKIOCGETBLOCKSIZE, (caddr_t)&_blksize, 0, NULL) &&
++		    !VNOP_IOCTL(rvp, DKIOCGETBLOCKCOUNT, (caddr_t)&_blkcnt, 0, NULL) &&
++		    _blksize != 0 && _blkcnt != 0) {
++			rvp->v_specdevsize = _blkcnt * (u_int64_t)_blksize;
++			printf("mockfs_mountroot: root device %llu bytes\n",
++			    (unsigned long long)rvp->v_specdevsize);
++		}
++	}
++#endif /* DANDELION */
++
+ 	/*
+ 	 * TODO: Validate that the device at least LOOKS like a mach-o (has a sane header); this would prevent us
+ 	 *   from causing EBADMACHO panics further along the boot path.

@@ -4,7 +4,44 @@
 
 ---
 
-## 0.-1 2026-10-30 21:3x（最新，读这一节就够了）：tick 通了，内核走到"没有根文件系统"
+## 0.-2 2026-10-30 22:xx：第三轮内核在探针中途哑掉，加步进标记；同时把根文件系统那半步做掉
+
+### 异常：`4ac085d` 那次启动只打到 SGI 自检就再也没有输出
+
+`round.ps1 collect-log` 拿回来的块里：
+
+| 查询 | 结果 |
+|---|---|
+| `[dl] gic late: done` / `[dl] regs` / `[dl] timerprobe` / `[dl] hfs wait` / `[dl] parked` | **一条都没有**（全零命中） |
+| `[irq1] first irq seen` | **没有**（第二轮有） |
+| 块里最后一次真实写入的文本 | `[dl] gic late: sgi self-test …` |
+| 日志头 `cntpct` | 2439002560 = **187 秒**，说明写入器在 187 s 时还活着 |
+
+也就是说：`ctlr rwp-waited 10 -> 12` 又出现了（bit 1 依然写进去了），
+但紧接在下一条 `printf` 之前内核就再没写过一个字节 —— 而日志头的时间戳还在往后走。
+两个可能：(a) 内核在 `dgic_write32(redist, DGICR_ICPENDR0, …)` / 恢复 `ICC_IGRPEN1_EL1`
+之后挂了；(b) eMMC 写入器被卡死（中断重入 / 锁），内核还活着但永远打不出字。
+
+这一轮加了**步进标记**（`gic step A` / `B` / `C1` / `C2` / `C3`），每个实验前一行短输出，
+所以下一次启动就能把死点从"一段代码"缩小到"一步"。同时把 `[irq1]` 这条一次性标记
+当成第二个指标：它出现 = 真的收到过中断。
+
+### 根文件系统：最小改动已经在树里了（`docs/ROOTFS-STEP1.md`）
+
+- `md` 本来就在编（`bsd/conf/files:106` + `config/MASTER:483` 无标签）；
+- **唯一**有 `vfc_mountroot` 的文件系统是 mockfs（`vfs/vfs_conf.c:205`，`#if MOCKFS`），
+  所以 `config/MASTER.arm64.dandelion` 加了一行无标签 `options MOCKFS`；
+- `patches/xnu/zzz2-dandelion-mockfs-size.patch`：mockfs 的 file node 大小来自
+  `si_devsize`，而这棵树里只有 `spec_open()` 写它，mountroot 路径从不 open →
+  exec 会读到 0 字节。补丁在 `mockfs_mountroot()` 里用 `DKIOCGETBLOCKSIZE/COUNT`
+  自己填 `v_specdevsize`（= `v_specinfo->si_devsize`，`bsd/sys/specdev.h:101`）。
+- 固化件那一半（ADT 里 `/chosen/memory-map/RAMDisk` 占位、ESP 里的 initrd、
+  `UniXNU.toml` 的 `rd=md0` + `initrd`）在 `docs/ROOTFS-STEP1.md` §2.2，
+  **必须一起刷**：DarwinBoot 对两半是 both-or-neither，只给一半返回 EFI_UNSUPPORTED。
+
+---
+
+## 0.-1 2026-10-30 21:3x（读这一节就够了）：tick 通了，内核走到"没有根文件系统"
 
 **一句话：`GICD_CTLR` 该写的是 bit 1 不是 bit 0；写进去以后中断第一次被内核收到，
 `bsd_init` 越过自己的探针一路跑到根挂载失败。挡路的已经不是 GIC 了，是根文件系统。**

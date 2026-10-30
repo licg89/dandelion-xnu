@@ -96,6 +96,17 @@ options	  CONFIG_MACH_APPROXIMATE_TIME
 # node in the ADT, so kprintf reaches flashinfo and can be pulled with adb.
 options   XNU_EMMC_SERIAL=1
 
+# The only filesystem in the open-source tree with a vfc_mountroot is mockfs:
+# bsd/vfs/vfs_conf.c guards it with #if MOCKFS and puts mockfs_mountroot() in the
+# vfsconf entry (devfs/nullfs/bindfs/routefs all have vfc_mountroot = NULL), so
+# without this option vfs_mountroot() has no filesystem to try and returns
+# ENODEV.  bsd/conf/files marks its three sources "optional mockfs", which the
+# config tool turns into -DMOCKFS here.  mockfs mounts whatever block device the
+# root path already picked and treats its contents as one executable, which is
+# the shortest route to VFS_ROOT on a port with no HFS+/APFS.
+# See docs/ROOTFS-STEP1.md.
+options   MOCKFS
+
 options   CONFIG_KERNEL_INTEGRITY		# <kernel_integrity>
 options   CONFIG_UBSAN_MINIMAL		# <ubsan_minimal>
 options   CONFIG_KERNEL_TBI	# <kernel_tbi>
