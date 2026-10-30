@@ -339,7 +339,7 @@ what tells us whether mockfs is in `vfsconf` at all. Steps B/C are the firmware 
 
 The one thing that makes (a) more expensive than the plan thought is §1.2's missing
 `si_devsize`: the mount rung needs no patch, the exec rung needs one small one. That patch is
-`patches/xnu/zzz2-dandelion-mockfs-size.patch` (35 lines, one hunk, guarded by
+`patches/xnu/zzz2-dandelion-mockfs-size.patch` (31 added lines, one hunk, guarded by
 `#if defined(DANDELION)`, inert while `MOCKFS` is off because the file is not compiled).
 
 ---
@@ -482,6 +482,6 @@ Unverified, and honest about it:
 | Path | State | Why |
 |---|---|---|
 | `config/MASTER.arm64.dandelion` | edited, **not committed** | `options MOCKFS` (§1.4) |
-| `patches/xnu/zzz2-dandelion-mockfs-size.patch` | new, **not committed**; `check_series.py` passes | the `si_devsize` fix (§6.3) |
+| `patches/xnu/zzz2-dandelion-mockfs-size.patch` | new, **not committed**; verified with `py -3.13 tools/ci/check_series.py` → `check_series: OK (36 patch(es) apply in order, no suspicious bytes)` on 2026-10-30 21:4x | the `si_devsize` fix (§6.3) |
 | `docs/ROOTFS-STEP1.md` | this file | — |
 | `bootshim/adt.c`, `Resources/UniXNU/kernel.macho.adt`, `Resources/UniXNU/UniXNU.toml`, `tools/mk_unixnu_esp.py` | **not touched** (§2.2 has the diffs) | firmware/ESP half, owned elsewhere |
