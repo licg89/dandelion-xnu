@@ -1,0 +1,85 @@
+diff --git a/osfmk/arm64/machine_routines.c b/osfmk/arm64/machine_routines.c
+index 76582da..4510431 100644
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -2035,7 +2035,8 @@ ml_set_decrementer(uint32_t dec_value)
+ 	if (cdp->cpu_set_decrementer_func) {
+ 		cdp->cpu_set_decrementer_func(dec_value);
+ 	} else {
+-		__builtin_arm_wsr64("CNTV_TVAL_EL0", (uint64_t)dec_value);
++		/* dandelion: PPI 30 (CNTP) is the timer interrupt non-secure owns. */
++		__builtin_arm_wsr64("CNTP_TVAL_EL0", (uint64_t)dec_value);
+ 	}
+ }
+ 
+@@ -2156,7 +2157,7 @@ ml_get_decrementer(void)
+ 	} else {
+ 		uint64_t wide_val;
+ 
+-		wide_val = __builtin_arm_rsr64("CNTV_TVAL_EL0");
++		wide_val = __builtin_arm_rsr64("CNTP_TVAL_EL0");
+ 		dec = (uint32_t)wide_val;
+ 		assert(wide_val == (uint64_t)dec);
+ 	}
+@@ -2167,8 +2168,8 @@ ml_get_decrementer(void)
+ boolean_t
+ ml_get_timer_pending(void)
+ {
+-	uint64_t cntv_ctl = __builtin_arm_rsr64("CNTV_CTL_EL0");
+-	return ((cntv_ctl & CNTV_CTL_EL0_ISTATUS) != 0) ? TRUE : FALSE;
++	uint64_t cntp_ctl = __builtin_arm_rsr64("CNTP_CTL_EL0");
++	return ((cntp_ctl & CNTP_CTL_EL0_ISTATUS) != 0) ? TRUE : FALSE;
+ }
+ 
+ __attribute__((noreturn))
+@@ -2242,11 +2243,18 @@ _enable_timebase_event_stream(uint32_t bit_index)
+ static void
+ _enable_virtual_timer(void)
+ {
+-	uint64_t cntvctl = CNTV_CTL_EL0_ENABLE; /* One wants to use 32 bits, but "mrs" prefers it this way */
++	/*
++	 * dandelion: the timer interrupt left to EL1 non-secure on this platform is
++	 * PPI 30 -- the physical timer -- which is the one Linux uses here too
++	 * (/proc/interrupts: "GICv3 30 Level arch_timer").  The virtual timer's PPI
++	 * 27 is not a Group 1 NS interrupt on this GIC, so arming CNTV produces a
++	 * pending local interrupt that nobody ever receives: every deadline sleep
++	 * then blocks forever.  Arm CNTP and mask CNTV instead.
++	 */
++	uint64_t cntpctl = CNTP_CTL_EL0_ENABLE;
+ 
+-	__builtin_arm_wsr64("CNTV_CTL_EL0", cntvctl);
+-	/* disable the physical timer as a precaution, as its registers reset to architecturally unknown values */
+-	__builtin_arm_wsr64("CNTP_CTL_EL0", CNTP_CTL_EL0_IMASKED);
++	__builtin_arm_wsr64("CNTP_CTL_EL0", cntpctl);
++	__builtin_arm_wsr64("CNTV_CTL_EL0", CNTV_CTL_EL0_IMASKED);
+ }
+ 
+ void
+diff --git a/pexpert/pexpert/arm64/DANDELION.h b/pexpert/pexpert/arm64/DANDELION.h
+index 4a93691..a1e8f2f 100644
+--- a/pexpert/pexpert/arm64/DANDELION.h
++++ b/pexpert/pexpert/arm64/DANDELION.h
+@@ -104,7 +104,7 @@
+ 
+ /* ARM generic timer: clock-frequency = <13000000>, GIC PPI 11. */
+ #define DANDELION_TIMER_FREQ      13000000
+-#define DANDELION_TIMER_IRQ       27
++#define DANDELION_TIMER_IRQ       30   /* CNTP: what Linux uses on this GIC */
+ 
+ /* MediaTek TOPRGU watchdog. */
+ #define DANDELION_WDT_BASE        0x10007000ULL
+diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+index b4cad4e..788cc9c 100644
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -126,8 +126,8 @@ pe_init_fiq(void)
+ 			if (freq == 0) {
+ 				freq = 13000000;
+ 			}
+-			__builtin_arm_wsr64("CNTV_TVAL_EL0", freq / 100);
+-			__builtin_arm_wsr64("CNTV_CTL_EL0", 1);
++			__builtin_arm_wsr64("CNTP_TVAL_EL0", freq / 100);
++			__builtin_arm_wsr64("CNTP_CTL_EL0", 1);
+ 		}
+ 
+ 		kprintf("DANDELION: icc ready (sre=%lx pmr=%lx ctlr=%lx), "
