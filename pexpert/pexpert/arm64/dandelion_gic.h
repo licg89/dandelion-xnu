@@ -953,14 +953,14 @@ dgic_timer_test_clear(struct dgic *g, unsigned int irq)
  * before reading back, so the second number answers the question.
  */
 static inline void
-dgic_ctlr_try_enable1(uintptr_t gicd, unsigned int *before, unsigned int *after)
+dgic_ctlr_try_enable1(unsigned long gicd, unsigned int *before, unsigned int *after)
 {
 	volatile uint32_t *ctlr = (volatile uint32_t *)(gicd + DGICD_CTLR);
 	unsigned int spin = 0;
 
 	*before = *ctlr;
 	*ctlr = *before | DGICD_CTLR_ENABLE0;
-	dgic_dsb();
+	__asm__ volatile("dsb sy" ::: "memory");
 	do {
 		*after = *ctlr;
 	} while ((*after & DGICD_CTLR_RWP) != 0 && ++spin < 1000000u);
