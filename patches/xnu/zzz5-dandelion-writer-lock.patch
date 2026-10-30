@@ -1,8 +1,8 @@
 diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
-index 9b36f99..6b06693 100644
+index 9b36f99..955eafe 100644
 --- a/osfmk/kern/printf.c
 +++ b/osfmk/kern/printf.c
-@@ -1254,8 +1254,27 @@ dandelion_trace_attach(void)
+@@ -1254,8 +1254,41 @@ dandelion_trace_attach(void)
  }
  
  void
@@ -16,13 +16,27 @@ index 9b36f99..6b06693 100644
 + * arriving in the middle of a line interleaves the two writers, corrupts the
 + * buffer index, and stops all output.  That is exactly what the 01:3x boot did.
 + *
-+ * ml_set_interrupts_enabled() returns the previous state, so nesting is safe: in
-+ * interrupt context it reports FALSE and restoring leaves interrupts masked.
++ * dl_irq_save() returns the previous DAIF, so nesting is safe: in
++ * interrupt context it reports I already set and restoring leaves them masked.
 + */
-+extern unsigned int ml_set_interrupts_enabled(unsigned int enable);
++static inline unsigned long
++dl_irq_save(void)
++{
++	unsigned long daif;
 +
-+#define DL_WRITER_LOCK()    unsigned int _dl_intrs = ml_set_interrupts_enabled(0u)
-+#define DL_WRITER_UNLOCK()  ml_set_interrupts_enabled(_dl_intrs)
++	__asm__ volatile("mrs %0, DAIF" : "=r"(daif));
++	__asm__ volatile("msr DAIFSet, #2" ::: "memory");
++	return daif;
++}
++
++static inline void
++dl_irq_restore(unsigned long daif)
++{
++	__asm__ volatile("msr DAIF, %0" : : "r"(daif) : "memory");
++}
++
++#define DL_WRITER_LOCK()    unsigned long _dl_daif = dl_irq_save()
++#define DL_WRITER_UNLOCK()  dl_irq_restore(_dl_daif)
 +
  dandelion_trace_putc(char c)
  {
@@ -30,7 +44,7 @@ index 9b36f99..6b06693 100644
  	volatile unsigned char *base = dandelion_trace_base;
  	volatile unsigned int *hdr;
  	unsigned int off = dandelion_trace_len;
-@@ -1295,6 +1314,7 @@ dandelion_trace_putc(char c)
+@@ -1295,6 +1328,7 @@ dandelion_trace_putc(char c)
  
  	__asm__ volatile("dc cvac, %0" :: "r"((unsigned long)(base + DANDELION_TRACE_HDR + off) & ~63UL) : "memory");
  	__asm__ volatile("dsb sy" ::: "memory");
@@ -38,7 +52,7 @@ index 9b36f99..6b06693 100644
  }
  
  void
-@@ -1782,13 +1802,17 @@ dl_emmc_flush_sector(void)
+@@ -1782,13 +1816,17 @@ dl_emmc_flush_sector(void)
  void
  dandelion_emmc_putc(char c)
  {
@@ -56,7 +70,7 @@ index 9b36f99..6b06693 100644
  		return;
  	}
  
-@@ -1805,6 +1829,7 @@ dandelion_emmc_putc(char c)
+@@ -1805,6 +1843,7 @@ dandelion_emmc_putc(char c)
  		 * kernel that dies is the last line it managed to print. */
  		dl_emmc_flush_sector();
  	}
