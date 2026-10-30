@@ -40,3 +40,28 @@ index 325bb06..d4e07e0 100644
  	/*
  	 * TODO: Validate that the device at least LOOKS like a mach-o (has a sane header); this would prevent us
  	 *   from causing EBADMACHO panics further along the boot path.
+diff --git a/bsd/miscfs/mockfs/mockfs_fsnode.c b/bsd/miscfs/mockfs/mockfs_fsnode.c
+index e000126..c9aaefd 100644
+--- a/bsd/miscfs/mockfs/mockfs_fsnode.c
++++ b/bsd/miscfs/mockfs/mockfs_fsnode.c
+@@ -154,7 +154,20 @@ mockfs_fsnode_destroy(mockfs_fsnode_t fsnp)
+ 		}
+ 	}
+ 
++#if defined(DANDELION)
++	/*
++	 * kfree_type() takes the type, not a pointer typedef: its check is
++	 * __builtin_xnu_types_compatible(__typeof__(*(ptr)), type), so passing
++	 * mockfs_fsnode_t (== struct mockfs_fsnode *) fails the static assertion
++	 * "Pointer type is not compatible with specified type".  This is why
++	 * mockfs has never compiled on a non-Apple configuration in this tree.
++	 * kalloc_type() above is fine: it returns TYPE *, which is what *fsnpp
++	 * expects.
++	 */
++	kfree_type(struct mockfs_fsnode, fsnp);
++#else
+ 	kfree_type(mockfs_fsnode_t, fsnp);
++#endif
+ done:
+ 	return rvalue;
+ }
