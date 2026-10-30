@@ -642,3 +642,69 @@ DEBUG ((DEBUG_ERROR, "PayloadBoot: build %a %a\n", __DATE__, __TIME__));
 UniXNU → DarwinBoot → 跳转）在 `docs/logs/boot-log-2026-10-30-handoff.txt` 里有完整证据，
 那次的日志有 2673 字节、含 `hand-off to the kernel`。这里要查的只是**后续这几次改动
 为什么没生效**。
+
+## 14. 探针阶梯前移到 `arm_init`，探针条加粗（2026-10-30 上午）
+
+### 14.1 IMG_5797 的事实
+
+刷 `boot-uefi-redband.img` 后拍到的画面：
+
+- 顶部是 DarwinBoot 的交接块，完整；
+- **y 990..1080、x 480..720 全是黑的** —— 一根探针条都没有，连 `1000`（蓝，画在
+  `arm_vm_init()` **调用之前**）都没有；
+- 面板只有两条 StorageBeacon 横幅：y≈1100 蓝 `(80,1,253)` = `PaintBanner(1100, 0x008000FF)`
+  （**BLOCK OK**）、y≈1140 绿 `(65,255,67)` = `PaintBanner(1140, 0x0000FF00)`（**FAT OK**）；
+- 交接块里 `video   base 0x0  0x0  row 0 bytes  0 bpp` —— **DarwinBoot 交给内核的显示信息是全零**。
+
+### 14.2 两个结论
+
+1. **内核死在 `arm_init` 的 1000 号探针之前**。1000 画在 `arm_vm_init()` 调用之前，
+   所以范围不是 `arm_vm_init` 里面，而是 **`arm_init` 的头两百行，或者 `start.s`**。
+2. **`video=0` 是一个独立的 bug**：即使内核活着，它也没有屏幕可写，panic/kprintf 全是哑的。
+   修复点在 DarwinBoot（外部仓库 `UniXNU/DarwinBoot`，`tools/build_darwinboot.sh` 构建），
+   需要把 GOP 的 base/stride/geometry 填进 boot args —— **本轮没做**，先保证有探针可读。
+
+### 14.3 本轮做的三件事
+
+1. **`patches/xnu/xnu-early-probe-ladder.patch`**（新补丁，按名字排在最后被应用）：
+   - 探针条从 1 个扫描行加粗成 **6 行**（`DANDELION_PROBE_H`）——1 行只有面板的 1/1600，
+     手持拍照根本看不见，这也是上一轮"看起来什么都没发生"的一部分原因；
+   - 新增九级探针，与原有的 990/1000/1020/1040/1060/1080 一起，把 `arm_init` 和
+     `arm_vm_init` 切成十像素一格：
+
+     | y | 颜色 | 位置 |
+     |---|---|---|
+     | 900 | 青 | `arm_init()` 第一句 |
+     | 910 | 黄 | pre-sign + slide 之后 |
+     | 920 | 绿 | `PE_init_platform(FALSE)` 之后 |
+     | 930 | 蓝 | `ml_parse_cpu_topology()` 之后 |
+     | 940 | 品红 | `kernel_startup_bootstrap()` 之前 |
+     | 950 | 橙 | `kernel_startup_bootstrap()` 之后 |
+     | 960 | 红 | `arm_vm_init()` 入口 |
+     | 970 | 紫 | 内存上限检查之后 |
+     | 980 | 春绿 | `kva_active = TRUE` |
+     | 990 | 白 | `arm_vm_init` 结尾（原有） |
+     | 1000..1080 | 蓝/绿/品红/橙/紫 | `arm_init` 后半段（原有） |
+
+2. **`tools/mk_unixnu_esp.py`**：纯 Python 生成 `flashinfo` 的 FAT16 卷，**不再需要 WSL/mtools**。
+   - 30000 sectors（15 MiB）、FAT16、2 KiB 簇、label `UNIXNU`；
+   - `\UniXNU.efi` + `\EFI\UniXNU\{UniXNU.toml, DarwinBoot.efi, UniXNUDxe.efi,
+     UniXNURamDiskDxe.efi, kernel.macho, kernel.macho.adt}`，与 `mk_unixnu_esp.sh` 一致；
+   - `--check <img>` 用**独立实现**把每个文件读回来逐字节比对（实测 7 个文件全 identical）。
+
+3. **内核更新链路走通**（这条以前依赖 WSL）：
+
+   ```
+   push → build-xnu（macOS，~10 min）→ powershell -File tools\ci\fetch_kernel.ps1
+        → py -3.13 tools\mk_unixnu_esp.py --out out\unixnu-esp.img
+        → py -3.13 tools\mk_unixnu_esp.py --check out\unixnu-esp.img
+        → fastboot flash flashinfo out\unixnu-esp.img     # 16 MiB 分区，只写前 30000 sectors
+        → fastboot reboot
+   ```
+
+   boot 分区不用重刷：内核在 `flashinfo` 里，UEFI FD 没变。
+
+### 14.4 下一步
+
+拍一张，只看 **y 900..990**（x 480..720）。第一根亮起来的是哪一格，就说明死在那一段之后、
+下一格之前；如果 **900 青都没有**，问题在 `start.s`（在那之前只有 bootstrap pmap 和跳转）。

@@ -1,8 +1,25 @@
 # 下一次开工从这里开始
 
-写完时间：2026-10-30 03:2x。手机已刷回 Android，仓库已推送。
+写完时间：2026-10-30 03:2x，**更新：2026-10-30 上午（见 §0）**。手机已刷回 Android，仓库已推送。
 
-上一轮的最新提交：`117f0b7`。
+---
+
+## 0. 2026-10-30 上午：探针阶梯已前移到 `arm_init`
+
+`IMG_5797` 的读数（刷 `boot-uefi-redband.img`）：**y 990..1080 一根探针条都没有**，
+连 `1000`（蓝，画在 `arm_vm_init()` 调用**之前**）都没有 ⇒ 内核死在 **`arm_init` 前两百行或
+`start.s`**；同时交接块里 `video base 0x0 … bpp 0`，DarwinBoot 没把显示信息交给内核。
+
+因此本轮（提交 `7f14bcf` + 后续文档）：
+
+- `patches/xnu/xnu-early-probe-ladder.patch`：新增 **900/910/920/930/940/950/960/970/980**
+  九级探针，并把探针条从 1 行加粗到 **6 行**（1 行拍照看不见）；
+- `tools/mk_unixnu_esp.py`：纯 Python 生成 `flashinfo` 的 FAT 卷（**不再需要 WSL**），
+  带 `--check` 独立逐字节校验；
+- 内核已按 `7f14bcf` 重编并写进手机：`fastboot flash flashinfo out/unixnu-esp.img`。
+
+**下一个动作**：拍一张，只看 **y 900..990**（x 480..720）。完整表与判读见
+[`M6-UNIXNU.md`](M6-UNIXNU.md) §14。
 
 ---
 
