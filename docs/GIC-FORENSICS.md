@@ -210,7 +210,37 @@ Also note the flip side, which is a trap the repo already fell into once: becaus
 write the group state, **no NS read of `GICR_IGROUPR0` can ever tell us anything**. `0` is the only
 value non-secure can observe on a two-state GIC, whether the INTID is Group 1 NS or Group 0.
 
-### 3.6 Which INTID is the EL1 physical timer
+### 3.6 Where our wrong bit came from: the upstream XNU baseline
+
+The code this port replaced is upstream XNU's `pe_fiq.c` GICv3 path, and it ends with
+(`patches/xnu/dandelion-gic-mode.patch:426-431`, the removed lines; the constant is
+`pexpert/pexpert/arm64/DANDELION.h:89`, `#define GICD_CTLR_ENABLEGRP0 0x1`):
+
+```
+	// Enable the forwarding of the vtimer interrupt
+	uint32_t gicd_ctlr = gicd_read32(GICD_CTLR);
+	gicd_ctlr |= GICD_CTLR_ENABLEGRP0;
+	gicd_write32(GICD_CTLR, gicd_ctlr);
+	__builtin_arm_wsr64("ICC_IGRPEN0_EL1", 1);
+```
+
+plus, above it, `gicr_write32(GICR_IGROUPR0, 0x81FFFFFF);` with the comment "Configure timers and
+legacy FIQ to be group 0". **[IMPL]** So on Apple hardware the timer PPIs are deliberately put in
+**Group 0** and delivered as **FIQ**: the bit being set there is named `ENABLEGRP0` and it is
+paired with `ICC_IGRPEN0_EL1`, not `ICC_IGRPEN1_EL1`.
+
+The port kept the *bit* and relabelled it: the same `| 1` became "EnableGrp1NS is the one
+distributor bit non-secure is allowed to write" (`patches/xnu/dandelion-gic-mode.patch:381-385`),
+and the Group 0 system-register write was dropped (correctly - it is undefined from EL1 NS, §3.7).
+What was left is a write to `EnableGrp0` from non-secure, which is RAZ/WI, under a comment claiming
+it is `EnableGrp1NS`. That is the whole of H1's history: not a random typo, an inherited constant
+whose meaning changed under it when the target changed from a single-state Apple GIC to a
+two-state MediaTek one.
+
+The lesson generalises: any GIC code copied from upstream XNU has to be re-derived from
+`GICD_TYPER.SecurityExtn`, not from the bit names.
+
+### 3.7 Which INTID is the EL1 physical timer
 
 PPI 30 (`INTID 16 + 14`) is the non-secure EL1 physical timer. On this device: Android's
 `/proc/interrupts` reports `GICv3 30 Level arch_timer` on all eight CPUs
@@ -501,7 +531,6 @@ In this repo (path:line):
 ---
 
 ## 11. What would falsify H1
-
 Any one of:
 
 * `ctlr rwp-waited 10 -> 10` with `spin=0`, i.e. bit 1 also ignored;
@@ -510,3 +539,26 @@ Any one of:
 * a shim run (`bootshim/gic_probe.c` writes `0x13` there, MMU off) reading back something other
   than `0x12`, which would say the difference is about our mapping or cache attributes rather than
   about permissions.
+
+---
+
+## 12. Known gaps in this document
+
+Honest list, so the next reader does not over-trust what is here:
+
+* **Primary spec text for `GICR_IGROUPR0`'s non-secure accessibility was not fetched.** The quoted
+  rule is the one for `GICD_IGROUPR<n>` ("When GICD_CTLR.DS==0, the register is RAZ/WI to Non-secure
+  accesses") plus QEMU's redistributor model. The conclusion (NS cannot observe PPI group state) does
+  not depend on the second half, but anyone quoting this document for the redistributor rule should
+  cite IHI0069 directly.
+* **`Dracen-W/UniXNU-merlinx` was not read for this document.** The raw path I guessed 404s and the
+  repository tree is too large to page through blindly. Their port faces the same firmware handoff;
+  the fact that they reach `launchd` is consistent with an OS-side re-enable of `GICD_CTLR`, but I
+  have not read their code and do not claim it.
+* **Firmware provenance is one build behind.** The `FVMAIN.inf` that proves `ArmGicDxe` lands in the
+  FV is from the 2026-10-28 build tree; the currently flashed FV cannot be inspected in place
+  (compressed - `docs/CORRECTIONS.md` C14). The `DXE.inc` content list is the live evidence.
+* **The exact moment `EnableGrp1NS` is cleared has not been observed**, only deduced: the code path
+  exists, is in the image, and the resulting value matches to the bit. §4 H2 names the two cheap ways
+  to observe it.
+
