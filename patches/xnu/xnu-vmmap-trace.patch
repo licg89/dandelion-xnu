@@ -47,7 +47,7 @@ index d0ca558..a048687 100644
  		startup_entry_cur = ++cur;
  	}
 diff --git a/osfmk/vm/vm_kern.c b/osfmk/vm/vm_kern.c
-index 2927d4b..37268b0 100644
+index 2927d4b..f422fd3 100644
 --- a/osfmk/vm/vm_kern.c
 +++ b/osfmk/vm/vm_kern.c
 @@ -1067,6 +1067,19 @@ kmem_suballoc(
@@ -70,6 +70,79 @@ index 2927d4b..37268b0 100644
  	vm_map_kernel_flags_set_vmflags(&vmk_flags, vm_flags, tag);
  
  	if (parent == kernel_map) {
+@@ -3426,6 +3439,19 @@ kmem_readjust_ranges(
+ 
+ 	sp.kc_flags = KC_NO_MOVE;
+ 	kmem_claims[random] = sp;
++
++#if defined(DANDELION)
++	{
++		extern void dandelion_trace_mark(const char *);
++		char buf[128];
++
++		snprintf(buf, sizeof(buf),
++		    "[dl] readjust %s idx %u -> %u at 0x%llx\n",
++		    sp.kc_name, cur_idx, random,
++		    (uint64_t)sp_range->min_address);
++		dandelion_trace_mark(buf);
++	}
++#endif
+ }
+ 
+ __startup_func
+@@ -3609,6 +3635,27 @@ kmem_scramble_ranges(void)
+ 		start = end;
+ 	}
+ 
++#if defined(DANDELION)
++	/*
++	 * The heap/zone layout only works if the zone claim stays inside the
++	 * 32G c_slot packing window; print the large claims so a misplaced
++	 * one is visible on the panel before zone_init() trips over it.
++	 */
++	for (uint32_t i = 0; i < kmem_claim_count; i++) {
++		struct kmem_range_startup_spec sp = kmem_claims[i];
++		extern void dandelion_trace_mark(const char *);
++		char buf[128];
++
++		if (sp.kc_size < (1ULL << 30)) {
++			continue;
++		}
++		snprintf(buf, sizeof(buf), "[dl] claim %s 0x%llx +0x%llx\n",
++		    sp.kc_name, (uint64_t)sp.kc_range->min_address,
++		    (uint64_t)sp.kc_size);
++		dandelion_trace_mark(buf);
++	}
++#endif
++
+ 	/*
+ 	 * We have settled on the ranges, now create temporary entries for the
+ 	 * claims
+@@ -3624,6 +3671,24 @@ kmem_scramble_ranges(void)
+ 			panic("kmem_range_init: vm_map_find_space failing for claim %s",
+ 			    sp.kc_name);
+ 		}
++#if defined(DANDELION)
++		/*
++		 * The temporary entry stands in for the claim's range until the
++		 * owner replaces it with VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE.
++		 * ANYWHERE is allowed to move the entry, and then the owner's
++		 * fixed-range overwrite finds a hole instead of its claim: the
++		 * failure surfaces much later as a vm_map_delete() gap panic.
++		 * Fail here instead, where the claim name is still in scope.
++		 */
++		if (entry->vme_start != sp.kc_range->min_address) {
++			panic("kmem_range_init: claim %s range 0x%llx..0x%llx "
++			    "but entry 0x%llx..0x%llx",
++			    sp.kc_name, (uint64_t)sp.kc_range->min_address,
++			    (uint64_t)sp.kc_range->max_address,
++			    (uint64_t)entry->vme_start,
++			    (uint64_t)entry->vme_end);
++		}
++#endif
+ 		vm_object_reference(kernel_object);
+ 		VME_OBJECT_SET(entry, kernel_object, false, 0);
+ 		VME_OFFSET_SET(entry, entry->vme_start);
 diff --git a/osfmk/vm/vm_map.c b/osfmk/vm/vm_map.c
 index e5a6f9f..68702c7 100644
 --- a/osfmk/vm/vm_map.c
