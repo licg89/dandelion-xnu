@@ -1,8 +1,8 @@
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
-index 3ad743f..1f72b7f 100644
+index 3ad743f..def362e 100644
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
-@@ -1,177 +1,303 @@
+@@ -1,177 +1,302 @@
  /*
   * Copyright (c) 2021 Apple Inc. All rights reserved.
 + *
@@ -52,12 +52,11 @@ index 3ad743f..1f72b7f 100644
 +#include <pexpert/arm64/dandelion_gic.h>
 +
 +/*
-+ * This file reports through printf(), not kprintf(): kprintf() is compiled
-+ * out on this build (disable_serial_output is set because the debug= boot
-+ * argument does not carry DB_KPRT), while printf() still reaches the panel
-+ * and the eMMC log.
++ * The late timer bring-up below reports through printf(), not kprintf():
++ * kprintf() is compiled out on this build (disable_serial_output is set
++ * because the debug= boot argument does not carry DB_KPRT), while printf()
++ * still reaches the panel and the eMMC log.
 + */
-+extern int printf(const char *fmt, ...);
 +
 +
 +/* Exported for the late-boot diagnostics in IOPlatformExpert.cpp. */
