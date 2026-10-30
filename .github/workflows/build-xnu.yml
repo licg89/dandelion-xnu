@@ -36,7 +36,12 @@ env:
 
 jobs:
   build:
-    runs-on: macos-14
+    # macos-14 is being retired (brownouts from 2026-10, removed 2026-11-02), and a
+    # brownout cancels jobs while they sit in the queue:
+    #   "This job failed because of a scheduled macOS 14 runner image brownout."
+    # macos-15 is the current arm64 image and carries the same Xcode toolchain for
+    # this build; see https://github.com/actions/runner-images/issues/13518.
+    runs-on: macos-15
     timeout-minutes: 240
 
     env:
