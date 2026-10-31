@@ -44,9 +44,19 @@ panic(cpu 0 caller ...): Kernel data abort. at pc 0xfffffff007841980, lr 0xfffff
 ### 下一步
 
 1. **`devfs_kernel_mount` 的空指针**。`far=0x30` 说明基址为 0 的对象上取偏移 0x30 的字段。
-   候选：`devfs_mount()` 里依赖 `rootvnode`/`vfs_context` 的字段、或 devfs 的 `vfc_vfsops`
-   在配置里没有 `devfs` 的 `vfs_init` 调用。先用符号表定位 `pc=0xfffffff007841980`
-   （`tools/macho_sym.py` 可以查 `mach_kernel` 的符号），再决定修哪里。
+   已用 `tools/macho_sym.py` 把三个地址解析出来：
+
+   | 日志里的值 | 符号 |
+   |---|---|
+   | `pc 0xfffffff007841980` | `_SHA256_Init+0x10` |
+   | `lr 0xfffffff007322d74` | `_vm_kernel_addrhash_internal+0x6c` |
+   | `caller 0xfffffff00797d8e0` | `_sleh_synchronous_sp1+0x0`（异常入口） |
+
+   所以不是 devfs 自己炸：是挂载路径里某处调 `vm_kernel_addrhash()` 算 SHA-256，
+   而 `SHA256_Init` 拿到的上下文指针是 0（`0x30` 正是 SHA-256 上下文里某个状态字段的偏移）。
+   先查 `vm_kernel_addrhash()` 的调用者（`grep -rn vm_kernel_addrhash osfmk bsd`）为什么
+   这时候需要哈希，再确认 `SHA256_Init` 在这个构建里是不是桩实现
+   （`libkern/crypto/` 下被 `non-apple-crypto-rand.patch` 动过，corecrypto 的 sha2 是否真被链接）。
 2. devfs 之后是 `load_init_program()`：它要从根设备执行 `/sbin/launchd`。mockfs 的
    file node 现在指向 4 KiB 零页（挂载够用、执行不够），需要换成真正的 arm64 Mach-O。
 3. 之后再往上是用户态；**注意这条路到不了 iOS**（见 `docs/PROGRESS.md` 最后一节）。
