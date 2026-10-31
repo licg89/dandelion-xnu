@@ -4,7 +4,35 @@
 
 ---
 
-## 0.-14 2026-11-01 00:5x（最新）：QEMU 现在与手机跑到**同一行**，而且状态全是干净的
+## 0.-15 2026-11-01 01:1x（最新）：破坏窗口收窄到「根挂载成功之后、bsd_init done 之前」
+
+三轮 QEMU 连跑（`tools/qemu/loop.sh`，日志 `tools/qemu/out/loop_*.log`）：
+
+| 轮 | mockfs 挂载 | 落点 |
+|---|---|---|
+| 1 | `rvalue=0`（成功） | `panic: NULL ni_vp in lookup_handle_found_vnode @vfs_lookup.c:811`（devfs 挂载中） |
+| 2 | `rvalue=0`（成功） | `data abort pc IORegistryEntry::copyChildEntry+0x54`，**x0 = mockfs 的 mount 指针** |
+
+第 2 轮特别说明问题：`copyChildEntry` 的 `this`（x0）是 **mockfs 的 mount 指针**
+`0xfffffff9d8229000`，也就是某个 IORegistry 对象的位置上被写进了别的指针 ——
+这正是"对象被释放后其内存被另一类对象复用"的典型形状。
+
+**结论：破坏发生在 `vfs_mountroot -> 0` 之后、`bsd_init: done` 之前的那一段**
+（platform expert `configure()` + `devfs_kernel_mount`）。范围已经从"整个启动"缩到
+两个函数之间。
+
+### 下一步
+
+1. 在这一段里逐函数加 `printf` 标记（`IOPlatformExpert::configure` 每一步、
+   `devfs_kernel_mount` 每一步），把窗口再切一次；
+2. 或者用 gdb：`hbreak` 在 `_mockfs_mountroot` 返回处，从探针打印的地址读到
+   `mnt_data`，再对 `mnt_data->mockfs_root` 设 watchpoint；
+3. 第 2 轮的 `x0 = mount 指针` 还提示：**某个 IORegistry 对象被 mockfs 的 mount 覆盖**，
+   值得在 `IOPlatformExpert::configure` 里检查它拿到的 provider。
+
+---
+
+## 0.-14 2026-11-01 00:5x：QEMU 现在与手机跑到**同一行**，而且状态全是干净的
 
 最新一轮（971ef07，串口日志 out/ser7.log）：
 
