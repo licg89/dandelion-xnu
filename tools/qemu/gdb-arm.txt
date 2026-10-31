@@ -1,0 +1,26 @@
+# Stage 1: arm the conditional hardware breakpoint and let the guest go.
+#
+# gdb 17's CLI is asynchronous, so `continue` in a batch script returns at once;
+# this file therefore only arms and leaves.  QEMU keeps the guest running, the
+# breakpoint stops it when lck_mtx_lock() is finally called with a NULL mutex, and
+# tools/qemu/gdb-inspect.txt (stage 2) reads the state from a fresh connection.
+#
+# usage:
+#   tools/qemu/run.sh --gdb &                     # -s -S
+#   gdb-multiarch -x tools/qemu/gdb-arm.txt       # arm, leave
+#   sleep 40
+#   gdb-multiarch -x tools/qemu/gdb-inspect.txt   # read the hit
+
+set pagination off
+set confirm off
+
+target remote :1234
+
+# _lck_mtx_lock entry: 0xfffffff00727171c is _lck_mtx_lock+0x34 in this artifact.
+hbreak *0xfffffff0072716e8 if $x0 == 0
+
+continue
+
+# the guest runs on without us; detach so the next connection can attach
+detach
+quit

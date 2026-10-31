@@ -1,0 +1,67 @@
+diff --git a/bsd/miscfs/devfs/devfs_vfsops.c b/bsd/miscfs/devfs/devfs_vfsops.c
+index 2b208f8..ad8d063 100644
+--- a/bsd/miscfs/devfs/devfs_vfsops.c
++++ b/bsd/miscfs/devfs/devfs_vfsops.c
+@@ -168,9 +168,28 @@ devfs_init(__unused struct vfsconf *vfsp)
+  * and the root filesystem are available.
+  */
+ /*proto*/
++#if defined(DANDELION)
++/* devfs mount-path ring markers - see the commit message / docs/NEXT-SESSION.md. */
++extern void dandelion_trace_mark(const char *);
++extern int snprintf(char *, size_t, const char *, ...);
++
++static void
++dl_devfs_mark(const char *what, const void *a, const void *b)
++{
++	char _buf[112];
++
++	snprintf(_buf, sizeof(_buf), "[dl] devfs %s a=%p b=%p\n", what, a, b);
++	dandelion_trace_mark(_buf);
++}
++#define DL_DEVFS(what, a, b)  dl_devfs_mark((what), (const void *)(a), (const void *)(b))
++#else
++#define DL_DEVFS(what, a, b)  do { } while (0)
++#endif
++
+ int
+ devfs_mount(struct mount *mp, __unused vnode_t devvp, __unused user_addr_t data, vfs_context_t ctx)
+ {
++	DL_DEVFS("mount_in", mp, mp ? (const void *)mp->mnt_data : 0);
+ 	struct devfsmount *devfs_mp_p;  /* devfs specific mount info */
+ 	int error;
+ 
+@@ -181,8 +200,10 @@ devfs_mount(struct mount *mp, __unused vnode_t devvp, __unused user_addr_t data,
+ 		return 0;
+ 	}
+ 
++	DL_DEVFS("before_setlocklocal", mp, 0);
+ 	/* Advisory locking should be handled at the VFS layer */
+ 	vfs_setlocklocal(mp);
++	DL_DEVFS("after_setlocklocal", mp, 0);
+ 
+ 	/*-
+ 	 *  Well, it's not an update, it's a real mount request.
+@@ -190,8 +211,10 @@ devfs_mount(struct mount *mp, __unused vnode_t devvp, __unused user_addr_t data,
+ 	 * HERE we should check to see if we are already mounted here.
+ 	 */
+ 
++	DL_DEVFS("before_kalloc", 0, 0);
+ 	devfs_mp_p = kalloc_type(struct devfsmount,
+ 	    Z_WAITOK | Z_ZERO | Z_NOFAIL);
++	DL_DEVFS("after_kalloc", devfs_mp_p, mp);
+ 	devfs_mp_p->mount = mp;
+ 
+ 	/*-
+@@ -202,8 +225,11 @@ devfs_mount(struct mount *mp, __unused vnode_t devvp, __unused user_addr_t data,
+ 	mp->mnt_vfsstat.f_fsid.val[1] = vfs_typenum(mp);
+ 	mp->mnt_flag |= MNT_LOCAL;
+ 
++	DL_DEVFS("before_devfs_lock", devfs_mp_p, 0);
+ 	DEVFS_LOCK();
++	DL_DEVFS("after_devfs_lock", devfs_mp_p, 0);
+ 	error = dev_dup_plane(devfs_mp_p);
++	DL_DEVFS("after_dup_plane", devfs_mp_p, (const void *)(long)error);
+ 	DEVFS_UNLOCK();
+ 
+ 	if (error) {

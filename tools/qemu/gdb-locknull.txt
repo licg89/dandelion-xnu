@@ -1,0 +1,44 @@
+# Catch the specific lck_mtx_lock() call that locks a NULL mutex.
+#
+# The QEMU boot panics in devfs_kernel_mount at _lck_mtx_lock+0x34 with far=0x8,
+# i.e. a mutex pointer of 0 plus the offset of the lock word.  lck_mtx_lock is
+# called thousands of times before that, so the breakpoint is conditional:
+#
+#     hbreak *(_lck_mtx_lock + 0x0) if $x0 == 0
+#
+# hbreak, not break: the shim copies the kernel image over the RAM it loaded, so a
+# software breakpoint written before that copy is erased (that cost an hour once).
+#
+# maint set target-async off, because gdb 17 runs the CLI asynchronously by
+# default: in a batch script `continue` then returns immediately and every later
+# command reports "target is running".
+#
+# usage:
+#   tools/qemu/run.sh --gdb &            # -s -S, waiting for a debugger
+#   gdb-multiarch -x tools/qemu/gdb-locknull.txt
+
+set pagination off
+set confirm off
+set disassemble-next-line off
+maint set target-async off
+
+target remote :1234
+
+# _lck_mtx_lock entry.  macho_sym.py gives the same address from the artifact:
+#   0xfffffff00727171c  _lck_mtx_lock+0x34   (the faulting load)
+hbreak *0xfffffff0072716e8 if $x0 == 0
+
+continue
+
+printf "\n=== hit: lck_mtx_lock(NULL) ===\n"
+printf "pc=%p lr=%p sp=%p\n", $pc, $lr, $sp
+printf "x0(mutex)=%p x1=%p x2=%p x3=%p\n", $x0, $x1, $x2, $x3
+printf "x19=%p x20=%p x21=%p x22=%p\n", $x19, $x20, $x21, $x22
+x/8i $pc-16
+printf "\n=== backtrace (addresses; symbolise with tools/macho_sym.py) ===\n"
+bt
+printf "\n=== stack words at sp ===\n"
+x/20gx $sp
+
+detach
+quit

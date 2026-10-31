@@ -1,0 +1,22 @@
+# Stage 2: read the state left by stage 1 (gdb-arm.txt).
+#
+# Connect to a guest that is already stopped at the conditional breakpoint and dump
+# what the crash report could not: the caller chain.  Symbolise every address here
+# with tools/macho_sym.py against Resources/UniXNU/mach_kernel.
+
+set pagination off
+set confirm off
+
+target remote :1234
+
+printf "=== pc/lr/sp ===\n"
+info registers pc lr sp x0 x1 x2 x3 x19 x20 x21 x22
+printf "\n=== code around pc ===\n"
+x/10i $pc-24
+printf "\n=== backtrace (addresses only) ===\n"
+bt
+printf "\n=== stack ===\n"
+x/24gx $sp
+
+detach
+quit
