@@ -4,7 +4,56 @@
 
 ---
 
-## 0.-4 2026-10-31 01:3x（最新）：tick 稳定 100 Hz 已证实；探针跑完了；剩下的是"第一个 tick 之后线程不再被调度"
+## 0.-5 2026-10-31 11:3x（最新）：**根文件系统挂上了**，`VFS_ROOT` 也过了；现在卡在 `devfs_kernel_mount`
+
+**一句话：这条链第一次有了可用的根文件系统 —— mockfs 从 DarwinBoot 交接的 RAMDisk
+挂上 md0，`vfs_mountroot()` 返回 0，`[dl] root mount: success`，然后 `VFS_ROOT` 通过。
+新的挡路点是紧接着的 `devfs_kernel_mount()` 数据访问异常。**
+
+提交：`24f233c`（`zzz10`）、`8d3a1dc`（`zzz9`）、`e71706a`（`zzz5` + macos-15 CI 迁移）。
+日志：`docs/logs/kernel-log-2026-10-31-vfs-root-devfs.txt`。
+
+### 关键日志（原文）
+
+```
+[dl] timerprobe: busy-wait spans=18656319 elapsed=2600000 ticks=2600000 freq=13000000
+[dl] IOFindBSDRoot: IOBSD resource absent after 200 ms (polls=1000000)
+Added memory device md0/rmd0 (01000000/0D000000) at FFFFFFF007F07000 for 0000000000001000
+BSD root: md0, major 1, minor 0
+[dl] setRootMedia: no IOBlockStorageDriver class (no IOStorageFamily kext), treating the root as non-storage
+bsd_init: vfs_mountroot
+mockfs_mountroot: root device 4096 bytes
+[dl] vfs_mountroot -> 0 in 89169 ticks (13000000 = 1 s)
+[dl] root mount: success
+DANDELION: no platform expert for secure BSD root; root verification unsupported on this port
+bsd_init: calling VFS_ROOT
+bsd_init: calling devfs_kernel_mount
+panic(cpu 0 caller ...): Kernel data abort. at pc 0xfffffff007841980, lr 0xfffffff007322d74
+   far: 0x0000000000000030   (null pointer + 0x30)
+```
+
+| 读数 | 结论 |
+|---|---|
+| `elapsed=2600000 ticks` = 200 ms | `zzz5`（写入器加中断保护）之后，**tick 运行下线程调度完全正常**，探针跑完 |
+| `Added memory device md0/rmd0 … for 0x1000` | ADT 的 `RAMDisk` 占位 + `initrd` 交接成功，4096 字节正是 `kernel.macho.rd` |
+| `mockfs_mountroot: root device 4096 bytes` | `zzz2` 的 `si_devsize` 填充生效 |
+| `vfs_mountroot -> 0` / `root mount: success` | **根文件系统挂载成功** —— 本移植第一次 |
+| `calling VFS_ROOT` 之后还有输出 | `VFS_ROOT` 成功，拿到了 `/` 的 vnode |
+| `devfs_kernel_mount` 后 data abort，`far=0x30` | 新挡路点：`kernel_mount()`/`devfs_mount()` 里空指针 + 0x30 |
+
+### 下一步
+
+1. **`devfs_kernel_mount` 的空指针**。`far=0x30` 说明基址为 0 的对象上取偏移 0x30 的字段。
+   候选：`devfs_mount()` 里依赖 `rootvnode`/`vfs_context` 的字段、或 devfs 的 `vfc_vfsops`
+   在配置里没有 `devfs` 的 `vfs_init` 调用。先用符号表定位 `pc=0xfffffff007841980`
+   （`tools/macho_sym.py` 可以查 `mach_kernel` 的符号），再决定修哪里。
+2. devfs 之后是 `load_init_program()`：它要从根设备执行 `/sbin/launchd`。mockfs 的
+   file node 现在指向 4 KiB 零页（挂载够用、执行不够），需要换成真正的 arm64 Mach-O。
+3. 之后再往上是用户态；**注意这条路到不了 iOS**（见 `docs/PROGRESS.md` 最后一节）。
+
+---
+
+## 0.-4 2026-10-31 01:3x：tick 稳定 100 Hz 已证实；探针跑完了；剩下的是"第一个 tick 之后线程不再被调度"
 
 **一句话：定时器这条链彻底通了 —— 中断稳定 10 ms 一次、`rtclock_intr()` 每次都完整跑完、
 GIC 探针也跑到了最后一行。新的挡路点不再是中断，而是内核在收到真实 tick 之后
