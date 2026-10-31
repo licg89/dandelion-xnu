@@ -16,9 +16,12 @@
 | **定时器中断送达** | ✅ 2026-10-31 | `irq N intid=30`，INTID 30 = EL1 非安全物理定时器 PPI |
 | **tick 稳定运行** | ✅ 2026-10-31 | `gap=130012 ticks ÷ 13 MHz = 10.0009 ms`，`irq 50/100/150` 一致 → 100 Hz |
 | `rtclock_intr()` / `timer_intr()` | ✅ 2026-10-31 | 每次中断 `rtc 1..4` 四个标记齐全 |
-| `bsd_init()` | 🟡 进行中 | 探针跑到 `done`；`setconf()` 返回过；根挂载循环进入过；现在卡在"第一个 tick 之后线程不再被调度" |
-| 根文件系统挂载 | ❌ 未开始 | mockfs 已编进内核（首次），还差 ADT 的 RAMDisk 占位 + initrd + `rd=md0` |
-| `load_init_program()` / launchd | ❌ | 依赖上一行 |
+| `bsd_init()` | ✅ 2026-10-31 | 探针跑完、`setconf()` 返回、`while` 循环进入并退到挂载后的代码 |
+| 根设备出现（RAMDisk → md0） | ✅ 2026-10-31 | `Added memory device md0/rmd0 … for 0x1000`、`BSD root: md0, major 1, minor 0` |
+| 根文件系统挂载（mockfs） | ✅ 2026-10-31 | `mockfs_mountroot: root device 4096 bytes`、`vfs_mountroot -> 0`、`[dl] root mount: success` |
+| `VFS_ROOT`（拿到 `/` 的 vnode） | ✅ 2026-10-31 | 之后仍有输出：`bsd_init: calling devfs_kernel_mount` |
+| `devfs_kernel_mount` | ❌ **当前卡点** | data abort，`far=0x30`，`pc=_SHA256_Init+0x10`，`lr=_vm_kernel_addrhash_internal+0x6c` |
+| `load_init_program()` / launchd | ❌ | 依赖上一行；还需把 mockfs 的 file node 换成真正的 arm64 Mach-O |
 
 ## 二、2026-10-30 晚 → 31 凌晨这一轮解决了什么
 
