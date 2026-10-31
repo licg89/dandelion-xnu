@@ -1,0 +1,27 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 4576a22..dfd67fa 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -536,11 +536,22 @@ exec_save_path(struct image_params *imgp, user_addr_t path, int seg, const char
+ 	size_t len;
+ 	char *kpath;
+ 
++#if defined(DANDELION)
++	printf("[dl] save_path in strings=%p strspace=%zu path=%p seg=%d\n",
++	    (void *)imgp->ip_strings, (size_t)imgp->ip_strspace,
++	    (void *)(uintptr_t)path, seg);
++#endif
+ 	// imgp->ip_strings can come out of a cache, so we need to obliterate the
+ 	// old path.
+ 	memset(imgp->ip_strings, '\0', strlen(EXECUTABLE_KEY) + MAXPATHLEN);
++#if defined(DANDELION)
++	printf("[dl] save_path memset done\n");
++#endif
+ 
+ 	len = MIN(MAXPATHLEN, imgp->ip_strspace);
++#if defined(DANDELION)
++	printf("[dl] save_path len=%zu\n", len);
++#endif
+ 
+ 	switch (seg) {
+ 	case UIO_USERSPACE32:
