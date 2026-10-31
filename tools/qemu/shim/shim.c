@@ -430,9 +430,35 @@ void shim_main(void)
 	unsigned char seed[64];
 	seed_from_counter(seed, sizeof(seed), timebase);
 
+#ifdef HAVE_ADT_BLOB
+	/*
+	 * Built with ADT_BLOB: hand the kernel the phone's own device tree instead of the
+	 * synthetic one.  See build.sh - the point is to take the synthetic tree's shape
+	 * out of the picture when something crashes inside IOKit.
+	 */
+	extern const unsigned char _binary_out_adt_blob_bin_start[];
+	extern const unsigned char _binary_out_adt_blob_bin_end[];
+	size_t blob_size = (size_t)(_binary_out_adt_blob_bin_end -
+	    _binary_out_adt_blob_bin_start);
+	size_t adt_size;
+
+	if (blob_size > XNU_PAGE) {
+		puts_("SHIM: ADT blob larger than one page\n");
+		return;
+	}
+	for (size_t i = 0; i < blob_size; i++) {
+		((unsigned char *)(uintptr_t)adt_pa)[i] =
+		    _binary_out_adt_blob_bin_start[i];
+	}
+	adt_size = blob_size;
+	puts_("SHIM: ADT from the embedded phone blob, ");
+	putdec_(adt_size);
+	puts_(" bytes\n");
+#else
 	size_t adt_size = qemu_make_adt((void *)(uintptr_t)adt_pa, XNU_PAGE,
 	    PHYS_BASE, MEM_SIZE, kernel_end_pa, timebase, cpus,
 	    RAMDISK_PA, (uint32_t)RAMDISK_SIZE, seed, sizeof(seed));
+#endif
 	if (!adt_size) {
 		puts_("SHIM: ADT did not fit in one page\n");
 		return;
