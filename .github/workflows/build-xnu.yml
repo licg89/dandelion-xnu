@@ -20,6 +20,14 @@ on:
         # with this input rather than an options line in MASTER.arm64.dandelion.
         options: [DEVELOPMENT, RELEASE, KASAN]
         default: DEVELOPMENT
+      xcode:
+        # KASAN on arm64 in this tree is the HWASAN variant and needs a clang that
+        # accepts -fsanitize=kernel-hwaddress; the 16.4 toolchain rejects it, so the
+        # sanitizer build has to pick a newer Xcode explicitly.
+        description: "Xcode version to build with"
+        type: choice
+        options: ["16.4", "26.3", "26.2", "26.1", "26.0", newest]
+        default: "16.4"
   push:
     branches: [main]
     paths:
@@ -59,19 +67,32 @@ jobs:
 
       # Pick one Xcode explicitly instead of taking whatever the image defaults to,
       # so a toolchain change shows up as a one-line difference in this file rather
-      # than as a mysterious compile error.  Xcode 16.4 is the version whose clang 17
-      # produced the two failures zzz7/zzz8 fix; the list is printed either way so a
-      # future image change is diagnosable from the log.
-      - name: Select the Xcode this tree is verified against
+      # than as a mysterious compile error.  The default (16.4) is the version whose
+      # clang 17 produced the two failures zzz7/zzz8 fix; the KASAN profile needs a
+      # newer one because arm64 KASAN in this tree is HWASAN.  The list is printed
+      # either way so a future image change is diagnosable from the log.
+      - name: Select the Xcode this build asks for
         run: |
           ls -d /Applications/Xcode*.app || true
-          for candidate in Xcode_16.4 Xcode_16.3 Xcode_16.2 Xcode_16.1 Xcode_16.0 Xcode_16; do
+          want="${{ inputs.xcode || '16.4' }}"
+          case "$want" in
+            16.4) candidates="Xcode_16.4" ;;
+            26.*) candidates="Xcode_$want" ;;
+            newest) candidates="Xcode_26.3 Xcode_26.2 Xcode_26.1 Xcode_26.0" ;;
+            *) candidates="Xcode_$want" ;;
+          esac
+          chosen=""
+          for candidate in $candidates; do
             if [ -d "/Applications/$candidate.app" ]; then
               echo "selecting $candidate"
               sudo xcode-select -s "/Applications/$candidate.app"
+              chosen="$candidate"
               break
             fi
           done
+          if [ -z "$chosen" ]; then
+            echo "requested Xcode ($want) not present; keeping the image default"
+          fi
           xcode-select -p
           clang --version
 
