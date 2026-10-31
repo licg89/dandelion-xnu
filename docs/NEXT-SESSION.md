@@ -4,7 +4,41 @@
 
 ---
 
-## 0.-16 2026-11-01 02:0x（最新）：**根因找到并修复** —— mockfs 的 fsnode 分配少算了 48 字节
+## 0.-17 2026-11-01 02:2x（最新）：手机上验证——**破坏消失，0 panic**，卡点前移到 `exec_save_path`
+
+`27fe0da`（fsnode 分配修复）刷进手机后，第一次出现**完全没有 panic 的完整启动**：
+
+```
+[dl] mockfs create root -> 0xfffffff33906a980
+[dl] mockfs create dev  -> 0xfffffff33906a200
+[dl] mockfs create file -> 0xfffffff33906a340
+[dl] mockfs mountroot done rvalue=0 …            <- ENOMEM 不再出现
+[dl] mockfs_root mp=… root_fsnode=0xfffffff33906a980
+[dl] root mount: success
+… bsd_init: done
+[dl] bsdinit_task: enter / ux_handler_setup / mac_cred_label / vm_init_before_launchd
+[dl] bsdinit_task: xnupost skipped
+bsd_init: bsd_do_post - done
+[dl] bsdinit_task: load_init_program
+load_init_program: attempting to load /usr/appleinternal/sbin/launchd.development
+[dl] exec at_path=43 / execve_in=0 / execargs_alloc_in=0 / execargs_alloc=0
+<结束，panic 计数 = 0>
+```
+
+- **`panic` 计数 0**：追了一整晚的"会漂移的破坏"确实由那一行分配错误引起；
+- `rvalue=0`（之前失败轮次是 `12` = ENOMEM，因为 root 的 child 槽位已是垃圾）；
+- 停机点从"随机崩"变成**确定的一个位置**：`__mac_execve` 里
+  `execargs_alloc` 之后、`ndp`/`namei` 之前 —— 也就是 **`exec_save_path()`**。
+
+### 下一步（这是正常的移植问题，不再是内存破坏）
+
+`exec_save_path()` 会把 `ip_user_fname` 拷进 `excpath`。`load_init_program` 发起的是
+**内核侧** exec，路径不是用户态指针，所以这里的行为值得单独看：加一个标记、或在
+`load_init_program` 里改走 `UIO_SYSSPACE` 路径。这属于常规适配，不是 bug  hunt。
+
+---
+
+## 0.-16 2026-11-01 02:0x：**根因找到并修复** —— mockfs 的 fsnode 分配少算了 48 字节
 
 追了一整晚的"会漂移的内存破坏"，根因是一行分配代码：
 
