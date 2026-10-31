@@ -4,7 +4,65 @@
 
 ---
 
-## 0.-9 2026-10-31 16:1x（最新）：怀疑指向"同一物理页被两种缓存属性映射"，并给出验证步骤
+## 0.-10 2026-10-31 18:1x（最新）：整条 exec 路径都测出来了；最后的停机点在第二个候选路径的 execve 里
+
+`65cdff1`（UAF 只记录不改写）这一轮拿到了**至今最完整的启动→exec 轨迹**：
+
+```
+bsd_init: calling VFS_ROOT
+bsd_init: calling devfs_kernel_mount
+[dl] mockfs lookup_in dev a=0 b=0            <- devfs 的 lookup 正常
+[dl] mockfs fsnode_vnode - a=0               <- vnode 创建正常
+bsd_init: calling siginit … mountroot_post_hook
+bsd_init: done
+VM Swap Subsystem is ON
+[dl] mockfs lookup_in private/var/vm/swapfile0 a=1 b=0
+[dl] mockfs lookup_out - a=2                 <- 没有 swap 文件，正常 ENOENT
+[dl] bsdinit_task: enter / ux_handler_setup / mac_cred_label / vm_init_before_launchd
+[dl] bsdinit_task: xnupost skipped
+bsd_init: bsd_do_post - done
+[dl] bsdinit_task: load_init_program
+load_init_program: attempting to load /usr/appleinternal/sbin/launchd.development
+[dl] exec at_path=43 / execve_in=0 / execargs_alloc_in=0 / execargs_alloc=0 / ndp=1
+[dl] exec namei_in=0
+[dl] mockfs lookup_in usr/appleinternal/sbin/launchd.development a=0 b=0
+[dl] mockfs lookup_out - a=2                 <- ENOENT，正常
+[dl] exec namei=2 / execve_ret=2
+load_init_program: attempting to load /sbin/launchd     <- 我们的 Mach-O 所在的路径
+[dl] exec at_path=13
+[dl] exec execve_in=0
+<结束>                                        <- 第二个 execve 连 execargs_alloc 都没到
+```
+
+### 这一轮确认的
+
+1. **mockfs 的 lookup / vnode 创建 / getattr 全部正常**（`dev` 与不存在的 swap 文件两条路径都给出了正确结果），
+   所以上一轮怀疑的 mockfs lookup 不是凶手 —— 已排除。
+2. **`bsdinit_task` 六步全过**，`load_init_program` 正常被调用，第一个候选路径干净地 ENOENT 并继续下一个。
+3. 停机点：`/sbin/launchd` 的 `execve` 入口之后、`execargs_alloc` 之前 —— 和第一个候选走的是同一段代码，
+   所以这仍然是**同一个随机破坏**（这一轮 `zalloc:` 记录 0 次，说明 UAF 检查这次没触发，
+   破坏落在了别处）。
+
+### 于是现在的结论很干脆
+
+- 功能链路：**内核完整启动 → 根文件系统挂载 → devfs → `load_init_program` → execve 进入**，全部实测通过。
+- 唯一挡路：**一个会漂移的内存破坏**，它让每次启动停在略不同的位置。不再是任何"功能没实现"的问题。
+- 定位它的工具要求：KASAN（这棵树 arm64 上需要支持 `-fsanitize=kernel-hwaddress` 的 clang，
+  clang 17 不行；Xcode 26 值得一试），或换一种运行时校验（我们自己的 zone 校验器只用
+  `AT`/边界检查是不够的，需要 shadow memory）。
+
+### 建议的下一步（下一台机器/下一个会话）
+
+1. 把工作流的分发改成 `kernel=KASAN` 并**把 Xcode 选成 26.x**（已加进分发选项），看 KASAN 能不能编起来并给出写者栈。
+2. 若 KASAN 仍不可用：`shared.kalloc.16` 是 16 字节的 `kalloc_type` 对象；在 `zalloc` 的
+   分配侧加"记录最近 N 次 free 的 zone+地址"的环形缓冲，命中时打印最近一次 free 的调用者
+   （`ZALLOC_ENABLE_LOGGING` 已开，`zlog` 里可能有现成信息）。
+3. 破坏修掉之后再回来：`/sbin/launchd` 的 execve 应该会走到 `exec_mach_imgact` →
+   `load_machfile` → `parse_pass`，那几处标记（`zzz12`）已经在等它了。
+
+---
+
+## 0.-9 2026-10-31 16:1x：怀疑指向"同一物理页被两种缓存属性映射"，并给出验证步骤
 
 `901d0e1`（`bsdinit_task` 六步标记 + 跳过 XNUPOST）这一次启动**连 `bsd_init: done` 都没到**：
 
@@ -18,9 +76,9 @@ panic(cpu 0 caller …): Kernel data abort
 加上之前几次，崩溃点已经横跨 mockfs 的四个不同函数（`mockfs_root`、`mockfs_mountroot`、
 `mockfs_fsnode_destroy`、`mockfs_fsnode_adopt`）、zalloc 的 UAF 检查，而且 `far` 有时是
 小整数（`0x4000`、`0x10`、`0x30`）有时是"看起来像内核指针但没映射"的地址。
-**这不是某一个函数的 bug，是堆内容被随机改坏。**
+**这不是某一个函数的 bug，是堆内容被随机改坏。**（后面的实测已排除缓存属性别名，见 §0.-10）
 
-### 目前最可信的机制：缓存属性别名
+### 已证伪：缓存属性别名（2026-10-31 17:0x 实测）
 
 这个移植在 `arm_vm_init` 之后保留了 bootstrap 的 **V=P 恒等映射**
 （`DANDELION_KEEP_IDENTITY_MAP`，见 `docs/NEXT-SESSION.md` §0.1 与
