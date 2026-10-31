@@ -43,7 +43,7 @@ import gdb
 
 # --- knobs -----------------------------------------------------------------
 SIZE_CLASS = int(os.environ.get("WATCH_SIZE", "16"))
-MAX_WATCH = int(os.environ.get("WATCH_MAX", "3"))
+MAX_WATCH = int(os.environ.get("WATCH_MAX", "2"))
 ARM_AFTER = os.environ.get("WATCH_AFTER", "bsd_init")   # "" arms immediately
 LOG = os.environ.get("WATCH_LOG", "tools/qemu/out/writewatch.log")
 
@@ -71,7 +71,10 @@ def arm_hook():
     """
     class Arm(gdb.Breakpoint):
         def __init__(self, where):
-            super().__init__(where, internal=True)
+            # Hardware, not software: the shim copies mach_kernel into place
+            # after QEMU starts, so a software breakpoint written into RAM
+            # before that is overwritten by the copy and never fires.
+            super().__init__(where, gdb.BP_HARDWARE_BREAKPOINT, internal=True)
 
         def stop(self):
             global armed
@@ -122,7 +125,7 @@ class FreeHook(gdb.Breakpoint):
     """kfree_ext: keep the element, let the free finish, then watch it."""
 
     def __init__(self):
-        super().__init__("kfree_ext", internal=True)
+        super().__init__("kfree_ext", gdb.BP_HARDWARE_BREAKPOINT, internal=True)
 
     def stop(self):
         if not armed:

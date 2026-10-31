@@ -187,18 +187,25 @@ expert.  The tick probe is real: `elapsed=12655387` against `ticks=12500000` is
 200 ms at 62.5 MHz.
 
 **Reached, and this is the point of the exercise:** with `IOSecureBSDRoot`
-neutralised as well (see below), the boot walks on past `VFS_ROOT` and the
-freed-element detector fires -- the phone's corruption, in QEMU:
+neutralised as well (see below), the boot walks on past `VFS_ROOT`, `devfs`,
+`siginit` and `bsd_autoconf` to the same place the phone reaches -- and the
+freed-element detector fires on the way:
 
 ```
-[dl] root mount: success
-[dl] zalloc: freed element was modified; re-zeroing and continuing (see docs/NEXT-SESSION.md)
+bsd_init: done
+VM Swap Subsystem is ON
+[dl] zalloc: freed element was modified; ... (see docs/NEXT-SESSION.md)
 ```
 
-Note that this particular binary (today's 10:48 UTC build) still carries the
-*re-zeroing* variant of that report, and re-zeroing a 16-byte element that is
-still live can itself disturb things -- the later `zzz20` only records.  Worth
-knowing before believing the first hit.
+Two readings of that line, both worth stating: the detector ran, so the
+write-after-free happens under QEMU too; and the element is *reported*, not
+touched -- this binary is CI's 8c18d2b, which carries the log-only variant of
+`zzz20`.  (The message text in older binaries said "re-zeroing and continuing"
+even after the zeroing was removed; the wording was fixed in `da0ff13`.)
+
+After `VM Swap Subsystem is ON` the next thing bsd_init does is try to create
+a swap file, which on the phone takes 222 s of wall time before it fails and
+carries on.  Budget a QEMU run accordingly: `--seconds 780` is not excessive.
 
 ### The wait that had to be removed to get there
 
@@ -222,20 +229,32 @@ spinning: on the phone the same point goes on to `VFS_ROOT`.  The wait is
 pe = (IOPlatformExpert *) IOService::waitForMatchingService(matching, 30 * kSecondScale);
 ```
 
-On this port the platform expert does match -- its `configure` runs and prints
-`done` right before the boot goes quiet -- but the "wait until it has started"
-half never completes, so the 30 s deadline never fires and `bsd_init` sleeps
-forever.  `zzz10` already handles the *other* outcome (`pe == NULL`: print a
-line and carry on); nothing handles "never returns".
+**Why it never returns: there are no timer interrupts.**  A timed wait expires
+by being woken from `rtclock_intr()`; with no tick, no deadline ever fires --
+the same class of hang this port spent hours on on the phone (`IOSleep` et al).
+And there was no tick, because the only code that enables the redistributor's
+timer PPI is `dandelion_gic_late_init()`, which `-dl_qemu` was skipping.  Check
+it in the ring: a QEMU boot with the gate on has `[dl] regs daif=...` and the
+busy-wait probe, but no `[dl] irq ... intid=30` line at all.
 
-For a QEMU run it is enough to neutralise the function before the guest starts:
+That is fixed properly rather than worked around: `dandelion_gic_late_init()`
+now takes GICD/GICR from `/interrupt-controller` in the device tree (the same
+question `pe_init_fiq()` already asked), so on QEMU's `virt` machine it
+programs QEMU's GICv3 at `0x08000000`/`0x080a0000`, the PPI is enabled, ticks
+arrive, and `IOSecureBSDRoot()` expires on its own.  On the phone the tree says
+`0x0c000000`/`0x0c100000`, i.e. nothing changes.  Until that change is in a
+build, a QEMU run can be made to proceed by neutralising the function:
 
 ```bash
 py -3.13 tools/qemu/patchkernel.py --kernel Resources/UniXNU/mach_kernel \
-    --symbol dandelion_gic_late_init --symbol IOSecureBSDRoot --mode ret \
-    --out tools/qemu/out/mach_kernel.nogic2
-tools/qemu/run.sh --kernel tools/qemu/out/mach_kernel.nogic2 --ring
+    --symbol IOSecureBSDRoot --mode ret \
+    --out tools/qemu/out/mach_kernel.nowatch
+tools/qemu/run.sh --kernel tools/qemu/out/mach_kernel.nowatch --seconds 780 --ring
 ```
+
+but treat such a run as "no interrupts": it is the wrong environment for a
+race-shaped bug, and a failure to reproduce there must not be read as
+"device-only".
 
 That is what the run above used, and it is what carries the boot into
 `VFS_ROOT` -> `devfs_kernel_mount` and on to the freed-element report.  A real
@@ -268,13 +287,22 @@ The by-hand version, and the reasons for each step (`kfree_ext` must be
 *finished* before the watchpoint goes on, `awatch` instead of `watch` when the
 read side matters too), are in `tools/qemu/gdb.txt`.
 
-Two cautions that cost time to learn:
+Things that cost time to learn:
 
+* **use `hbreak`, never `break`, for kernel addresses.**  gdb's software
+  breakpoints are written into guest memory, and the shim copies mach_kernel
+  into place at PA `0x4D004000` *after* QEMU starts -- so a software breakpoint
+  set early is silently overwritten by the copy and never fires.  An hour went
+  on a `break bsd_init` that could not possibly work.  Hardware breakpoints are
+  address-matched and survive the copy (QEMU reports four);
 * a hit is either the bug or a legitimate reuse of the same address by the
   zone allocator; the backtrace tells you which, and `WATCH_SIZE`/`WATCH_AFTER`
   are the knobs for narrowing it;
 * one gdb client at a time.  `ringdump.py` and the interactive session both
-  want the gdbstub, so `detach` before you dump the ring.
+  want the gdbstub, so `detach` before you dump the ring;
+* an empty ring dump with `pgrep` showing both `qemu-system-aarch64` and
+  `gdb-multiarch` alive usually means gdb is still waiting for a breakpoint
+  that will never come -- check the arm point before waiting again.
 
 ## 8. Files
 
