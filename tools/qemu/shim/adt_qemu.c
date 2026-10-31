@@ -102,6 +102,7 @@ static void w_word(struct writer *w, const char *key, uint32_t val)
 size_t qemu_make_adt(void *buffer, size_t capacity,
     uint64_t phys_base, uint64_t mem_size, uint64_t kernel_end_pa,
     uint32_t timebase, uint32_t cpu_count,
+    uint64_t ramdisk_pa, uint32_t ramdisk_size,
     const unsigned char *seed, size_t seed_bytes)
 {
 	if ((seed_bytes && (!seed || seed_bytes != 64)) || (!seed_bytes && seed)) {
@@ -152,15 +153,18 @@ size_t qemu_make_adt(void *buffer, size_t capacity,
 
 	/*
 	 * /chosen/memory-map.  IOFindBSDRoot() looks for a "RAMDisk" entry by
-	 * name; two zero cells mean "no ramdisk", which is what this boot is:
-	 * the point of the QEMU run is to reach the heap corruption, not to
-	 * mount a root filesystem.
+	 * name and hands the range to md(4); two zero cells mean "no ramdisk".
+	 * With a ramdisk here and rd=md0 on the command line the QEMU boot
+	 * follows the phone's path all the way to load_init_program() and the
+	 * execve() where the heap corruption bites -- which is the whole point
+	 * of this exercise.
 	 */
 	w_node(&w, 3, 0);
 	w_text(&w, "name", "memory-map");
 	w_prop(&w, "Kernel-Dandelion", mem_range, sizeof(mem_range));
 	{
-		static const uint64_t ramdisk_slot[2] = { 0, 0 };
+		uint64_t ramdisk_slot[2] = { ramdisk_pa, ramdisk_size };
+
 		w_prop(&w, "RAMDisk", ramdisk_slot, sizeof(ramdisk_slot));
 	}
 

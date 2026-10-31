@@ -1,0 +1,112 @@
+# gdb recipe for the dandelion kernel under QEMU.
+#
+# Everything here assumes a run started by tools/qemu/run.sh, which puts
+# QEMU's gdbstub on localhost:1234 (-gdb tcp::1234).  The kernel is linked at
+# 0xFFFFFFF007004000 and the shim places it unslid at PA 0x4D004000, so a
+# symbol's address from tools/macho_sym.py is also its runtime address, and
+# its physical address is  0x4D004000 + (va - 0xFFFFFFF007004000).
+#
+# Start a run that waits for the debugger:
+#
+#     tools/qemu/run.sh --gdb                # -S: stopped at reset
+#     gdb-multiarch -x tools/qemu/gdb.txt    # then: continue
+#
+# or attach to a run that is already going:
+#
+#     tools/qemu/run.sh --seconds 600 --ring &    # -s, not -S
+#     gdb-multiarch -ex "target remote :1234"
+#
+# Two things are worth knowing before anything else:
+#
+#  * QEMU stops all CPUs when a gdb client attaches, which is why
+#    tools/qemu/ringdump.py can dump the trace ring out of a live guest.
+#    One client at a time: `detach` before running ringdump.py.
+#  * There is no inferior function call in QEMU's gdbstub, so `call` and
+#    `print some_function()` do not work.  Read memory, set breakpoints and
+#    watchpoints, write registers -- those all work.
+
+set pagination off
+set confirm off
+set disassemble-next-line off
+set print pretty on
+
+target remote :1234
+
+# ---------------------------------------------------------------------------
+# 0. Where is it, and what did it print?
+# ---------------------------------------------------------------------------
+# `info registers` shows pc/lr/sp/pstate plus the exception registers QEMU
+# keeps (esr/far), which is what a data abort panic reports in the ring.
+#
+#   (gdb) info registers
+#   (gdb) x/8i $pc-16
+#
+# The ring itself is decoded by tools/qemu/ringdump.py (detach first):
+#
+#   py -3.13 tools/qemu/ringdump.py --port 1234 --fb --registers
+
+# ---------------------------------------------------------------------------
+# 1. Breakpoints on things that only exist in a -v log
+# ---------------------------------------------------------------------------
+# kfree_ext(void *kheap_or_kt_view, void *data, vm_size_t size)
+#   x0 = heap/type view, x1 = element, x2 = size
+# zalloc_ext / zalloc: the allocation side of the same objects.
+#
+#   (gdb) break kfree_ext
+#   (gdb) break zalloc_ext
+#
+# To make a phone-only probe fail on an unpatched kernel (the same effect as
+# -dl_qemu, without a rebuild -- useful while measuring what comes next):
+#
+#   (gdb) break dandelion_gic_late_init
+#   (gdb) commands
+#   (gdb) silent
+#   (gdb) return 0
+#   (gdb) continue
+#   (gdb) end
+#
+# or, statically, tools/qemu/patchkernel.py --symbol dandelion_gic_late_init.
+
+# ---------------------------------------------------------------------------
+# 2. The watchpoint that catches the write-after-free
+# ---------------------------------------------------------------------------
+# This is the whole reason for the QEMU environment.  XNU's own check fires at
+# *allocation* time (zalloc_validate_element), long after the writer is gone;
+# a watchpoint fires on the write itself and `bt` is the writer.
+#
+# The automation is tools/qemu/writewatch.py:
+#
+#   gdb-multiarch -x tools/qemu/writewatch.py
+#
+# It breaks on kfree_ext, keeps the elements whose size is 16 (the
+# shared.kalloc.16 element that shows up in the phone's panic), finishes the
+# free, and sets a hardware watchpoint on the freed element.  When a watchpoint
+# fires it prints the writer's backtrace and stops.
+#
+# By hand, for one element (the shape the script automates):
+#
+#   (gdb) break kfree_ext
+#   (gdb) continue
+#   ... hits with $x1 = element, $x2 = size
+#   (gdb) finish                       # let the free complete
+#   (gdb) watch *(unsigned long *)$x1  # x1 still holds the element
+#   (gdb) continue
+#   ... watchpoint fires:
+#   (gdb) bt                           # <- the writer
+#
+# Notes that cost time to learn:
+#   * `watch *(long *)$ptr` is what sets a *hardware* watchpoint in QEMU's
+#     gdbstub; `awatch` (access) also works and halves the search again when
+#     you do not know whether the corruption is a read or a write.
+#   * The element must be watched *after* kfree_ext returns; set it before and
+#     the allocator's own free-list writes hit it immediately.
+#   * A hit is either the bug or a legitimate reuse of the same address.  The
+#     backtrace tells you which: a writer inside zalloc (or anything that
+#     allocates) is reuse, anything else is the find.  --size and the boot
+#     milestone in writewatch.py are the knobs for separating them.
+#   * Keep at most 2-3 watchpoints alive; QEMU can hold more, but each one
+#     makes the boot slower, and a quarter of an hour of TCG boot per idea is
+#     the real budget here.
+#   * If it panics before any watchpoint fires, that is information too:
+#     break panic, dump the ring (ringdump.py), and look at the last allocation
+#     site in the backtrace before restarting with the watchpoint automation.

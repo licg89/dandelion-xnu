@@ -398,27 +398,82 @@ diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
-@@ -187,6 +187,23 @@
+@@ -187,10 +187,64 @@
  	unsigned long gicd, gicr, redist;
  	uint32_t waker, group, icfgr, isen;
  	int error;
++	uint64_t gicd_pa = DANDELION_GICD_PA;
++	uint64_t gicr_pa = DANDELION_GICR_PA;
++	uint64_t gicd_size = DANDELION_GICD_SIZE;
++	uint64_t gicr_size = DANDELION_GICR_SIZE;
 +
 +	/*
-+	 * These two addresses are the MediaTek GICv3 the board header names, not
-+	 * whatever the device tree describes earlier in the boot.  On a machine
-+	 * that has no distributor there -- QEMU's virt GIC is at 0x08000000 --
-+	 * both ml_io_map() calls succeed and the first register read faults, so
-+	 * ask before touching anything.  -dl_qemu, see osfmk/kern/printf.c.
++	 * Take the addresses from the device tree, the way the early bring-up in
++	 * pe_init_fiq() already does, instead of hard-coding the MediaTek ones.
++	 *
++	 * On this board the tree says exactly what the macros above say, so the
++	 * phone sees no change.  On a machine whose GIC is somewhere else --
++	 * QEMU's virt machine puts it at 0x08000000 -- hard-coding it here had
++	 * two bad outcomes, and both were observed on 2026-10-31:
++	 *
++	 *   - ml_io_map() succeeded on an address with nothing behind it and the
++	 *     first register read data-aborted (dandelion_gic_late_init+0x6c,
++	 *     esr 0x96000010);
++	 *   - skipping the whole function instead left the timer PPI disabled,
++	 *     so no tick arrived, every timed wait blocked for ever
++	 *     (IOSecureBSDRoot()'s 30 s waitForMatchingService() was the one that
++	 *     stopped that boot) and the kernel ran with no interrupts at all --
++	 *     the worst state to hunt a race in.
 +	 */
 +	{
-+		extern int dandelion_qemu_mode(void);
++		DTEntry entry;
++		void const *reg_prop = NULL;
++		unsigned int prop_size = 0;
 +
-+		if (dandelion_qemu_mode()) {
-+			printf("[dl] gic late: skipped (-dl_qemu: GICD is not at "
-+			    "0x%lx here)\n", (unsigned long)DANDELION_GICD_PA);
-+			return 0;
++		if (SecureDTFindEntry("interrupt-controller", "master",
++		    &entry) == kSuccess &&
++		    SecureDTGetProperty(entry, "reg", &reg_prop,
++		    &prop_size) == kSuccess &&
++		    prop_size >= 4 * sizeof(uint64_t)) {
++			uint64_t const *cells = (uint64_t const *)reg_prop;
++			extern vm_offset_t pe_arm_get_soc_base_phys(void);
++			uint64_t soc_base =
++			    (uint64_t)pe_arm_get_soc_base_phys();
++
++			gicd_pa = soc_base + cells[0];
++			gicd_size = cells[1];
++			gicr_pa = soc_base + cells[2];
++			gicr_size = cells[3];
++			printf("[dl] gic late: from the device tree: "
++			    "gicd=0x%llx+0x%llx gicr=0x%llx+0x%llx\n",
++			    (unsigned long long)gicd_pa,
++			    (unsigned long long)gicd_size,
++			    (unsigned long long)gicr_pa,
++			    (unsigned long long)gicr_size);
++		} else {
++			printf("[dl] gic late: no GIC in the device tree; "
++			    "using defaults 0x%lx 0x%lx\n",
++			    (unsigned long)gicd_pa, (unsigned long)gicr_pa);
 +		}
 +	}
  
  	/* Device memory only: the physmap is cacheable and must not carry MMIO. */
- 	gicd = ml_io_map(DANDELION_GICD_PA, DANDELION_GICD_SIZE);
+-	gicd = ml_io_map(DANDELION_GICD_PA, DANDELION_GICD_SIZE);
+-	gicr = ml_io_map(DANDELION_GICR_PA, DANDELION_GICR_SIZE);
++	gicd = ml_io_map(gicd_pa, gicd_size);
++	gicr = ml_io_map(gicr_pa, gicr_size);
+ 	if (gicd == 0 || gicr == 0) {
+ 		printf("[dl] gic late: ml_io_map failed (gicd=%lx gicr=%lx)\n",
+ 		    gicd, gicr);
+@@ -198,9 +252,9 @@
+ 	}
+ 
+ 	dandelion_gic.gicd = gicd;
+-	dandelion_gic.gicd_size = DANDELION_GICD_SIZE;
++	dandelion_gic.gicd_size = gicd_size;
+ 	dandelion_gic.gicr = gicr;
+-	dandelion_gic.gicr_size = DANDELION_GICR_SIZE;
++	dandelion_gic.gicr_size = gicr_size;
+ 	dandelion_gic.mode = DGIC_MODE_V3;
+ 	dandelion_gic.group = DGIC_GROUP1;
+ 	dandelion_gic.gicc = 0;

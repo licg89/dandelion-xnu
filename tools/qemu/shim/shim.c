@@ -35,7 +35,17 @@
 #define VIRT_BASE       0xFFFFFFF007004000UL	/* VM_KERNEL_LINK_ADDRESS */
 #define MEM_SIZE        0x10000000UL		/* 256 MiB, as on the phone */
 #define MACHO_PA        0x48000000UL		/* -device loader puts it here */
+#define RAMDISK_PA      0x4E000000UL		/* ... and the ramdisk here */
 #define XNU_PAGE        0x4000UL
+
+/*
+ * Size of the ramdisk, filled in by build.sh from the image it was pointed at
+ * (Resources/UniXNU/kernel.macho.rd by default).  0 means "no ramdisk": the
+ * ADT then says so and the kernel boots without a root device.
+ */
+#ifndef RAMDISK_SIZE
+#define RAMDISK_SIZE    0
+#endif
 
 /* ---- QEMU virt devices -------------------------------------------------- */
 
@@ -77,6 +87,7 @@ struct xnu_boot_args {
 extern size_t qemu_make_adt(void *buffer, size_t capacity,
     uint64_t phys_base, uint64_t mem_size, uint64_t kernel_end_pa,
     uint32_t timebase, uint32_t cpu_count,
+    uint64_t ramdisk_pa, uint32_t ramdisk_size,
     const unsigned char *seed, size_t seed_bytes);
 
 /* ---- tiny PL011 writer -------------------------------------------------- */
@@ -403,6 +414,16 @@ void shim_main(void)
 		return;
 	}
 
+	if (RAMDISK_SIZE) {
+		puts_("SHIM: ramdisk ");
+		putdec_(RAMDISK_SIZE);
+		puts_(" bytes at ");
+		puthex_(RAMDISK_PA);
+		puts_(" (rd=md0)\n");
+	} else {
+		puts_("SHIM: no ramdisk: the kernel will have no root device\n");
+	}
+
 	/* Nothing above the kernel image may be stale. */
 	zero(kernel_end_pa, top_pa - kernel_end_pa);
 
@@ -411,7 +432,7 @@ void shim_main(void)
 
 	size_t adt_size = qemu_make_adt((void *)(uintptr_t)adt_pa, XNU_PAGE,
 	    PHYS_BASE, MEM_SIZE, kernel_end_pa, timebase, cpus,
-	    seed, sizeof(seed));
+	    RAMDISK_PA, (uint32_t)RAMDISK_SIZE, seed, sizeof(seed));
 	if (!adt_size) {
 		puts_("SHIM: ADT did not fit in one page\n");
 		return;
@@ -450,10 +471,11 @@ void shim_main(void)
 	 * boot-arg twin).  They compare wall time against a 13.6 ms budget
 	 * and QEMU's TCG runs this kernel about three times slower than the
 	 * phone, so `waitForSystemMapper()` in bsd_init trips the check even
-	 * though nothing is wrong.  Everything else here matches the phone.
+	 * though nothing is wrong.  Everything else here matches the phone:
+	 * UniXNU.toml passes "-v keepsyms=1 debug=0x144 rd=md0".
 	 */
 	static const char cmdline[] =
-	    "-v serial=3 debug=0x144 keepsyms=1 cpus=1 -noprogress wdt=-1 "
+	    "-v serial=3 debug=0x144 keepsyms=1 -noprogress wdt=-1 rd=md0 "
 	    "-dl_uart -dl_qemu";
 	if (sizeof(cmdline) > XNU_CMDLINE) {
 		puts_("SHIM: command line too long\n");

@@ -22,6 +22,8 @@ OUT=$HERE/out
 SHIM=${SHIM:-$HERE/shim/out/shim.elf}
 KERNEL=${KERNEL:-$REPO/Resources/UniXNU/mach_kernel}
 MACHO_PA=0x48000000
+RAMDISK=${RAMDISK-$REPO/Resources/UniXNU/kernel.macho.rd}
+RAMDISK_PA=0x4E000000
 
 BUDGET=20
 RAM=2048
@@ -88,6 +90,13 @@ QEMU_ARGS=(
 	-serial "$SERIAL"
 	-no-reboot
 )
+
+# The root device: the same 16 KiB Mach-O the phone flashes as kernel.macho.rd.
+# The shim advertises it in /chosen/memory-map/RAMDisk; the command line says
+# rd=md0.  RAMDISK= (empty) runs without one.
+if [ -n "$RAMDISK" ] && [ -f "$RAMDISK" ]; then
+	QEMU_ARGS+=(-device "loader,file=$RAMDISK,addr=$RAMDISK_PA,force-raw=on")
+fi
 
 if [ "$GDB" = 1 ]; then
 	QEMU_ARGS+=(-s -S)

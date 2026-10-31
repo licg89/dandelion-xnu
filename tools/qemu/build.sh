@@ -45,10 +45,21 @@ CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only
         -mstrict-align -fno-stack-protector -fno-builtin -mcpu=cortex-a53
         -fno-asynchronous-unwind-tables -Wall -Wextra -Wno-unused-function"
 
+# The ramdisk the shim advertises in /chosen/memory-map, so that mockfs can
+# mount and load_init_program() can exec -- the phone's path.  16 KiB arm64
+# Mach-O, from tools/mk_init_macho.py.  RAMDISK= (empty) builds without one.
+REPO=$(cd ../../.. && pwd)
+RAMDISK=${RAMDISK-$REPO/Resources/UniXNU/kernel.macho.rd}
+RAMDISK_SIZE=0
+if [ -n "$RAMDISK" ] && [ -f "$RAMDISK" ]; then
+	RAMDISK_SIZE=$(stat -c %s "$RAMDISK")
+fi
+echo "ramdisk: ${RAMDISK:-(none)} (${RAMDISK_SIZE} bytes)"
+
 mkdir -p out
 echo "=== building the QEMU shim with $CC ==="
 $CC $TARGET $CFLAGS -c start.S   -o out/start.o
-$CC $TARGET $CFLAGS -c shim.c    -o out/shim.o
+$CC $TARGET $CFLAGS -DRAMDISK_SIZE=${RAMDISK_SIZE}UL -c shim.c -o out/shim.o
 $CC $TARGET $CFLAGS -c adt_qemu.c -o out/adt_qemu.o
 $CC $TARGET $CFLAGS $LINKER -static -T shim.ld -Wl,--build-id=none \
 	-Wl,-e,_start out/start.o out/shim.o out/adt_qemu.o -o out/shim.elf
