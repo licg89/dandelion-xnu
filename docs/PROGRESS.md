@@ -39,18 +39,26 @@
 5. **mockfs 第一次编过**：`kfree_type()` 要的是类型不是指针 typedef（上游 bug）；
    file node 的 `si_devsize` 需要自己填。两个修复都在 `zzz2`。
 
-## 三、还差什么（按顺序）
+## 三、还差什么（按顺序，参照系见 `docs/LANDSCAPE.md`）
 
-| # | 事项 | 判据 |
-|---|---|---|
-| 1 | 验证 `zzz5` 之后 `bsd_init` 线程能被调度回来 | 日志出现 `[dl] timerprobe: busy-wait spans=…`（这是探针最后一段） |
-| 2 | `bsd_init` 走完根挂载循环 | `[dl] vfs_mountroot -> …`、`[dl] root mount: fail errno=…`、`[dl] parked N: IOSleep(1s) returned after ~13000000 ticks` |
-| 3 | 根文件系统：`rd=md0` + mockfs | `Added memory device md0/rmd0`、`BSD root: md0`、`mockfs_mountroot: root device N bytes`、`[dl] root mount: success` |
-| 4 | `load_init_program()` 执行 `/sbin/launchd` | 需要 mockfs 的 file node 指向一个真正的 Mach-O（`docs/ROOTFS-STEP1.md` §2.2） |
+前三项已经做完（tick 下线程调度、`vfs_mountroot` 返回 0、`bsd_init: done`）。
+剩下的按"离 iOS 用户态还有多远"排：
 
-第 3 步的固化件部分（ADT 的 `/chosen/memory-map/RAMDisk` 占位、ESP 里的 initrd、
-`UniXNU.toml` 的 `rd=md0` + `initrd`）必须**一起刷**：DarwinBoot 对两半是
-both-or-neither，只给一半返回 `EFI_UNSUPPORTED`。
+| # | 事项 | 参照实现 | 判据 |
+|---|---|---|---|
+| 1 | 手写最小 arm64 Mach-O，证明 exec 通路（含签名门）通 | 我们自己在做（`tools/mk_init_macho.py`） | `initproc` 起来、用户态写标记 |
+| 2 | **eMMC 只读块设备 + 根设备**（替代 4 KiB RAMDisk） | HakiOS `bsd/dev/redwood_emmc.c`，boot-arg `emmc_root=1` | `BSD root: <emmc 分区>`；我们内核里已有 eMMC 写通道（`native-emmc-serial.patch`）可复用 |
+| 3 | **iOS 16.5 用户态布局**（用户自己从 Apple 公开 IPSW 展开，仓库不含任何 Apple 二进制） | HakiOS `sysimage/` 工具链 | `load_init_program` 找到真正的 `launchd`，`initproc` 跑起来 |
+| 4 | 显示驱动进 XNU（现在是 boot shim 独占屏幕） | UniXNU `GopFramebuffer` / HakiOS 显示驱动 | 内核接管屏幕，SpringBoard 能画 |
+| 5 | 触摸 | HakiOS `redwood_tcm.c`（TCM/SPI） | 触摸事件进 `/dev` |
+| 6 | GPU（Mali-G72，panfrost 系） | HakiOS `redwood_mali.c` + `RedwoodMali.cpp`（Mali-G52） | CoreAnimation 出画面 |
+
+第 2、3 步是"有没有用户态"的分水岭；4-6 是"能不能看见、能不能操作"。
+**修正**：本会话早先写过"到不了 iOS"，那是错的 —— HakiOS 已经在 MT6768 上跑起 iOS 16.5
+用户态，内核同为 xnu-8796.x；详见 `docs/LANDSCAPE.md`。
+
+（历史备注）RAMDisk 交接那半步（ADT 的 `/chosen/memory-map/RAMDisk` 占位、ESP 里的 initrd、
+`UniXNU.toml` 的 `rd=md0`）必须**一起刷**：DarwinBoot 对两半是 both-or-neither。
 
 ## 四、今晚的工具与教训（都已进仓库）
 
