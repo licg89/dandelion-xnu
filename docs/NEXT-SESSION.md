@@ -4,7 +4,58 @@
 
 ---
 
-## 0.-15 2026-11-01 01:1x（最新）：破坏窗口收窄到「根挂载成功之后、bsd_init done 之前」
+## 0.-16 2026-11-01 02:0x（最新）：**根因找到并修复** —— mockfs 的 fsnode 分配少算了 48 字节
+
+追了一整晚的"会漂移的内存破坏"，根因是一行分配代码：
+
+```c
+*fsnpp = kalloc_type(mockfs_fsnode_t, Z_WAITOK | Z_ZERO | Z_NOFAIL);   /* mockfs_fsnode.c:88 */
+```
+
+`mockfs_fsnode_t` 是 **指针 typedef**（`typedef struct mockfs_fsnode * mockfs_fsnode_t`），
+所以 `sizeof` = **8**；而 `struct mockfs_fsnode` 是 **56 字节**：
+
+```c
+uint64_t size; uint8_t type; mount_t mnt; vnode_t vp;
+struct mockfs_fsnode *parent, *child_a, *child_b;
+```
+
+**每次创建 fsnode 都往 8 字节的分配里写 56 字节 → 踩坏相邻 48 字节堆内存。**
+`mockfs_mountroot` 每次启动创建三个 fsnode，时间点正好在 `bsd_init` 结束、
+platform expert 与 devfs 运行之前。
+
+这一条解释了我们见过的**全部**症状：
+
+| 症状 | 解释 |
+|---|---|
+| `[shared.kalloc.16]: element modified after free` | 8 字节分配落在该 size class，溢出打到邻居 |
+| mockfs mount data 读回 `0x4000`（= RAMDisk 大小） | 相邻对象被覆盖 |
+| `mockfs_fsnode_adopt` 返回 ENOMEM（rvalue=12） | root 节点的 `child_a/child_b` 已是垃圾 |
+| `mockfs_fsnode_destroy+0x20`，`far=0x10` | 错误路径销毁被踩坏的节点 |
+| `IORegistryEntry::copyChildEntry` 的 `this` = mount 指针 | 对象内存被复用/覆盖 |
+| `lock_rw` 报 "Lock already held" | 锁 owner 字段被踩坏 |
+
+上游从没发现，因为 mockfs 只在"没有真实文件系统的移植"里用——正是我们。
+
+**修复**（`zzz-mockfs-fsnode-alloc`）：`kalloc_type(struct mockfs_fsnode, ...)`。
+自由侧之前已经修过（`zzz2` 用 `kfree_type(struct mockfs_fsnode, ...)`），而 `zzz2` 里
+"kalloc_type() above is fine" 那句注释是错的。
+
+### 验证（QEMU，同一内核跑三轮）
+
+| 轮 | 修复前 | 修复后 |
+|---|---|---|
+| 1 | `panic: NULL ni_vp in lookup_handle_found_vnode` | `bsd_init: done`，无 panic |
+| 2 | `panic: IORegistryEntry::copyChildEntry`，x0=mount | `bsd_init: done`，无 panic |
+| 3 | `panic: lock_rw 已持有` | `bsd_init: done`，无 panic |
+
+**3/3 干净通过**（修复前约一半轮次崩溃，且落点各不相同）。
+
+下一步：刷到手机验证，看它是否能越过之前卡住的 exec 位置。
+
+---
+
+## 0.-15 2026-11-01 01:1x：破坏窗口收窄到「根挂载成功之后、bsd_init done 之前」
 
 三轮 QEMU 连跑（`tools/qemu/loop.sh`，日志 `tools/qemu/out/loop_*.log`）：
 
