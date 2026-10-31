@@ -1,8 +1,8 @@
 diff --git a/bsd/miscfs/mockfs/mockfs_vfsops.c b/bsd/miscfs/mockfs/mockfs_vfsops.c
-index d4e07e0..b9417a7 100644
+index d4e07e0..ff65a2b 100644
 --- a/bsd/miscfs/mockfs/mockfs_vfsops.c
 +++ b/bsd/miscfs/mockfs/mockfs_vfsops.c
-@@ -112,6 +112,17 @@ mockfs_mountroot(mount_t mp, vnode_t rvp, __unused vfs_context_t ctx)
+@@ -112,9 +112,29 @@ mockfs_mountroot(mount_t mp, vnode_t rvp, __unused vfs_context_t ctx)
  	 */
  
  	mockfs_mount_data = kalloc_type(struct mockfs_mount, Z_WAITOK | Z_ZERO);
@@ -18,9 +18,32 @@ index d4e07e0..b9417a7 100644
 +	    (void *)((mp && mp->mnt_devvp) ? mp->mnt_devvp->v_specinfo : 0));
 +#endif
  	mockfs_fsnode_create(mp, MOCKFS_ROOT, &root_fsnode);
++#if defined(DANDELION)
++	printf("[dl] mockfs create root -> %p\n", (void *)root_fsnode);
++#endif
  	mockfs_fsnode_create(mp, MOCKFS_DEV, &dev_fsnode);
++#if defined(DANDELION)
++	printf("[dl] mockfs create dev -> %p\n", (void *)dev_fsnode);
++#endif
  	mockfs_fsnode_create(mp, MOCKFS_FILE, &file_fsnode);
-@@ -214,6 +225,10 @@ mockfs_unmount(struct mount *mp, int mntflags, __unused vfs_context_t ctx)
++#if defined(DANDELION)
++	printf("[dl] mockfs create file -> %p\n", (void *)file_fsnode);
++#endif
+ 
+ 	if (!root_fsnode || !dev_fsnode || !file_fsnode) {
+ 		rvalue = ENOMEM;
+@@ -158,6 +178,10 @@ mockfs_mountroot(mount_t mp, vnode_t rvp, __unused vfs_context_t ctx)
+ 	mp->mnt_data = (typeof(mp->mnt_data))mockfs_mount_data;
+ 
+ done:
++#if defined(DANDELION)
++	printf("[dl] mockfs mountroot done rvalue=%d root=%p dev=%p file=%p mnt_data=%p\n", rvalue, (void *)root_fsnode, (void *)dev_fsnode,
++	    (void *)file_fsnode, (void *)mockfs_mount_data);
++#endif
+ 	if (rvalue) {
+ 		if (file_fsnode) {
+ 			mockfs_fsnode_destroy(file_fsnode);
+@@ -214,6 +238,10 @@ mockfs_unmount(struct mount *mp, int mntflags, __unused vfs_context_t ctx)
  	 *   that clearing mockfs_root before destroying the fsnode tree is related to an implementation
  	 *   detail of mockfs_fsnode_destroy (which will refuse to destroy the root node).
  	 */
@@ -31,7 +54,7 @@ index d4e07e0..b9417a7 100644
  	root_fsnode = mockfs_mnt->mockfs_root;
  	mockfs_mnt->mockfs_root = NULL;
  	rvalue = mockfs_fsnode_destroy(root_fsnode);
-@@ -240,6 +255,12 @@ mockfs_root(mount_t mp, vnode_t * vpp, __unused vfs_context_t ctx)
+@@ -240,6 +268,12 @@ mockfs_root(mount_t mp, vnode_t * vpp, __unused vfs_context_t ctx)
  {
  	int rvalue;
  
