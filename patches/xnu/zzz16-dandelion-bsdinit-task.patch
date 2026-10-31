@@ -1,0 +1,66 @@
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index dac726d..f0d0787 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1227,32 +1227,60 @@ bsd_init(void)
+ 	bsd_init_kprintf("done\n");
+ }
+ 
++#if defined(DANDELION)
++/*
++ * Ring markers for the last stretch of the boot.
++ *
++ * 2026-10-31 15:4x (8d5ebd2): the log stops right after "bsd_init: done" - the
++ * main thread never reaches "bsd_do_post - done" and load_init_program is never
++ * attempted.  These markers name the call that stops it; they cost a ring write
++ * each and nothing else.
++ */
++extern void dandelion_trace_mark(const char *);
++#define DL_TASK_MARK(step)  dandelion_trace_mark("[dl] bsdinit_task: " step "\n")
++#else
++#define DL_TASK_MARK(step)  do { } while (0)
++#endif
++
+ void
+ bsdinit_task(void)
+ {
+ 	proc_t p = current_proc();
+ 
++	DL_TASK_MARK("enter");
+ 	process_name("init", p);
+ 
+ 	/* Set up exception-to-signal reflection */
++	DL_TASK_MARK("ux_handler_setup");
+ 	ux_handler_setup();
+ 
+ #if CONFIG_MACF
++	DL_TASK_MARK("mac_cred_label");
+ 	mac_cred_label_associate_user(proc_ucred(p));
+ #endif
+ 
++	DL_TASK_MARK("vm_init_before_launchd");
+ 	vm_init_before_launchd();
+ 
+-#if CONFIG_XNUPOST
++#if CONFIG_XNUPOST && !defined(DANDELION)
+ 	int result = bsd_list_tests();
+ 	result = bsd_do_post();
+ 	if (result != 0) {
+ 		panic("bsd_do_post: Tests failed with result = 0x%08x", result);
+ 	}
++#elif defined(DANDELION)
++	/*
++	 * The XNUPOST harness runs kernel self-tests.  On a port with no devices that is
++	 * meaningless, it is slow, and it is the only step here that executes arbitrary
++	 * test code - so it is skipped rather than debugged.  See docs/NEXT-SESSION.md
++	 * section 0.-9.
++	 */
++	DL_TASK_MARK("xnupost skipped");
+ #endif
+ 
+ 	bsd_init_kprintf("bsd_do_post - done");
+ 
++	DL_TASK_MARK("load_init_program");
+ 	load_init_program(p);
+ 	lock_trace = 1;
+ }
