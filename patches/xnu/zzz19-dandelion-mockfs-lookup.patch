@@ -1,0 +1,66 @@
+diff --git a/bsd/miscfs/mockfs/mockfs_vnops.c b/bsd/miscfs/mockfs/mockfs_vnops.c
+index 5dbbbc6..a71810e 100644
+--- a/bsd/miscfs/mockfs/mockfs_vnops.c
++++ b/bsd/miscfs/mockfs/mockfs_vnops.c
+@@ -45,6 +45,25 @@
+  * VNOP functions that mockfs implements.  See xnu/bsd/sys/vnode_if.h for information on what
+  *   each function does in generic terms.
+  */
++#if defined(DANDELION)
++/* mockfs lookup markers - see docs/NEXT-SESSION.md 0.-10. */
++extern void dandelion_trace_mark(const char *);
++extern int snprintf(char *, size_t, const char *, ...);
++
++static void
++dl_mockfs_mark(const char *what, const char *name, int a, int b)
++{
++	char _buf[144];
++
++	snprintf(_buf, sizeof(_buf), "[dl] mockfs %s %s a=%d b=%d\n", what,
++	    name ? name : "-", a, b);
++	dandelion_trace_mark(_buf);
++}
++#define DL_MOCK(what, name, a, b)  dl_mockfs_mark((what), (name), (a), (b))
++#else
++#define DL_MOCK(what, name, a, b)  do { } while (0)
++#endif
++
+ int mockfs_lookup(struct vnop_lookup_args * ap);
+ int mockfs_getattr(struct vnop_getattr_args * ap);
+ int mockfs_read(struct vnop_read_args * ap);
+@@ -102,6 +121,7 @@ mockfs_lookup(struct vnop_lookup_args * ap)
+ 	op = cnp->cn_nameiop;
+ 	fsnode = (mockfs_fsnode_t) dvp->v_data;
+ 	target_fsnode = NULL;
++	DL_MOCK("lookup_in", cnp->cn_nameptr, op, fsnode ? (int)fsnode->type : -1);
+ 
+ 	if ((op == LOOKUP) && (fsnode->type == MOCKFS_ROOT)) {
+ 		/*
+@@ -129,8 +149,11 @@ mockfs_lookup(struct vnop_lookup_args * ap)
+ 
+ 		cnp->cn_nameptr[cnp->cn_namelen] = held_char;
+ 
++		DL_MOCK("lookup_target", NULL, rvalue, target_fsnode ? 1 : 0);
+ 		if (target_fsnode) {
++			DL_MOCK("fsnode_vnode_in", NULL, (int)target_fsnode->type, 0);
+ 			rvalue = mockfs_fsnode_vnode(target_fsnode, vpp);
++			DL_MOCK("fsnode_vnode", NULL, rvalue, 0);
+ 		}
+ 	} else {
+ 		/*
+@@ -140,6 +163,7 @@ mockfs_lookup(struct vnop_lookup_args * ap)
+ 		rvalue = ENOENT;
+ 	}
+ 
++	DL_MOCK("lookup_out", NULL, rvalue, 0);
+ 	return rvalue;
+ }
+ 
+@@ -162,6 +186,7 @@ mockfs_lookup(struct vnop_lookup_args * ap)
+ int
+ mockfs_getattr(struct vnop_getattr_args * ap)
+ {
++	DL_MOCK("getattr_in", NULL, 0, 0);
+ 	/*
+ 	 * For the moment, we don't actually care about most attributes.  We'll
+ 	 *   deal with actually managing attributes as part of the general cleanup.
