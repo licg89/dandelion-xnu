@@ -132,6 +132,26 @@ def main():
         shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work, exist_ok=True)
 
+    # Two traps when the scratch directory lives inside a git checkout (passing
+    # --work out\something from the repository root does exactly that):
+    #   * git then applies the repository's own attributes/EOL rules to `git apply`,
+    #     so an LF patch meets a CRLF-smudged copy of its own context and "fails";
+    #   * `git apply --reverse --check` can report success for a patch that was never
+    #     applied, because it is exploring the enclosing repository rather than the
+    #     scratch tree - which silently turns the idempotency probe into a skip.
+    # Both are avoided by turning autocrlf off for the calls and by refusing to work
+    # inside a checkout unless explicitly asked.
+    def git_apply(*args):
+        return run(["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf",
+                    "apply"] + list(args), cwd=work)
+
+    inside_repo = os.path.isdir(os.path.join(work, ".git")) or any(
+        os.path.isdir(os.path.join(work, part)) and
+        os.path.isfile(os.path.join(work, part, ".git"))
+        for part in [""])
+    if inside_repo and not args.quiet:
+        print("warning: scratch dir is inside a git checkout; using autocrlf=false")
+
     for path in targets:
         content = upstream_content(args.tree, path)
         if content is None:
@@ -152,13 +172,12 @@ def main():
         # earlier patch carried the same hunk) is skipped, not failed.  This
         # is how non-apple-no-root-panic.patch coexists with
         # non-apple-bsd-init-trace.patch in CI.
-        reverse = run(["git", "apply", "--reverse", "--check", patch], cwd=work)
+        reverse = git_apply("--reverse", "--check", patch)
         if reverse.returncode == 0:
             if not args.quiet:
                 print("  already applied: %s" % name)
             continue
-        check = run(["git", "apply", "-p1", "--whitespace=nowarn",
-                     "--unsafe-paths", patch], cwd=work)
+        check = git_apply("-p1", "--whitespace=nowarn", "--unsafe-paths", patch)
         if check.returncode != 0:
             print("FAILED to apply %s" % name)
             print(check.stderr.strip() or check.stdout.strip())
