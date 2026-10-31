@@ -109,21 +109,4 @@ options   MOCKFS
 
 options   CONFIG_KERNEL_INTEGRITY		# <kernel_integrity>
 options   CONFIG_UBSAN_MINIMAL		# <ubsan_minimal>
-
-# KASAN, temporarily, for the memory-corruption hunt.
-#
-# Three boots of the same 2026-10-31 image failed in three unrelated places
-# (zalloc's write-after-free check in shared.kalloc.16, VFS_ROOT locking a mutex at
-# 0x4000 which is a mockfs_mount field, and mockfs_mountroot's error path destroying
-# a corrupted fsnode).  Every downstream measurement - including the exec markers -
-# is wasted until the writer is named, and KASAN names it with a stack trace on the
-# first illegal access.  `san/conf/files` gates it on config_kasan and this tree has
-# san/memory/kasan-arm64.c, so the configuration is supported.
-#
-# Costs: much slower boot, extra shadow memory, and it may not even run on this port
-# (the kernel window is 256 MiB).  If it does not boot, remove this line - it is the
-# only change needed - and bisect zzz12/zzz13/zzz15 instead.  See
-# docs/NEXT-SESSION.md §0.-7.
-options   CONFIG_KASAN	# <config_kasan>
-
 options   CONFIG_KERNEL_TBI	# <kernel_tbi>
