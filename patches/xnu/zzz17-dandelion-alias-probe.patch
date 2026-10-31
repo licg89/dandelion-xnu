@@ -1,0 +1,58 @@
+diff --git a/osfmk/arm64/arm_vm_init.c b/osfmk/arm64/arm_vm_init.c
+index 2ca1af0..076c534 100644
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -1828,6 +1828,24 @@ init_ptpages(tt_entry_t *tt, vm_map_address_t start, vm_map_address_t end, bool
+ #define ARM64_PHYSMAP_SLIDE_RANGE (1ULL << 30) // 1 GB
+ #define ARM64_PHYSMAP_SLIDE_MASK  (ARM64_PHYSMAP_SLIDE_RANGE - 1)
+ 
++#if defined(DANDELION)
++/*
++ * Translate one VA with the current tables and return PAR_EL1.  Bit 0 tells success
++ * from fault; bits [63:56] carry the attribute and shareability hints, which is what
++ * makes two mappings of the same page comparable.
++ */
++static unsigned long
++dl_at_s1e1r(unsigned long va)
++{
++	unsigned long par;
++
++	__asm__ volatile("at s1e1r, %0" : : "r"(va) : "memory");
++	__asm__ volatile("isb" ::: "memory");
++	__asm__ volatile("mrs %0, PAR_EL1" : "=r"(par));
++	return par;
++}
++#endif
++
+ void
+ arm_vm_init(uint64_t memory_size, boot_args * args)
+ {
+@@ -2200,6 +2218,28 @@ arm_vm_init(uint64_t memory_size, boot_args * args)
+ #endif
+ 
+ #if DANDELION_KEEP_IDENTITY_MAP
++	/*
++	 * Is the same physical page reachable through two mappings with different cache
++	 * attributes?  That is the leading explanation for the 2026-10-31 corruption
++	 * (docs/NEXT-SESSION.md 0.-9).  Read-only: AT S1E1R consults the tables and
++	 * reports through PAR_EL1.
++	 *
++	 *   idr   = 0x4D004000 through the bootstrap V=P map
++	 *   pm    = the same PA through the physmap
++	 *   trace = the trace ring, outside the window, V=P only
++	 *   fb    = the framebuffer, outside the window, V=P only
++	 */
++	{
++		unsigned long mair;
++
++		__asm__ volatile("mrs %0, MAIR_EL1" : "=r"(mair));
++		printf("[dl] alias: mair=%lx idr=%lx pm=%lx trace=%lx fb=%lx\n",
++		    mair,
++		    dl_at_s1e1r(0x4D004000UL),
++		    dl_at_s1e1r((unsigned long)phystokv(0x4D004000UL)),
++		    dl_at_s1e1r(0x5FC00000UL),
++		    dl_at_s1e1r(0x7EC50000UL));
++	}
+ 	/*
+ 	 * Bring-up only: leave the bootstrap V=P map installed in TTBR0 instead
+ 	 * of switching to the invalid table.  Nothing in the kernel uses TTBR0
