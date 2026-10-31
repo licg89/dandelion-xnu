@@ -15,7 +15,10 @@ on:
       kernel:
         description: "Kernel configuration"
         type: choice
-        options: [DEVELOPMENT, RELEASE]
+        # KASAN is a kernel profile in this tree (makedefs/MakeInc.def:17), not a
+        # config option, so hunting the 2026-10-31 memory corruption needs a build
+        # with this input rather than an options line in MASTER.arm64.dandelion.
+        options: [DEVELOPMENT, RELEASE, KASAN]
         default: DEVELOPMENT
   push:
     branches: [main]
