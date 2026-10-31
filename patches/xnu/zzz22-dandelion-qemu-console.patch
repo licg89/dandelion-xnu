@@ -1,0 +1,436 @@
+diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
+index 6f793ac..19a3f2c 100644
+--- a/osfmk/kern/printf.c
++++ b/osfmk/kern/printf.c
+@@ -989,6 +989,71 @@ vprintf(const char *fmt, va_list ap)
+ #define DANDELION_PROBE_X       480
+ #define DANDELION_PROBE_W       240
+ 
++/*
++ * Console and device gates for a *different* machine (zzz22).
++ *
++ * This kernel drives four things through hardcoded physical addresses that
++ * only exist on the Redmi 9A: the MSDC0 eMMC controller (0x11230000, reached
++ * at the fixed virtual address start.s installs for it), the panel at
++ * 0x7ec50000, the GICv3 at 0x0c000000, and the trace ring at 0x5fc00000.
++ * Under QEMU's "virt" machine the last two are backed by RAM only because
++ * start.s maps them; the eMMC and GIC addresses are not backed by anything
++ * and fault on the first read.
++ *
++ * So the console gains a second output and the device probes gain a switch,
++ * both off unless the boot command line asks for them -- the phone's behaviour
++ * is unchanged:
++ *
++ *   -dl_uart   mirror every console character to the PL011 at PA 0x09000000.
++ *              Characters printed before arm_vm_init() has built the pmap are
++ *              held in a RAM ring and flushed by dandelion_uart_late_init(),
++ *              because there is no mapping to write through yet.
++ *
++ *   -dl_qemu   skip the probes with no hardware behind them: the eMMC log
++ *              channel, the framebuffer text console and its probe bars, and
++ *              dandelion_gic_late_init()'s GICD/GICR bring-up.  Nothing is
++ *              skipped silently -- dandelion_gates() writes what it decided
++ *              into the trace ring before the kernel says anything else.
++ *
++ * The trace ring is never gated.  It is the one channel that works on both
++ * machines, and it is how a QEMU boot is read back (tools/qemu/ringdump.py).
++ */
++#define DANDELION_UART_PA        0x09000000UL
++#define DANDELION_UART_SIZE      0x1000UL
++#define DANDELION_UART_OFF_DR    0x00
++#define DANDELION_UART_OFF_FR    0x18
++#define DANDELION_UART_OFF_CR    0x30
++#define DANDELION_UART_FR_TXFF   0x00000020U
++#define DANDELION_UART_CR_UARTEN 0x00000001U
++#define DANDELION_UART_CR_TXE    0x00000100U
++#define DANDELION_UART_RING      2048
++
++#define DL_GATE_CHECKED          0x1     /* boot args have been read          */
++#define DL_GATE_UART             0x2     /* PL011 console asked for           */
++#define DL_GATE_QEMU             0x4     /* phone-only device probes skipped  */
++#define DL_GATE_BANNER           0x8     /* gate summary already in the ring  */
++
++/*
++ * The boot command line, handed over by arm_init() as soon as it has a copy of
++ * the boot args (osfmk/arm/arm_init.c calls dandelion_console_bootargs()).
++ * Reading it straight out of the boot_args structure would mean duplicating
++ * pexpert/arm64/boot.h's layout here, and PE_boot_args() returns a pointer into
++ * PE_state that is not valid until pexpert has parsed it; both are avoidable.
++ */
++static const char *dandelion_cmdline;
++
++void
++dandelion_console_bootargs(const char *cmdline)
++{
++	dandelion_cmdline = cmdline;
++}
++
++/* osfmk/arm/machine_routines.h */
++extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++
++static unsigned int dandelion_gates(void);
++static void dandelion_uart_putc(char c);
++
+ static int dandelion_fb_live = 1;
+ static unsigned int dandelion_fb_x = DANDELION_FB_X0;
+ static unsigned int dandelion_fb_y = DANDELION_FB_Y0;
+@@ -1152,6 +1217,11 @@ dandelion_fb_putc(char c)
+ 	if (!dandelion_fb_live) {
+ 		return;
+ 	}
++	/* No panel behind QEMU's address: painting it is a 19 MiB write to RAM
++	 * that nobody reads, and the gate makes that explicit. */
++	if (dandelion_gates() & DL_GATE_QEMU) {
++		return;
++	}
+ 	if (c == '\n') {
+ 		dandelion_fb_newline();
+ 		return;
+@@ -1205,6 +1275,9 @@ dandelion_fb_putc(char c)
+ void
+ dandelion_probe_bar(unsigned int row, unsigned int color)
+ {
++	if (dandelion_gates() & DL_GATE_QEMU) {
++		return;
++	}
+ 	for (unsigned int r = 0; r < DANDELION_PROBE_H; r++) {
+ 		volatile unsigned int *p = (volatile unsigned int *)
+ 		    (DANDELION_FB_PA + (unsigned long)(row + r) * DANDELION_FB_STRIDE +
+@@ -1226,6 +1299,213 @@ static volatile unsigned char *dandelion_trace_base =
+     (volatile unsigned char *)DANDELION_TRACE_PA;
+ static volatile unsigned int dandelion_trace_len;
+ 
++/*
++ * Gate resolution and the PL011 sink (zzz22).  The DL_GATE_* flags above say
++ * what this is for; this is how they are decided.
++ */
++static unsigned int dandelion_modes;
++static volatile unsigned int *dandelion_uart_reg;
++static unsigned char dandelion_uart_ring[DANDELION_UART_RING];
++static unsigned int dandelion_uart_ring_len;
++
++/*
++ * Append to the trace ring without taking the writer lock: the only callers are
++ * dandelion_gates(), which runs either before any other writer exists or from
++ * inside dandelion_trace_putc()'s critical section, and nothing else.
++ */
++static void
++dandelion_ring_text(const char *s)
++{
++	volatile unsigned char *base = dandelion_trace_base;
++	volatile unsigned int *hdr = (volatile unsigned int *)base;
++	unsigned int off = dandelion_trace_len;
++
++	if (base == NULL) {
++		return;
++	}
++	if (hdr[0] != DANDELION_TRACE_MAGIC) {
++		hdr[0] = DANDELION_TRACE_MAGIC;
++		off = 0;
++	}
++	while (*s != '\0' && off < (DANDELION_TRACE_TEXT - 2)) {
++		base[DANDELION_TRACE_HDR + off] = (unsigned char)*s++;
++		base[DANDELION_TRACE_HDR + off + 1] = 0;
++		hdr[1] = off + 1;
++		off++;
++	}
++	dandelion_trace_len = off;
++
++	for (unsigned long a =
++	    (unsigned long)(base + DANDELION_TRACE_HDR) & ~63UL;
++	    a < (unsigned long)(base + DANDELION_TRACE_HDR + off); a += 64) {
++		__asm__ volatile("dc cvac, %0" :: "r"(a) : "memory");
++	}
++	__asm__ volatile("dsb sy" ::: "memory");
++}
++
++/*
++ * The gate summary, written into the ring as soon as the boot command line is
++ * readable, so that a QEMU log can never be mistaken for a phone log -- and so
++ * that a skip is never a silent one.
++ */
++static void
++dandelion_gate_banner(void)
++{
++	int const qemu = (dandelion_modes & DL_GATE_QEMU) != 0;
++
++	dandelion_ring_text("\n[dl] gates: uart=");
++	dandelion_ring_text((dandelion_modes & DL_GATE_UART) ? "on" : "off");
++	dandelion_ring_text(" qemu=");
++	dandelion_ring_text(qemu ? "on" : "off");
++	dandelion_ring_text(" fb=");
++	dandelion_ring_text(qemu ? "off" : "on");
++	dandelion_ring_text(" emmc=");
++	dandelion_ring_text(qemu ? "off" : "on");
++	dandelion_ring_text(" gic-late=");
++	dandelion_ring_text(qemu ? "off" : "on");
++	dandelion_ring_text(" trace=on\n[dl] gates: cmdline: ");
++	if (dandelion_cmdline != NULL) {
++		dandelion_ring_text(dandelion_cmdline);
++	}
++	dandelion_ring_text("\n");
++}
++
++/*
++ * Is `flag` a whole word of the boot command line?  Scanning the command line
++ * directly instead of calling PE_parse_boot_argn() keeps this usable at the
++ * first console write, before pexpert has parsed anything.
++ */
++static int
++dandelion_boot_flag(const char *flag)
++{
++	const char *line;
++	unsigned int n = 0;
++
++	if (dandelion_cmdline == NULL) {
++		return 0;
++	}
++	line = dandelion_cmdline;
++	while (flag[n] != '\0') {
++		n++;
++	}
++	for (const char *p = line; *p != '\0'; p++) {
++		unsigned int i = 0;
++
++		if (p != line && p[-1] != ' ' && p[-1] != '\t') {
++			continue;
++		}
++		while (i < n && p[i] == flag[i]) {
++			i++;
++		}
++		if (i == n && (p[n] == '\0' || p[n] == ' ' || p[n] == '\t')) {
++			return 1;
++		}
++	}
++	return 0;
++}
++
++static unsigned int
++dandelion_gates(void)
++{
++	if ((dandelion_modes & DL_GATE_CHECKED) != 0) {
++		return dandelion_modes;
++	}
++	if (dandelion_cmdline == NULL) {
++		/* arm_init() has not handed the command line over yet: phone. */
++		return 0;
++	}
++
++	dandelion_modes |= DL_GATE_CHECKED;
++	if (dandelion_boot_flag("-dl_uart")) {
++		dandelion_modes |= DL_GATE_UART;
++	}
++	if (dandelion_boot_flag("-dl_qemu")) {
++		dandelion_modes |= DL_GATE_QEMU;
++	}
++	if ((dandelion_modes & DL_GATE_BANNER) == 0) {
++		dandelion_modes |= DL_GATE_BANNER;
++		dandelion_gate_banner();
++	}
++	return dandelion_modes;
++}
++
++/* pexpert/arm/pe_fiq.c: true when the GICD/GICR bring-up must be skipped. */
++int
++dandelion_qemu_mode(void)
++{
++	return (dandelion_gates() & DL_GATE_QEMU) != 0;
++}
++
++/*
++ * One character to the PL011, buffered until dandelion_uart_late_init() has a
++ * mapping.  QEMU's PL011 needs UARTEN|TXE in CR before it will transmit; its
++ * TX FIFO drains as fast as it is written, so the wait loop does not spin.
++ */
++static void
++dandelion_uart_putc(char c)
++{
++	volatile unsigned int *reg;
++	unsigned int spin;
++
++	if ((dandelion_gates() & DL_GATE_UART) == 0) {
++		return;
++	}
++	reg = dandelion_uart_reg;
++	if (reg == NULL) {
++		if (dandelion_uart_ring_len <
++		    (unsigned int)sizeof(dandelion_uart_ring)) {
++			dandelion_uart_ring[dandelion_uart_ring_len++] =
++			    (unsigned char)c;
++		}
++		return;
++	}
++	for (spin = 0; spin < 1000000u; spin++) {
++		if ((reg[DANDELION_UART_OFF_FR >> 2] &
++		    DANDELION_UART_FR_TXFF) == 0) {
++			break;
++		}
++	}
++	reg[DANDELION_UART_OFF_DR >> 2] = (unsigned int)(unsigned char)c;
++}
++
++/*
++ * Called from arm_init() once the pmap exists and ml_io_map() is usable --
++ * immediately after dandelion_emmc_enable(), which is the first point where the
++ * kernel has both a console and a VM.  Everything printed before this arrives
++ * here out of the RAM ring.
++ */
++void
++dandelion_uart_late_init(void)
++{
++	unsigned long vaddr;
++	unsigned int cr;
++	unsigned int i;
++
++	if ((dandelion_gates() & DL_GATE_UART) == 0) {
++		return;
++	}
++	vaddr = (unsigned long)ml_io_map(DANDELION_UART_PA, DANDELION_UART_SIZE);
++	if (vaddr == 0) {
++		return;
++	}
++	dandelion_uart_reg = (volatile unsigned int *)vaddr;
++	cr = dandelion_uart_reg[DANDELION_UART_OFF_CR >> 2];
++	if ((cr & (DANDELION_UART_CR_UARTEN | DANDELION_UART_CR_TXE)) !=
++	    (DANDELION_UART_CR_UARTEN | DANDELION_UART_CR_TXE)) {
++		dandelion_uart_reg[DANDELION_UART_OFF_CR >> 2] =
++		    cr | DANDELION_UART_CR_UARTEN | DANDELION_UART_CR_TXE;
++	}
++
++	for (i = 0; i < dandelion_uart_ring_len; i++) {
++		dandelion_uart_putc((char)dandelion_uart_ring[i]);
++	}
++	dandelion_uart_ring_len = 0;
++
++	printf("[dl] uart: PL011 pa 0x%lx online (%s)\n",
++	    (unsigned long)DANDELION_UART_PA,
++	    (dandelion_modes & DL_GATE_QEMU) ? "qemu" : "other");
++}
++
+ /* Defined with the eMMC channel below.  Safe to call at any time: before the
+  * channel is up it only appends to a RAM ring. */
+ void dandelion_emmc_putc(char c);
+@@ -1284,7 +1564,7 @@ dl_irq_restore(unsigned long daif)
+ 
+ #define DL_WRITER_LOCK()    unsigned long _dl_daif = dl_irq_save()
+ #define DL_WRITER_UNLOCK()  dl_irq_restore(_dl_daif)
+-
++
+ void
+ dandelion_trace_putc(char c)
+ {
+@@ -1816,6 +2096,11 @@ dl_emmc_flush_sector(void)
+ void
+ dandelion_emmc_putc(char c)
+ {
++	/* Before the channel is up this only fills a RAM ring nobody will read
++	 * under -dl_qemu: skip it rather than grow a buffer to its limit. */
++	if (dandelion_gates() & DL_GATE_QEMU) {
++		return;
++	}
+ 	DL_WRITER_LOCK();
+ 
+ 	if (!dl_emmc_ready) {
+@@ -1862,6 +2147,21 @@ dandelion_emmc_enable(void)
+ 	}
+ 	dl_emmc_tried = 1;
+ 
++	/*
++	 * Under -dl_qemu there is no MSDC0 and no hand-off record: the read of
++	 * the hand-off word happens to land inside the extra V=P block that
++	 * start.s maps (0x5f800000..0x60000000), so in QEMU it returns zeros
++	 * and the magic check below rejects it -- but "reads zeros and gives up"
++	 * is luck, not a gate, and the controller registers at
++	 * DANDELION_MSDC_VA would fault if that check were ever passed.  Say so
++	 * and stop here instead.
++	 */
++	if (dandelion_gates() & DL_GATE_QEMU) {
++		printf("eMMC log: skipped (-dl_qemu: no MSDC0 here)\n");
++		dl_emmc_failed = 1;
++		return;
++	}
++
+ 	/*
+ 	 * Both the hand-off record and the controller are reached through the
+ 	 * V=P bootstrap map that start.s builds and arm_vm_init keeps
+@@ -1940,6 +2240,7 @@ dandelion_console_putc(char c)
+ 	dandelion_trace_putc(c);
+ 	dandelion_fb_putc(c);
+ 	dandelion_emmc_putc(c);
++	dandelion_uart_putc(c);
+ }
+ #endif /* DANDELION */
+ 
+diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
+index 98eeb83..dd1a447 100644
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -85,6 +85,8 @@
+ extern void dandelion_trace_mark(const char *);
+ extern void dandelion_trace_attach(void);
+ extern void dandelion_emmc_enable(void);
++extern void dandelion_uart_late_init(void);
++extern void dandelion_console_bootargs(const char *);
+ extern void dandelion_probe_bar(unsigned int, unsigned int);
+ #define DANDELION_TRACE(s)       dandelion_trace_mark(s)
+ #define DANDELION_TRACE_ATTACH() dandelion_trace_attach()
+@@ -380,6 +382,15 @@ arm_init(
+ 	const_boot_args = *args;
+ 	BootArgs = args = &const_boot_args;
+ 
++#if defined(DANDELION)
++	/*
++	 * The console decides from the command line whether to mirror to a PL011
++	 * and whether to skip the device probes that only exist on the phone;
++	 * dandelion_gates() in osfmk/kern/printf.c does the reading.
++	 */
++	dandelion_console_bootargs(args->CommandLine);
++#endif
++
+ 	cpu_data_init(&BootCpuData);
+ #if defined(HAS_APPLE_PAC)
+ 	/* bootstrap cpu process dependent key for kernel has been loaded by start.s */
+@@ -643,6 +654,15 @@ arm_init(
+ 	 */
+ 	dandelion_emmc_enable();
+ 	DANDELION_TRACE("arm_init: emmc enable returned\n");
++
++	/*
++	 * Same point in the boot, same reason: the pmap exists, so the PL011 can
++	 * be mapped, and everything printed before this has been waiting in
++	 * printf.c's RAM ring.  Does nothing unless the command line asked for
++	 * it with -dl_uart (see the gate comment in printf.c).
++	 */
++	dandelion_uart_late_init();
++	DANDELION_TRACE("arm_init: uart late init returned\n");
+ #endif
+ 
+ #if __arm64__
+diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+index c2988dc..06e6712 100644
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -188,6 +188,23 @@ dandelion_gic_late_init(void)
+ 	uint32_t waker, group, icfgr, isen;
+ 	int error;
+ 
++	/*
++	 * These two addresses are the MediaTek GICv3 the board header names, not
++	 * whatever the device tree describes earlier in the boot.  On a machine
++	 * that has no distributor there -- QEMU's virt GIC is at 0x08000000 --
++	 * both ml_io_map() calls succeed and the first register read faults, so
++	 * ask before touching anything.  -dl_qemu, see osfmk/kern/printf.c.
++	 */
++	{
++		extern int dandelion_qemu_mode(void);
++
++		if (dandelion_qemu_mode()) {
++			printf("[dl] gic late: skipped (-dl_qemu: GICD is not at "
++			    "0x%lx here)\n", (unsigned long)DANDELION_GICD_PA);
++			return 0;
++		}
++	}
++
+ 	/* Device memory only: the physmap is cacheable and must not carry MMIO. */
+ 	gicd = ml_io_map(DANDELION_GICD_PA, DANDELION_GICD_SIZE);
+ 	gicr = ml_io_map(DANDELION_GICR_PA, DANDELION_GICR_SIZE);
