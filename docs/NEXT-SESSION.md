@@ -4,7 +4,55 @@
 
 ---
 
-## 0.-5 2026-10-31 11:3x（最新）：**根文件系统挂上了**，`VFS_ROOT` 也过了；现在卡在 `devfs_kernel_mount`
+## 0.-6 2026-10-31 11:5x（最新）：**XNU 完整启动完成**，卡在"没有可执行的 init"
+
+**一句话：`bsd_init` 跑完了 —— devfs、siginit、bsd_utaskbootstrap、mountroot_post_hook 全过，
+`bsd_init: done`，内核在做完 POST 之后尝试执行 `/sbin/launchd`。这一步失败的唯一原因是
+我们给 mockfs 的根设备是 4 KiB 零页，不是可执行的 Mach-O。**
+
+提交：`92253d8`（`zzz11`）。日志：`docs/logs/kernel-log-2026-10-31-bsd-init-done.txt`。
+
+### 关键日志（原文，逐行）
+
+```
+DANDELION: no platform expert for secure BSD root; root verification unsupported on this port
+bsd_init: calling VFS_ROOT
+bsd_init: calling devfs_kernel_mount
+bsd_init: calling siginit
+bsd_init: calling bsd_utaskbootstrap
+bsd_init: calling mountroot_post_hook
+bsd_init: done
+VM Swap Subsystem is ON
+Failed to open swap file 2
+vm_swap_create_file failed @ 222 secs
+No POST boot-arg set.
+bsd_init: bsd_do_post - done
+load_init_program: attempting to load /usr/appleinternal/sbin/launchd.development
+```
+
+| 阶段 | 状态 |
+|---|---|
+| `devfs_kernel_mount` | ✅ 靠 `zzz11`：无 kext 时 `g_crypto_funcs` 是 NULL，`SHA256_Init` 一读就炸；改用内核自带的 corecrypto（`ccsha256_di` + `ccdigest_*`） |
+| `siginit` / `bsd_utaskbootstrap` / `mountroot_post_hook` | ✅ |
+| `bsd_init: done` | ✅ **内核初始化完整走完** |
+| VM swap 打开 / 建 swap 文件失败 | ⚠️ 无害（无 swap 设备），`vm_swap_create_file failed @ 222 secs` 只是延迟 |
+| `load_init_program` | ❌ 当前卡点：要执行 `/usr/appleinternal/sbin/launchd.development`，而 mockfs 的根设备是 4 KiB 零页 |
+
+### 下一步
+
+1. **给 mockfs 一个真的 arm64 Mach-O**。mockfs 把整个根设备当成一个可执行文件节点，
+   所以 `Resources/UniXNU/kernel.macho.rd` 换成合法的静态 Mach-O（`MH_EXECUTE`，AArch64，
+   `__TEXT` + `LC_UNIXTHREAD`）就是"用户态跑起来"这一步。
+2. 先确认 loader 的每一道门（签名/entitlement/platform binary）在我们的补丁下是否都放开：
+   `non-apple-trustedcache.patch`、`non-apple-closed-source.patch` 已经处理了一部分，
+   剩下的用 `osfmk/kern/bsd_init.c` 的 `load_init_program()` + `kern_exec.c` 逐条核对。
+3. 如果 `/sbin/launchd` 这条路成本高，看 `init=` 之类的 boot-arg 能不能直接指向我们的文件
+   （`load_init_program` 先试 `/usr/appleinternal/sbin/launchd.development`，这个路径来自
+   boot-arg/配置默认值，值得查清楚）。
+
+---
+
+## 0.-5 2026-10-31 11:3x：**根文件系统挂上了**，`VFS_ROOT` 也过了；现在卡在 `devfs_kernel_mount`
 
 **一句话：这条链第一次有了可用的根文件系统 —— mockfs 从 DarwinBoot 交接的 RAMDisk
 挂上 md0，`vfs_mountroot()` 返回 0，`[dl] root mount: success`，然后 `VFS_ROOT` 通过。
