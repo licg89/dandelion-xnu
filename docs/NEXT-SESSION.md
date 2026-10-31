@@ -4,7 +4,46 @@
 
 ---
 
-## 0.-10 2026-10-31 18:1x（最新）：整条 exec 路径都测出来了；最后的停机点在第二个候选路径的 execve 里
+## 0.-11 2026-10-31 19:1x（最新）：跳过电源域没有解决问题；停机点继续漂移；下一步换环境而不是再刷机
+
+`0cdd4fd`（跳过 `PMInstantiatePowerDomains()`）这一轮：
+
+- 电源域那行变成 `power domains SKIPPED`，`uuid published` / `configure` / `done` 全过；
+- `zalloc:` 的 UAF 记录**这一次是 0**；
+- 但停机点又变了：这次在**第一个候选路径**的 `execve` 里，`execargs_alloc=0` 之后、
+  `ndp` 之前（上一轮是第二个候选的 `execve_in` 之后）。
+
+所以**跳过电源域不是解决办法**，破坏仍在。到这里可以下一个确定的结论：
+
+> 这个移植的功能链已经全部走通（内核完整启动 → 根文件系统 → devfs → `load_init_program`
+> → 进入 `execve`），剩下的是**内存完整性**问题。它每次启动落在略不同的地方，
+> 且没有可用的 sanitizer：KASAN 三次尝试都失败（`options` 写法不对；Xcode 16.4 与 26.3
+> 的 clang 都拒绝 `-fsanitize=kernel-hwaddress`）。
+
+### 下一步：把内核搬进 QEMU，用调试器抓写者
+
+刷机只能看到"停在哪"，看不到"谁写的"。而 UniXNU 组织里已经有
+[ArmVirtPlatform](https://github.com/UniXNU/ArmVirtPlatform)（ARM 虚拟平台），
+HakiOS 也有 `make qemu-open`（QEMU 里跑同一个内核，不含任何 Apple 东西）。可行做法：
+
+1. 用 QEMU `virt`（arm64）+ 我们的 `MACHINE=dandelion` 配置跑起来（先到 `bsd_init` 即可）；
+2. `gdb` 接上去，在 `shared.kalloc.16` 上设 watchpoint，或在
+   `zalloc_validate_element` 命中时 break 并回看 `zfree` 的调用栈；
+3. 拿到写者函数名之后，回手机验证那一个修复。
+
+好处：可以无限次重跑、单步、改内存；QEMU 的设备与 MT6765 不同，但**这次要抓的是与设备
+无关的堆破坏**，所以正合适。
+
+### 备选（更慢）
+
+- 自建 free 历史环：在 `zfree` 记 {elem, zone, ra}，命中时打印最近一次 free 的返回地址，
+  用 `tools/macho_sym.py` 翻符号。约 60 行，但每轮验证要刷机 ~15 分钟。
+- 直接读 `PMInstantiatePowerDomains()` 下游（`IOPMrootDomain` 等）对 16 字节
+  `kalloc_type` 对象的 free 路径，找"free 之后还有引用"的地方。
+
+---
+
+## 0.-10 2026-10-31 18:1x：整条 exec 路径都测出来了；最后的停机点在第二个候选路径的 execve 里
 
 `65cdff1`（UAF 只记录不改写）这一轮拿到了**至今最完整的启动→exec 轨迹**：
 
