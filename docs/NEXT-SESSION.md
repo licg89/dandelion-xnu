@@ -4,7 +4,49 @@
 
 ---
 
-## 0.-6 2026-10-31 11:5x（最新）：**XNU 完整启动完成**，卡在"没有可执行的 init"
+## 0.-7 2026-10-31 13:3x（最新）：会漂移的内存破坏，是现在唯一的挡路点
+
+**结论先说：内核本身已经完整启动（下面几节都成立），但从"根文件系统挂上"到"exec"这段路上
+存在一处会移动的内存破坏，每次启动落在不同地方。在它被找到之前，重复刷机只能得到
+不同的崩溃现场，得不到进展。**
+
+### 三次启动，三个不同的崩溃现场（同一份代码）
+
+| 时间 | 落点 | 读数 |
+|---|---|---|
+| 12:4x | zalloc 的"释放后被改写"检查 | `panic: [shared.kalloc.16]: element modified after free (off:0, val:0xfffffff8eeb3c000, sz:16)` |
+| 13:0x | `VFS_ROOT` → `mockfs_root` | `pc _lck_mtx_lock_spin+0x60`，`far=0x4008`，被锁的指针是 `0x4000`（= RAMDisk 字节数） |
+| 13:3x | `mockfs_mountroot` 的错误路径 | `pc _mockfs_fsnode_destroy+0x20`（由 `mockfs_mountroot+0x1a8` 调用），`far=0x10` |
+
+第一次想"校验谁被踩"的尝试反而帮了倒忙：`c9e5533` 让 zalloc 检查在发现脏元素时**重新清零**，
+而那个元素其实仍在使用 —— 13:0x 那次 mockfs 的 mount data 变成 `0x4000` 正好是这个后果。
+`dcd42b5` 已改成**只记录、绝不写**。
+
+### 已经排除的
+
+- 不是 mockfs 的逻辑：`mockfs_mountroot: root device 16384 bytes` 打印过，说明设备、
+  `si_devsize`、`zzz2` 的填充都对。
+- 不是 exec 路径：`[dl] exec …` 标记**一次都没出现过**，三次都死在它之前。
+- 不是 tick/GIC：`[dl] irq …` 一直正常。
+
+### 下一步（按顺序）
+
+1. **用 KASAN 抓写者**：这棵树有 `options CONFIG_KASAN`（`config/MASTER:760`），
+   加进 `config/MASTER.arm64.dandelion` 就能编出带影子内存的调试内核——慢、费内存，
+   但**第一次非法写就报调用栈**，比逐点加标记快得多。
+2. 若 KASAN 编不出/起不来，二分**关掉嫌疑功能**：`zzz12/zzz13/zzz15` 三条新补丁之后
+   才开始崩在更早的位置，先逐条去掉确认是否与调试代码本身相关（它们都新增了写路径）。
+3. 破坏稳定后回到 exec：`load_init_program` 的标记已就位（`zzz12`），一轮即可定位。
+
+### 两条经验
+
+- **不要为了"让它继续跑"去改被检测到的数据**：这次证明那会把一处（可能无害的）警告
+  变成真正的数据破坏。
+- 调试内核里每加一条写路径，都要先问"它会不会正是我在找的那个写者"。
+
+---
+
+## 0.-6 2026-10-31 11:5x：**XNU 完整启动完成**，卡在"没有可执行的 init"
 
 **一句话：`bsd_init` 跑完了 —— devfs、siginit、bsd_utaskbootstrap、mountroot_post_hook 全过，
 `bsd_init: done`，内核在做完 POST 之后尝试执行 `/sbin/launchd`。这一步失败的唯一原因是
