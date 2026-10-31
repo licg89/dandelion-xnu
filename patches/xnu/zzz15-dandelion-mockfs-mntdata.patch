@@ -1,0 +1,42 @@
+diff --git a/bsd/miscfs/mockfs/mockfs_vfsops.c b/bsd/miscfs/mockfs/mockfs_vfsops.c
+index d4e07e0..c80381a 100644
+--- a/bsd/miscfs/mockfs/mockfs_vfsops.c
++++ b/bsd/miscfs/mockfs/mockfs_vfsops.c
+@@ -61,6 +61,29 @@ int mockfs_init(__unused struct vfsconf * vfsc);
+  *
+  * Returns 0 on success, or an error.
+  */
++#if defined(DANDELION)
++/*
++ * mockfs mount-data markers (bring-up).  2026-10-31 13:0x: VFS_ROOT died in
++ * mockfs_root locking 0x4000 (far 0x4008), and 0x4000 is the RAMDisk size, which is
++ * a field of struct mockfs_mount - so the mount data pointer is suspect.  Ring
++ * markers, no console I/O.
++ */
++extern void dandelion_trace_mark(const char *);
++extern int snprintf(char *, size_t, const char *, ...);
++
++static void
++dl_mockfs_mark(const char *what, const void *a, const void *b)
++{
++	char _buf[112];
++
++	snprintf(_buf, sizeof(_buf), "[dl] mockfs %s a=%p b=%p\n", what, a, b);
++	dandelion_trace_mark(_buf);
++}
++#define DL_MOCKFS_MARK(what, a, b)  dl_mockfs_mark((what), (const void *)(a), (const void *)(b))
++#else
++#define DL_MOCKFS_MARK(what, a, b)  do { } while (0)
++#endif
++
+ int
+ mockfs_mountroot(mount_t mp, vnode_t rvp, __unused vfs_context_t ctx)
+ {
+@@ -156,6 +179,7 @@ mockfs_mountroot(mount_t mp, vnode_t rvp, __unused vfs_context_t ctx)
+ 
+ 	mockfs_mount_data->mockfs_root = root_fsnode;
+ 	mp->mnt_data = (typeof(mp->mnt_data))mockfs_mount_data;
++	DL_MOCKFS_MARK("mountroot_mntdata", mp->mnt_data, mockfs_mount_data);
+ 
+ done:
+ 	if (rvalue) {
