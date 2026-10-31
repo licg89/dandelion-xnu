@@ -1,0 +1,17 @@
+diff --git a/bsd/miscfs/mockfs/mockfs_fsnode.c b/bsd/miscfs/mockfs/mockfs_fsnode.c
+index c9aaefd..292ad65 100644
+--- a/bsd/miscfs/mockfs/mockfs_fsnode.c
++++ b/bsd/miscfs/mockfs/mockfs_fsnode.c
+@@ -85,7 +85,11 @@ mockfs_fsnode_create(mount_t mp, uint8_t type, mockfs_fsnode_t * fsnpp)
+ 		goto done;
+ 	}
+ 
+-	*fsnpp = kalloc_type(mockfs_fsnode_t, Z_WAITOK | Z_ZERO | Z_NOFAIL);
++	/*
++	 * The type argument must be the struct, not the pointer typedef: with
++	 * mockfs_fsnode_t this allocates 8 bytes and the initialisation below writes 56.
++	 */
++	*fsnpp = kalloc_type(struct mockfs_fsnode, Z_WAITOK | Z_ZERO | Z_NOFAIL);
+ 	(*fsnpp)->size = new_size;
+ 	(*fsnpp)->type = type;
+ 	(*fsnpp)->mnt = mp;
