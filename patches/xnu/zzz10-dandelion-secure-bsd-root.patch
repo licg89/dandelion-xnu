@@ -1,0 +1,34 @@
+diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
+index 1d72b3e..6b8f9a2 100644
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -1125,7 +1125,29 @@ IOSecureBSDRoot(const char * rootName)
+ 	assert(matching);
+ 	pe = (IOPlatformExpert *) IOService::waitForMatchingService(matching, 30ULL * kSecondScale);
+ 	matching->release();
++#if defined(DANDELION)
++	/*
++	 * Secure BSD root is Apple's SEP/trust-cache path: it asks the platform
++	 * expert to verify the root device before user space starts.  This port has
++	 * neither the secure monitor side nor a trust cache, and its platform expert
++	 * is the generic one, so the service does not even match.  Measured
++	 * 2026-10-31, right after the first successful mount:
++	 *
++	 *     [dl] root mount: success
++	 *     panic: IOKitBSDInit.cpp:1128 Assertion failed: pe
++	 *
++	 * Treat "no platform expert" as kIOReturnUnsupported - which is also what
++	 * callPlatformFunction() would have returned - and carry on to user space.
++	 */
++	if (!pe) {
++		IOLog("DANDELION: no platform expert for secure BSD root; "
++		    "root verification unsupported on this port\n");
++		functionName->release();
++		return;
++	}
++#else
+ 	assert(pe);
++#endif
+ 	// Returns kIOReturnNotPrivileged is the root device is not secure.
+ 	// Returns kIOReturnUnsupported if "SecureRootName" is not implemented.
+ 	result = pe->callPlatformFunction(functionName, false, (void *)rootName, (void *)NULL, (void *)NULL, (void *)NULL);
