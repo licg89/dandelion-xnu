@@ -4,7 +4,52 @@
 
 ---
 
-## 0.-8 2026-10-31 15:4x（最新）：二分结果——不是我们那两条补丁；停机点移到了 `bsd_init: done` 之后
+## 0.-9 2026-10-31 16:1x（最新）：怀疑指向"同一物理页被两种缓存属性映射"，并给出验证步骤
+
+`901d0e1`（`bsdinit_task` 六步标记 + 跳过 XNUPOST）这一次启动**连 `bsd_init: done` 都没到**：
+
+```
+mockfs_mountroot: root device 16384 bytes
+panic(cpu 0 caller …): Kernel data abort
+  pc _mockfs_fsnode_adopt+0x4c   lr _mockfs_mountroot+0x168
+  far 0xfffffff792659008         esr 0x96000007   (translation fault)
+```
+
+加上之前几次，崩溃点已经横跨 mockfs 的四个不同函数（`mockfs_root`、`mockfs_mountroot`、
+`mockfs_fsnode_destroy`、`mockfs_fsnode_adopt`）、zalloc 的 UAF 检查，而且 `far` 有时是
+小整数（`0x4000`、`0x10`、`0x30`）有时是"看起来像内核指针但没映射"的地址。
+**这不是某一个函数的 bug，是堆内容被随机改坏。**
+
+### 目前最可信的机制：缓存属性别名
+
+这个移植在 `arm_vm_init` 之后保留了 bootstrap 的 **V=P 恒等映射**
+（`DANDELION_KEEP_IDENTITY_MAP`，见 `docs/NEXT-SESSION.md` §0.1 与
+`patches/xnu/xnu-trace-attach.patch` 里的说明），为的是让 trace ring（PA `0x5FC00000`，
+在 256 MiB 窗口**之外**）和 framebuffer 继续可达。如果同一物理页同时被
+(a) 恒等映射 和 (b) physmap/窗口映射 以**不同缓存属性**映射，ARM64 上的结果是
+不可预测的数据损坏——正好符合"随机、跨函数、时好时坏"的形态。
+
+### 验证步骤（按代价排序）
+
+1. **停用恒等映射**（最直接）：把 trace ring 改成走 `ml_io_map()`/physmap 的 VA，
+   然后去掉 `DANDELION_KEEP_IDENTITY_MAP`，让内核只保留一种映射。预期：崩溃消失或显著变少。
+2. **只读验证**：不改行为，先在 `arm_vm_init` 打印恒等映射与 physmap 的属性
+   （`MAIR_EL1` 的 idx、`mair` 值、`L3` descriptor 的 AttrIndx），确认两边是否不同。
+3. 若 (1) 之后仍崩：再回到 KASAN 路线，需要支持 `-fsanitize=kernel-hwaddress` 的 clang
+   （Xcode 26 或更新），或用 `KASAN=1` 的分发配上更新的镜像。
+
+### 这一轮的完整崩溃清单（同一份代码，不同落点）
+
+| 落点 | 读数 |
+|---|---|
+| `mockfs_root` | `_lck_mtx_lock_spin+0x60`，锁 `0x4000`（= RAMDisk 字节数） |
+| `mockfs_mountroot` 错误路径 | `_mockfs_fsnode_destroy+0x20`，`far=0x10` |
+| zalloc UAF 检查 | `[shared.kalloc.16] element modified after free` |
+| `mockfs_fsnode_adopt` | `far 0xfffffff792659008`，esr `0x96000007` |
+
+---
+
+## 0.-8 2026-10-31 15:4x：二分结果——不是我们那两条补丁；停机点移到了 `bsd_init: done` 之后
 
 **KASAN 这条路先堵住了**：这棵树的 arm64 KASAN 是 HWASAN 变体，runner 上的 clang 17 直接拒绝
 `-fsanitize=kernel-hwaddress for target 'arm64-apple-darwin24.6.0'`（run 41175053779）。
