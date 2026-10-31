@@ -1,0 +1,46 @@
+diff --git a/iokit/Kernel/IOService.cpp b/iokit/Kernel/IOService.cpp
+index 8559a66..22cee61 100644
+--- a/iokit/Kernel/IOService.cpp
++++ b/iokit/Kernel/IOService.cpp
+@@ -5179,13 +5179,35 @@ IOService::setRootMedia(IOService * root)
+ 	bool unhide;
+ 
+ 	ioblockstoragedriverClass = OSMetaClass::getMetaClassWithName(gIOBlockStorageDriverKey);
+-	assert(ioblockstoragedriverClass);
+-
+-	while (root) {
+-		if (root->metaCast(ioblockstoragedriverClass)) {
+-			break;
++#if defined(DANDELION)
++	/*
++	 * IOBlockStorageDriver is not part of the kernel: on Apple platforms it
++	 * arrives in IOStorageFamily.kext, and this port runs no kexts at all, so
++	 * getMetaClassWithName() returns NULL and the assert below would panic in
++	 * the middle of the root-mount path.  Measured 2026-10-31:
++	 *
++	 *     Added memory device md0/rmd0 ... for 0x1000
++	 *     BSD root: md0, major 1, minor 0
++	 *     panic: IOService.cpp:5182 Assertion failed: ioblockstoragedriverClass
++	 *
++	 * The root here comes from the RAMDisk DarwinBoot hands over, which has no
++	 * storage driver above it by construction, so the loop below could only ever
++	 * walk to NULL.  Say so once and let it: publishHiddenMedia(NULL) publishes
++	 * every hidden media, which is what a non-storage root needs anyway.
++	 */
++	if (!ioblockstoragedriverClass) {
++		IOLog("[dl] setRootMedia: no IOBlockStorageDriver class (no "
++		    "IOStorageFamily kext), treating the root as non-storage\n");
++		root = NULL;
++	} else
++#endif
++	{
++		while (root) {
++			if (root->metaCast(ioblockstoragedriverClass)) {
++				break;
++			}
++			root = root->getProvider();
+ 		}
+-		root = root->getProvider();
+ 	}
+ 
+ 	LOCKWRITENOTIFY();
