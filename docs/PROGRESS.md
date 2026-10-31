@@ -44,14 +44,22 @@
 前三项已经做完（tick 下线程调度、`vfs_mountroot` 返回 0、`bsd_init: done`）。
 剩下的按"离 iOS 用户态还有多远"排：
 
-| # | 事项 | 参照实现 | 判据 |
-|---|---|---|---|
-| 1 | 手写最小 arm64 Mach-O，证明 exec 通路（含签名门）通 | 我们自己在做（`tools/mk_init_macho.py`） | `initproc` 起来、用户态写标记 |
-| 2 | **eMMC 只读块设备 + 根设备**（替代 4 KiB RAMDisk） | HakiOS `bsd/dev/redwood_emmc.c`，boot-arg `emmc_root=1` | `BSD root: <emmc 分区>`；我们内核里已有 eMMC 写通道（`native-emmc-serial.patch`）可复用 |
-| 3 | **iOS 16.5 用户态布局**（用户自己从 Apple 公开 IPSW 展开，仓库不含任何 Apple 二进制） | HakiOS `sysimage/` 工具链 | `load_init_program` 找到真正的 `launchd`，`initproc` 跑起来 |
-| 4 | 显示驱动进 XNU（现在是 boot shim 独占屏幕） | UniXNU `GopFramebuffer` / HakiOS 显示驱动 | 内核接管屏幕，SpringBoard 能画 |
-| 5 | 触摸 | HakiOS `redwood_tcm.c`（TCM/SPI） | 触摸事件进 `/dev` |
-| 6 | GPU（Mali-G72，panfrost 系） | HakiOS `redwood_mali.c` + `RedwoodMali.cpp`（Mali-G52） | CoreAnimation 出画面 |
+| # | 事项 | 参照实现 | 判据 | 量级估计（工程日，非承诺） |
+|---|---|---|---|---|
+| 1 | 手写最小 arm64 Mach-O，证明 exec 通路（含签名门）通 | 我们自己在做（`tools/mk_init_macho.py`） | `initproc` 起来、用户态写标记 | 1–2 轮刷机 |
+| 2 | **eMMC 只读块设备 + 根设备**（替代 4 KiB RAMDisk） | HakiOS `bsd/dev/redwood_emmc.c`，boot-arg `emmc_root=1` | `BSD root: <emmc 分区>` | 3–7 天（内核里已有 eMMC 写通道可复用） |
+| 3 | **iOS 16.5 用户态布局**（用户自己从 Apple 公开 IPSW 展开） | HakiOS `sysimage/`、`userland/` | `load_init_program` 找到真 `launchd` | 1–2 周（需用户提供 IPSW） |
+| 4 | 显示驱动进 XNU | UniXNU `GopFramebuffer` / HakiOS 显示驱动 | 内核接管屏幕 | 3–7 天（DSI0 数值已实测：0x14014000、720×1600、stride 2944） |
+| 5 | 触摸 | **UniXNU `ShengNovatekTouch`**（我们是 Novatek，见下） | 触摸事件进 `/dev` | 2–5 天 |
+| 6 | GPU（Mali-G72 MP1，panfrost 系） | HakiOS `redwood_mali.c` + `RedwoodMali.cpp`（G52） | CoreAnimation 出画面 | 2–4 周 |
+
+**触摸控制器已确认为 Novatek**（不是 HakiOS 的 TD4160/OmniVision）：Android 侧
+`getevent -pl` 报 `NVTCapacitiveTouchScreen`，dmesg 里是 `[NVT-ts]`；而 UniXNU 组织里
+正好有 `ShengNovatekTouch`（NT36532E，SPI），是同族控制器 —— 这块比想象的好办。
+
+**总计**：到"用户态程序跑起来"≈ 第 1 步 + 第 2 步（+第 3 步最小版）≈ 2–3 周量级；
+到"iOS 桌面亮起来"≈ 6–10 周量级，瓶颈在第 3 步（IPSW 工具链）和第 6 步（GPU/Metal）。
+第 4、5 步可与第 3 步并行。
 
 第 2、3 步是"有没有用户态"的分水岭；4-6 是"能不能看见、能不能操作"。
 **修正**：本会话早先写过"到不了 iOS"，那是错的 —— HakiOS 已经在 MT6768 上跑起 iOS 16.5
