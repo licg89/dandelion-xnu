@@ -27,7 +27,7 @@ index 182b44a..55c9026 100644
 +
 +			dl_zalloc_uaf_reported = 1;
 +			dandelion_trace_mark("[dl] zalloc: freed element was modified; "
-+			    "re-zeroing and continuing (see docs/NEXT-SESSION.md)\n");
++			    "reporting only, element left untouched (docs/NEXT-SESSION.md 0.-12)\n");
 +		}
 +		/* Deliberately NOT re-zeroing: the element may still be live (2026-10-31 13:0x
 +		 * proved that zeroing it corrupts mockfs's mount data), so only report. */
