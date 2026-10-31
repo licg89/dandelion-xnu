@@ -1,5 +1,5 @@
 diff --git a/bsd/miscfs/mockfs/mockfs_vfsops.c b/bsd/miscfs/mockfs/mockfs_vfsops.c
-index d4e07e0..c67282a 100644
+index d4e07e0..b9417a7 100644
 --- a/bsd/miscfs/mockfs/mockfs_vfsops.c
 +++ b/bsd/miscfs/mockfs/mockfs_vfsops.c
 @@ -112,6 +112,17 @@ mockfs_mountroot(mount_t mp, vnode_t rvp, __unused vfs_context_t ctx)
@@ -20,3 +20,27 @@ index d4e07e0..c67282a 100644
  	mockfs_fsnode_create(mp, MOCKFS_ROOT, &root_fsnode);
  	mockfs_fsnode_create(mp, MOCKFS_DEV, &dev_fsnode);
  	mockfs_fsnode_create(mp, MOCKFS_FILE, &file_fsnode);
+@@ -214,6 +225,10 @@ mockfs_unmount(struct mount *mp, int mntflags, __unused vfs_context_t ctx)
+ 	 *   that clearing mockfs_root before destroying the fsnode tree is related to an implementation
+ 	 *   detail of mockfs_fsnode_destroy (which will refuse to destroy the root node).
+ 	 */
++#if defined(DANDELION)
++	printf("[dl] mockfs_unmount mp=%p mnt_data=%p root_fsnode=%p\n", (void *)mp,
++	    (void *)mockfs_mnt, (void *)mockfs_mnt->mockfs_root);
++#endif
+ 	root_fsnode = mockfs_mnt->mockfs_root;
+ 	mockfs_mnt->mockfs_root = NULL;
+ 	rvalue = mockfs_fsnode_destroy(root_fsnode);
+@@ -240,6 +255,12 @@ mockfs_root(mount_t mp, vnode_t * vpp, __unused vfs_context_t ctx)
+ {
+ 	int rvalue;
+ 
++#if defined(DANDELION)
++	printf("[dl] mockfs_root mp=%p mnt_data=%p root_fsnode=%p\n", (void *)mp,
++	    (void *)(mp ? mp->mnt_data : 0),
++	    (void *)((mp && mp->mnt_data)
++	    ? ((mockfs_mount_t)mp->mnt_data)->mockfs_root : 0));
++#endif
+ 	rvalue = mockfs_fsnode_vnode(((mockfs_mount_t) mp->mnt_data)->mockfs_root, vpp);
+ 	return rvalue;
+ }
