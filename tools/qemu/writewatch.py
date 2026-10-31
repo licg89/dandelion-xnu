@@ -176,6 +176,21 @@ def main():
     arm_hook()
     if armed:
         FreeHook()
+    # Print what actually got installed.  A breakpoint gdb could not place is
+    # otherwise silent, and "the boot ran straight past the arm point" then
+    # looks exactly like a breakpoint that was never there.
+    for name in (ARM_AFTER, "kfree_ext"):
+        if not name:
+            continue
+        try:
+            address = int(gdb.parse_and_eval("(void *)&%s" % name))
+            log("[writewatch] %s resolves to 0x%x" % (name, address))
+        except gdb.error as error:
+            log("[writewatch] cannot resolve %s: %s" % (name, error))
+    try:
+        log(gdb.execute("info breakpoints", to_string=True).rstrip())
+    except gdb.error:
+        pass
     print("[writewatch] running; the boot is not paused unless something hits")
     try:
         gdb.execute("continue")
