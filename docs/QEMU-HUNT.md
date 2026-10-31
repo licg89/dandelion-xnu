@@ -61,6 +61,22 @@ PL011 的 ID 寄存器"来启用。这样 QEMU 里就有真正的串口控制台
   Apple 东西——它的 loader/脚本是最值得抄的部分；
 - XNU 自带的 `MACHINE=bcm2837` 配置也曾在 QEMU raspi3 上被跑过，可作为"最小可行"对照。
 
+## 抓写者的正确姿势（重要）
+
+`zalloc_validate_element` 是在**分配时**才发现元素是脏的——那时候已经不知道是谁写的了。
+所以不要指望在那个断点拿到调用栈，要**提前布陷阱**：
+
+1. 在 `kfree_ext`（`osfmk/kern/kalloc.c`，这里有元素指针和大小）下断；
+2. 对"16 字节、落在共享堆"的元素：读指针 → `finish`（让 free 真正完成）→
+   对该地址设硬件 watchpoint：`watch *(long *)$ptr`（QEMU 会模拟；硬件断点有限，
+   同时最多留 2–3 个，旧的丢掉）；
+3. `continue`。**watchpoint 命中的那一次写就是"释放之后的写"**，`bt` 就是写者——
+   这正是手机上永远拿不到的东西；
+4. 如果先撞上 `zalloc_validate_element` 的 panic，就在那里断下、把 ring 里最近的记录
+   和分配点的 `bt` 打出来，然后重启并改用上面的 watchpoint 自动化。
+
+用 gdb 的 Python 脚本把第 1–3 步自动化，放在 `tools/qemu/` 下；这也是这套环境存在的理由。
+
 ## 现实提醒
 
 - QEMU 的设备与 MT6765 完全不同：SCP、MSDC、DDP/Mali、PMIC 都没有。我们的 dandelion
