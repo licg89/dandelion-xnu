@@ -1,11 +1,11 @@
 diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
-index 9b36f99..955eafe 100644
+index 9b36f99..6f793ac 100644
 --- a/osfmk/kern/printf.c
 +++ b/osfmk/kern/printf.c
-@@ -1254,8 +1254,41 @@ dandelion_trace_attach(void)
+@@ -1253,9 +1253,42 @@ dandelion_trace_attach(void)
+ 	dandelion_trace_base = (volatile unsigned char *)DANDELION_TRACE_PA;
  }
  
- void
 +/*
 + * Serialising the console writers (DANDELION).
 + *
@@ -38,6 +38,7 @@ index 9b36f99..955eafe 100644
 +#define DL_WRITER_LOCK()    unsigned long _dl_daif = dl_irq_save()
 +#define DL_WRITER_UNLOCK()  dl_irq_restore(_dl_daif)
 +
+ void
  dandelion_trace_putc(char c)
  {
 +	DL_WRITER_LOCK();
