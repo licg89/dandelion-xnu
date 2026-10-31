@@ -4,6 +4,68 @@
 
 ---
 
+## 0.-13 2026-10-31 23:2x（最新）：内核在 QEMU 里跑起来了，破坏也在那里复现
+
+今晚最大的一步不是某个 bug 修好了，而是**有了一台能重复跑、能下断点的机器**。
+
+### 现在能做什么（全部实测）
+
+```
+bash tools/qemu/build.sh                     # 编 shim（WSL，aarch64-linux-gnu-gcc）
+bash tools/qemu/run.sh --seconds 240 --stdout   # 内核在 QEMU virt 上跑，串口输出
+bash tools/qemu/run.sh --gdb                 # -s -S，等 gdb
+bash tools/qemu/run.sh --ring                # 顺便导出 0x5fc00000 环形缓冲
+```
+
+- **串口控制台**：`-dl_uart` 把 printf 镜像到 PL011（PA `0x09000000`），`-dl_qemu` 关掉
+  手机专用探测（eMMC 通道、framebuffer、探针条），并在环形缓冲开头写一行门控摘要。
+  两者都只在命令行要求时开启，**手机行为不变**。
+- **tick 在 QEMU 里也成立**：`dandelion_gic_late_init()` 现在从设备树
+  `/interrupt-controller` 取 GICD/GICR（`SecureDTFindEntry` + `pe_arm_get_soc_base_phys`），
+  于是手机编 MT6765 的 `0x0c000000`、QEMU 编 virt 的 `0x08000000/0x080a0000`，
+  同一个内核两边都对。实测：`gicd typer=37a0008 ctlr=50 -> 53, timer INTID 30 enabled`，
+  带 deadline 的等待（`IOSecureBSDRoot` 的 30 s、swap 文件）自己超时返回，不再挂死。
+- **QEMU 走到 `bsd_init: done`**，与手机同一里程碑。
+
+### 破坏在 QEMU 里复现了（但落点与手机不同）
+
+| 运行 | 落点 | 读数 |
+|---|---|---|
+| 早期无 tick 版 | `bsd_init: done` 之后 | `zalloc: freed element was modified`（手机那处 UAF） |
+| tick 版（`8c18d2b`） | mockfs 挂载 | `_mockfs_fsnode_create+0x88`，`far=0xfffffff18f5ae000`（未映射） |
+| tick 版（`6fea08a`） | mockfs 错误路径 | `_mockfs_fsnode_destroy+0x20`，`far=0x10` |
+
+`mockfs_fsnode_create()` 在 `MOCKFS_FILE` 分支读
+`mp->mnt_devvp->v_specinfo->si_devsize`（`mockfs_fsnode.c:81`），而 `vfs_subr.c:1259`
+就在调用 mockfs 之前赋了 `mp->mnt_devvp = rootvp` —— 所以拿到垃圾指针说明
+**挂载结构在 mockfs 碰到它之前就被写坏了**。
+
+### 今晚学到的四条（下次别再踩）
+
+1. **补丁按文件名字典序应用**：`zzz22` 排在 `zzz3/zzz5` 之前，会让补丁要求"还没被写入的代码"。
+   新的调试补丁一律用 `zzzz-` 前缀（四个 z 永远最后）。
+2. **探针要用 `printf`（串口），不要只用 `dandelion_trace_mark`（环形缓冲）**：
+   QEMU 里 `--ring` 的导出不一定成功（实测出现 `(no ring dump)`），而 `-dl_uart` 的串口
+   是可靠的。写环的探针在 QEMU 里可能"静默消失"。
+3. **gdb 17 的 CLI 默认异步**：批处理里 `continue` 会立刻返回，后续命令报
+   "target is running"。可用的两段式办法：第一段只下 `hbreak` + `continue` + `detach`，
+   命中后 QEMU 会停住等调试器；第二段新连接读状态（`tools/qemu/gdb-arm.txt` /
+   `gdb-inspect.txt`）。另外**必须用 `hbreak`**：shim 会把内核拷到 `0x4D004000`，
+   覆盖掉此前写入的软件断点。
+4. **`check_series.py` 的坑已修**（`1f8b787`）：scratch 目录在仓库内时 `git apply`
+   会套用该仓库的 EOL 规则、`--reverse --check` 还会去问外层仓库。现在统一带
+   `-c core.autocrlf=false -c core.eol=lf`。
+
+### 下一步（按性价比）
+
+1. **把 mockfs 探针改成 `printf`**，一轮 QEMU 就能知道 `mnt/devvp/spec` 是"进来就是垃圾"
+   还是"在这几行之间变垃圾"。这是目前最短的路。
+2. 若"进来就是垃圾"：在 `vfs_subr.c:1259` 前后各打一次 `mp->mnt_devvp`，
+   把范围从"整个启动"缩到"两行之间"。
+3. 然后才是 watchpoint（`tools/qemu/writewatch.py` 已就绪，两段式 gdb 已写好）。
+
+---
+
 ## 0.-12 2026-10-31 19:4x：那个 "UAF" 警告不是误报——已从源码确认
 
 追这个破坏之前先排除了"检查本身是误报"这条退路，结论是**它不是误报**：
