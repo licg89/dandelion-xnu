@@ -1,8 +1,8 @@
 diff --git a/bsd/miscfs/mockfs/mockfs_vfsops.c b/bsd/miscfs/mockfs/mockfs_vfsops.c
-index d4e07e0..1bc3b16 100644
+index d4e07e0..c67282a 100644
 --- a/bsd/miscfs/mockfs/mockfs_vfsops.c
 +++ b/bsd/miscfs/mockfs/mockfs_vfsops.c
-@@ -112,6 +112,23 @@ mockfs_mountroot(mount_t mp, vnode_t rvp, __unused vfs_context_t ctx)
+@@ -112,6 +112,17 @@ mockfs_mountroot(mount_t mp, vnode_t rvp, __unused vfs_context_t ctx)
  	 */
  
  	mockfs_mount_data = kalloc_type(struct mockfs_mount, Z_WAITOK | Z_ZERO);
@@ -11,17 +11,11 @@ index d4e07e0..1bc3b16 100644
 +	 * Is the damage already in the mount by the time mockfs touches it?
 +	 * vfs_subr.c:1259 sets mp->mnt_devvp = rootvp just before calling us, and
 +	 * mockfs_fsnode.c:81 dereferences mp->mnt_devvp->v_specinfo->si_devsize.
++	 * printf, not the trace ring: -dl_uart mirrors this to QEMU's serial line.
 +	 */
-+	{
-+		extern void dandelion_trace_mark(const char *);
-+		char _buf[128];
-+
-+		snprintf(_buf, sizeof(_buf),
-+		    "[dl] mockfs mnt=%p devvp=%p spec=%p\n", (void *)mp,
-+		    (void *)(mp ? mp->mnt_devvp : 0),
-+		    (void *)((mp && mp->mnt_devvp) ? mp->mnt_devvp->v_specinfo : 0));
-+		dandelion_trace_mark(_buf);
-+	}
++	printf("[dl] mockfs mnt=%p devvp=%p spec=%p\n", (void *)mp,
++	    (void *)(mp ? mp->mnt_devvp : 0),
++	    (void *)((mp && mp->mnt_devvp) ? mp->mnt_devvp->v_specinfo : 0));
 +#endif
  	mockfs_fsnode_create(mp, MOCKFS_ROOT, &root_fsnode);
  	mockfs_fsnode_create(mp, MOCKFS_DEV, &dev_fsnode);

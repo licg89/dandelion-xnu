@@ -1,0 +1,22 @@
+diff --git a/bsd/vfs/vfs_subr.c b/bsd/vfs/vfs_subr.c
+index 66b3cb7..6ca3127 100644
+--- a/bsd/vfs/vfs_subr.c
++++ b/bsd/vfs/vfs_subr.c
+@@ -1256,7 +1256,17 @@ vfs_mountroot(void)
+ 		}
+ 
+ 		mp = vfs_rootmountalloc_internal(vfsp, "root_device");
++#if defined(DANDELION)
++		printf("[dl] vfs_mountroot fs=%s mp=%p devvp_before=%p rootvp=%p\n",
++		    vfsp->vfc_name, (void *)mp,
++		    (void *)(mp ? mp->mnt_devvp : 0), (void *)rootvp);
++#endif
+ 		mp->mnt_devvp = rootvp;
++#if defined(DANDELION)
++		printf("[dl] vfs_mountroot fs=%s mp=%p devvp_after=%p spec=%p\n",
++		    vfsp->vfc_name, (void *)mp, (void *)mp->mnt_devvp,
++		    (void *)(mp->mnt_devvp ? mp->mnt_devvp->v_specinfo : 0));
++#endif
+ 
+ 		if (vfsp->vfc_mountroot) {
+ 			error = (*vfsp->vfc_mountroot)(mp, rootvp, ctx);
