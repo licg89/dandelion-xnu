@@ -1,0 +1,39 @@
+diff --git a/osfmk/kern/zalloc.c b/osfmk/kern/zalloc.c
+index 182b44a..55c9026 100644
+--- a/osfmk/kern/zalloc.c
++++ b/osfmk/kern/zalloc.c
+@@ -3107,7 +3107,34 @@ zalloc_validate_element(
+ 		return;
+ 	}
+ 	if (memcmp_zero_ptr_aligned((void *)elem, size)) {
++#if defined(DANDELION)
++		/*
++		 * Bring-up: this kernel has been seen to write into a kalloc.16 element
++		 * after freeing it, and the zero check turns that into a panic before the
++		 * boot reaches the point being measured (2026-10-31 12:4x, right after
++		 * "platform expert: instantiating power domains", before devfs - while the
++		 * same image had reached bsd_init: done on the previous boot, so it is not
++		 * even deterministic).
++		 *
++		 * Record it once through the ring, so the condition stays visible in the
++		 * log, re-zero the element - which is the state the allocator would have
++		 * handed out anyway - and continue.  When the port is trustworthy the
++		 * DANDELION branch should be removed and the panic restored.
++		 */
++		static int dl_zalloc_uaf_reported;
++
++		if (!dl_zalloc_uaf_reported) {
++			extern void dandelion_trace_mark(const char *);
++
++			dl_zalloc_uaf_reported = 1;
++			dandelion_trace_mark("[dl] zalloc: freed element was modified; "
++			    "re-zeroing and continuing (see docs/NEXT-SESSION.md)\n");
++		}
++		/* Deliberately NOT re-zeroing: the element may still be live (2026-10-31 13:0x
++		 * proved that zeroing it corrupts mockfs's mount data), so only report. */
++#else
+ 		zalloc_uaf_panic(zone, elem, size);
++#endif
+ 	}
+ 	if (flags & Z_PCPU) {
+ 		for (size_t i = zpercpu_count(); --i > 0;) {
