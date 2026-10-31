@@ -4,7 +4,41 @@
 
 ---
 
-## 0.-7 2026-10-31 13:3x（最新）：会漂移的内存破坏，是现在唯一的挡路点
+## 0.-8 2026-10-31 15:4x（最新）：二分结果——不是我们那两条补丁；停机点移到了 `bsd_init: done` 之后
+
+**KASAN 这条路先堵住了**：这棵树的 arm64 KASAN 是 HWASAN 变体，runner 上的 clang 17 直接拒绝
+`-fsanitize=kernel-hwaddress for target 'arm64-apple-darwin24.6.0'`（run 41175053779）。
+顺便纠正：`options CONFIG_KASAN` 是错的写法——KASAN 在这里是**内核配置档**
+（`makedefs/MakeInc.def:17` `SUPPORTED_KERNEL_CONFIGS = RELEASE DEVELOPMENT DEBUG PROFILE KASAN`），
+要靠 `KERNEL_CONFIG=KASAN` 构建，所以工作流已把 KASAN 加进分发选项（`a870401`）。
+
+**二分结果（`8d5ebd2`，删掉 `zzz13`/`zzz15`、保留 `zzz12` 的 exec 标记）**：
+
+```
+bsd_init: calling devfs_kernel_mount
+bsd_init: calling siginit
+bsd_init: calling bsd_utaskbootstrap
+bsd_init: calling mountroot_post_hook
+bsd_init: done
+[dl] suballoc …                       <- 主线程之后就没有输出了
+VM Swap Subsystem is ON
+Failed to open swap file 2
+vm_swap_create_file failed @ 222 secs
+```
+
+- `mockfs_mountroot: root device 16384 bytes`、`root mount: success`、`VFS_ROOT`、`devfs` 全过，
+  说明**这两条补丁不是破坏源**（它们的嫌疑排除）。
+- `load_init_program` **一次都没出现**，`[dl] exec …` 也是 0 —— 停机点在
+  `bsd_init: done` 之后、`load_init_program` 之前的那段（`kernel_do_post` 一带）。
+- 之前几次"崩在 mockfs/zalloc"的镜像里，停机点还会漂移；这次是稳定的、但更早一点。
+
+**下一步**：给 `bsd_init` 的尾部（`kernel_do_post` → `bsd_do_post` → `load_init_program` 之前）
+加环形缓冲标记，一轮就能知道是哪一个调用停住；同时可以试着用 Xcode 26 的分发（clang 更支持
+HWASAN）看 KASAN 能不能起来——但那是另一个变量，先做标记更便宜。
+
+---
+
+## 0.-7 2026-10-31 13:3x：会漂移的内存破坏，是现在唯一的挡路点
 
 **结论先说：内核本身已经完整启动（下面几节都成立），但从"根文件系统挂上"到"exec"这段路上
 存在一处会移动的内存破坏，每次启动落在不同地方。在它被找到之前，重复刷机只能得到
