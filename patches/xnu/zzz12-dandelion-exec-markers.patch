@@ -1,0 +1,127 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index f41b75b..9cd1582 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -372,6 +372,31 @@ static int exec_copyout_strings(struct image_params *imgp, user_addr_t *stackp);
+ static int load_return_to_errno(load_return_t lrtn);
+ static int execargs_alloc(struct image_params *imgp);
+ static int execargs_free(struct image_params *imgp);
++#if defined(DANDELION)
++/*
++ * exec-path ring markers (bring-up).
++ *
++ * The 2026-10-31 12:1x boot stopped between "attempting to load" and any outcome
++ * line.  These bracket every step in between so one boot names the function that
++ * hangs.  dandelion_trace_mark() writes into the in-memory ring the eMMC log
++ * channel drains; nothing here may use the console.
++ */
++extern void dandelion_trace_mark(const char *);
++extern int snprintf(char *, size_t, const char *, ...);
++
++static void
++dl_exec_mark(const char *what, long value)
++{
++	char _buf[96];
++
++	snprintf(_buf, sizeof(_buf), "[dl] exec %s=%ld\n", what, value);
++	dandelion_trace_mark(_buf);
++}
++#define DL_EXEC_MARK(what, value)  dl_exec_mark((what), (long)(value))
++#else
++#define DL_EXEC_MARK(what, value)  do { } while (0)
++#endif
++
+ static int exec_check_permissions(struct image_params *imgp);
+ static int exec_extract_strings(struct image_params *imgp);
+ static int exec_add_apple_strings(struct image_params *imgp, const load_result_t *load_result);
+@@ -1160,6 +1185,7 @@ SYSCTL_PROC(_vm, OID_AUTO, shared_region_control,
+ static int
+ exec_mach_imgact(struct image_params *imgp)
+ {
++	DL_EXEC_MARK("mach_imgact", 1);
+ 	struct mach_header *mach_header = (struct mach_header *)imgp->ip_vdata;
+ 	proc_t                  p = vfs_context_proc(imgp->ip_vfs_context);
+ 	int                     error = 0;
+@@ -1314,7 +1340,9 @@ grade:
+ 	/*
+ 	 * Actually load the image file we previously decided to load.
+ 	 */
++	DL_EXEC_MARK("load_machfile_in", 1);
+ 	lret = load_machfile(imgp, mach_header, thread, &map, &load_result);
++	DL_EXEC_MARK("load_machfile_ret", lret);
+ 	if (lret != LOAD_SUCCESS) {
+ 		error = load_return_to_errno(lret);
+ 
+@@ -2197,6 +2225,7 @@ again:
+ 	}
+ 
+ 	error = exec_check_permissions(imgp);
++	DL_EXEC_MARK("check_perms", error);
+ 	if (error) {
+ 		goto bad;
+ 	}
+@@ -6762,6 +6791,7 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path)
+ 	assert(p);
+ 	assert(scratch_addr);
+ 	assert(path);
++	DL_EXEC_MARK("at_path", strlen(path));
+ 
+ 	/*
+ 	 * Copy out program name.
+@@ -6828,7 +6858,10 @@ load_init_program_at_path(proc_t p, user_addr_t scratch_addr, const char* path)
+ 	 */
+ 	set_security_token(p);
+ 
+-	return execve(p, &init_exec_args, retval);
++	DL_EXEC_MARK("execve_in", 0);
++	error = execve(p, &init_exec_args, retval);
++	DL_EXEC_MARK("execve_ret", error);
++	return error;
+ }
+ 
+ static const char * init_programs[] = {
+diff --git a/bsd/kern/mach_loader.c b/bsd/kern/mach_loader.c
+index 1756185..03aa5d9 100644
+--- a/bsd/kern/mach_loader.c
++++ b/bsd/kern/mach_loader.c
+@@ -57,6 +57,32 @@
+ #include <sys/spawn_internal.h>
+ 
+ #include <mach/mach_types.h>
++
++#if defined(DANDELION)
++/*
++ * exec-path ring markers (bring-up).
++ *
++ * The 2026-10-31 12:1x boot stopped between "attempting to load" and any outcome
++ * line.  These bracket every step in between so one boot names the function that
++ * hangs.  dandelion_trace_mark() writes into the in-memory ring the eMMC log
++ * channel drains; nothing here may use the console.
++ */
++extern void dandelion_trace_mark(const char *);
++extern int snprintf(char *, size_t, const char *, ...);
++
++static void
++dl_exec_mark(const char *what, long value)
++{
++	char _buf[96];
++
++	snprintf(_buf, sizeof(_buf), "[dl] exec %s=%ld\n", what, value);
++	dandelion_trace_mark(_buf);
++}
++#define DL_EXEC_MARK(what, value)  dl_exec_mark((what), (long)(value))
++#else
++#define DL_EXEC_MARK(what, value)  do { } while (0)
++#endif
++
+ #include <mach/vm_map.h>        /* vm_allocate() */
+ #include <mach/mach_vm.h>       /* mach_vm_allocate() */
+ #include <mach/vm_statistics.h>
+@@ -939,6 +965,7 @@ parse_machfile(
+ #endif
+ 
+ 	for (pass = 0; pass <= 3; pass++) {
++		DL_EXEC_MARK("parse_pass", pass);
+ 		if (pass == 1) {
+ #if __arm64__
+ 			boolean_t       is_pie;
