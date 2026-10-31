@@ -1,11 +1,11 @@
 diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
-index 6f793ac..19a3f2c 100644
 --- a/osfmk/kern/printf.c
 +++ b/osfmk/kern/printf.c
-@@ -989,6 +989,71 @@ vprintf(const char *fmt, va_list ap)
+@@ -988,6 +988,71 @@
+  */
  #define DANDELION_PROBE_X       480
  #define DANDELION_PROBE_W       240
- 
++
 +/*
 + * Console and device gates for a *different* machine (zzz22).
 + *
@@ -70,11 +70,10 @@ index 6f793ac..19a3f2c 100644
 +
 +static unsigned int dandelion_gates(void);
 +static void dandelion_uart_putc(char c);
-+
+ 
  static int dandelion_fb_live = 1;
  static unsigned int dandelion_fb_x = DANDELION_FB_X0;
- static unsigned int dandelion_fb_y = DANDELION_FB_Y0;
-@@ -1152,6 +1217,11 @@ dandelion_fb_putc(char c)
+@@ -1152,6 +1217,11 @@
  	if (!dandelion_fb_live) {
  		return;
  	}
@@ -86,7 +85,7 @@ index 6f793ac..19a3f2c 100644
  	if (c == '\n') {
  		dandelion_fb_newline();
  		return;
-@@ -1205,6 +1275,9 @@ dandelion_fb_putc(char c)
+@@ -1205,6 +1275,9 @@
  void
  dandelion_probe_bar(unsigned int row, unsigned int color)
  {
@@ -96,10 +95,11 @@ index 6f793ac..19a3f2c 100644
  	for (unsigned int r = 0; r < DANDELION_PROBE_H; r++) {
  		volatile unsigned int *p = (volatile unsigned int *)
  		    (DANDELION_FB_PA + (unsigned long)(row + r) * DANDELION_FB_STRIDE +
-@@ -1226,6 +1299,213 @@ static volatile unsigned char *dandelion_trace_base =
+@@ -1225,6 +1298,213 @@
+ static volatile unsigned char *dandelion_trace_base =
      (volatile unsigned char *)DANDELION_TRACE_PA;
  static volatile unsigned int dandelion_trace_len;
- 
++
 +/*
 + * Gate resolution and the PL011 sink (zzz22).  The DL_GATE_* flags above say
 + * what this is for; this is how they are decided.
@@ -306,20 +306,10 @@ index 6f793ac..19a3f2c 100644
 +	    (unsigned long)DANDELION_UART_PA,
 +	    (dandelion_modes & DL_GATE_QEMU) ? "qemu" : "other");
 +}
-+
+ 
  /* Defined with the eMMC channel below.  Safe to call at any time: before the
   * channel is up it only appends to a RAM ring. */
- void dandelion_emmc_putc(char c);
-@@ -1284,7 +1564,7 @@ dl_irq_restore(unsigned long daif)
- 
- #define DL_WRITER_LOCK()    unsigned long _dl_daif = dl_irq_save()
- #define DL_WRITER_UNLOCK()  dl_irq_restore(_dl_daif)
--
-+
- void
- dandelion_trace_putc(char c)
- {
-@@ -1816,6 +2096,11 @@ dl_emmc_flush_sector(void)
+@@ -1816,6 +2096,11 @@
  void
  dandelion_emmc_putc(char c)
  {
@@ -331,11 +321,10 @@ index 6f793ac..19a3f2c 100644
  	DL_WRITER_LOCK();
  
  	if (!dl_emmc_ready) {
-@@ -1862,6 +2147,21 @@ dandelion_emmc_enable(void)
- 	}
+@@ -1863,6 +2148,21 @@
  	dl_emmc_tried = 1;
  
-+	/*
+ 	/*
 +	 * Under -dl_qemu there is no MSDC0 and no hand-off record: the read of
 +	 * the hand-off word happens to land inside the extra V=P block that
 +	 * start.s maps (0x5f800000..0x60000000), so in QEMU it returns zeros
@@ -350,10 +339,11 @@ index 6f793ac..19a3f2c 100644
 +		return;
 +	}
 +
- 	/*
++	/*
  	 * Both the hand-off record and the controller are reached through the
  	 * V=P bootstrap map that start.s builds and arm_vm_init keeps
-@@ -1940,6 +2240,7 @@ dandelion_console_putc(char c)
+ 	 * (DANDELION_KEEP_IDENTITY_MAP), so neither phystokv() nor ml_io_map()
+@@ -1940,6 +2240,7 @@
  	dandelion_trace_putc(c);
  	dandelion_fb_putc(c);
  	dandelion_emmc_putc(c);
@@ -362,7 +352,6 @@ index 6f793ac..19a3f2c 100644
  #endif /* DANDELION */
  
 diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
-index 98eeb83..dd1a447 100644
 --- a/osfmk/arm/arm_init.c
 +++ b/osfmk/arm/arm_init.c
 @@ -85,6 +85,8 @@
@@ -374,10 +363,11 @@ index 98eeb83..dd1a447 100644
  extern void dandelion_probe_bar(unsigned int, unsigned int);
  #define DANDELION_TRACE(s)       dandelion_trace_mark(s)
  #define DANDELION_TRACE_ATTACH() dandelion_trace_attach()
-@@ -380,6 +382,15 @@ arm_init(
+@@ -379,6 +381,15 @@
+ 	/* If kernel integrity is supported, use a constant copy of the boot args. */
  	const_boot_args = *args;
  	BootArgs = args = &const_boot_args;
- 
++
 +#if defined(DANDELION)
 +	/*
 +	 * The console decides from the command line whether to mirror to a PL011
@@ -386,11 +376,10 @@ index 98eeb83..dd1a447 100644
 +	 */
 +	dandelion_console_bootargs(args->CommandLine);
 +#endif
-+
+ 
  	cpu_data_init(&BootCpuData);
  #if defined(HAS_APPLE_PAC)
- 	/* bootstrap cpu process dependent key for kernel has been loaded by start.s */
-@@ -643,6 +654,15 @@ arm_init(
+@@ -643,6 +654,15 @@
  	 */
  	dandelion_emmc_enable();
  	DANDELION_TRACE("arm_init: emmc enable returned\n");
@@ -407,13 +396,13 @@ index 98eeb83..dd1a447 100644
  
  #if __arm64__
 diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
-index c2988dc..06e6712 100644
 --- a/pexpert/arm/pe_fiq.c
 +++ b/pexpert/arm/pe_fiq.c
-@@ -188,6 +188,23 @@ dandelion_gic_late_init(void)
+@@ -187,6 +187,23 @@
+ 	unsigned long gicd, gicr, redist;
  	uint32_t waker, group, icfgr, isen;
  	int error;
- 
++
 +	/*
 +	 * These two addresses are the MediaTek GICv3 the board header names, not
 +	 * whatever the device tree describes earlier in the boot.  On a machine
@@ -430,7 +419,6 @@ index c2988dc..06e6712 100644
 +			return 0;
 +		}
 +	}
-+
+ 
  	/* Device memory only: the physmap is cacheable and must not carry MMIO. */
  	gicd = ml_io_map(DANDELION_GICD_PA, DANDELION_GICD_SIZE);
- 	gicr = ml_io_map(DANDELION_GICR_PA, DANDELION_GICR_SIZE);
