@@ -4,7 +4,47 @@
 
 ---
 
-## 0.-13 2026-10-31 23:2x（最新）：内核在 QEMU 里跑起来了，破坏也在那里复现
+## 0.-14 2026-11-01 00:5x（最新）：QEMU 现在与手机跑到**同一行**，而且状态全是干净的
+
+最新一轮（971ef07，串口日志 out/ser7.log）：
+
+`
+[dl] vfs_mountroot fs=mockfs mp=0xfffffff43575a000 devvp_before=0 rootvp=...
+[dl] vfs_mountroot fs=mockfs mp=... devvp_after=... spec=...
+mockfs_mountroot: root device 16384 bytes
+[dl] mockfs mnt=... devvp=... spec=...
+[dl] mockfs create root -> 0xfffffff4357b7ec0
+[dl] mockfs create dev  -> 0xfffffff4357b7620
+[dl] mockfs create file -> 0xfffffff4357b73b0
+[dl] mockfs mountroot done rvalue=0 root=... dev=... file=... mnt_data=0xfffffff1825b41f0
+bsd_init: calling VFS_ROOT
+[dl] mockfs_root mp=0xfffffff43575a000 mnt_data=0xfffffff1825b41f0 root_fsnode=0xfffffff4357b7ec0
+bsd_init: calling devfs_kernel_mount / siginit / bsd_utaskbootstrap / mountroot_post_hook
+bsd_init: done
+VM Swap Subsystem is ON
+Failed to open swap file 2
+vm_swap_create_file failed @ 31 secs
+`
+
+**结论：QEMU 里 sd_init 全过，而且每个探针看到的都是干净数据**（mount、devvp、三个
+fsnode、mockfs_root 全部有效）。同一份代码在别的轮次会在 mockfs 的
+snode_create / snode_destroy / snode_vnode 三处随机崩——与手机完全同型，
+说明 **QEMU 是忠实复现，不是另一个 bug**。
+
+### 这意味着什么
+
+- 现在有一条 **8 分钟构建 + 4 分钟运行**的循环，不需要手机、不需要人守着；
+- 破坏触发时会带着**已知的地址**（上面那些指针），可以对这些地址直接下 watchpoint，
+  而不必盲目 hook 分配器；
+- 具体做法：
+un.sh --gdb（-s -S）→ 第一段 gdb 在 mockfs_mountroot 返回处下
+  hbreak、读到 mnt_data 与三个 fsnode 的地址后，对 mnt_data->mockfs_root
+  （偏移见 struct mockfs_mount）设 watchpoint → detach 让它跑 →
+  命中时第二次连接读 t。
+
+---
+
+## 0.-13 2026-10-31 23:2x：内核在 QEMU 里跑起来了，破坏也在那里复现
 
 今晚最大的一步不是某个 bug 修好了，而是**有了一台能重复跑、能下断点的机器**。
 
